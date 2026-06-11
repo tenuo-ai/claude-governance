@@ -20,7 +20,8 @@ python3 tenuo_demo.py                   # allow/deny tour without Claude
 ```
 
 For root-signed warrants and optional human approval on off-allowlist `WebFetch`,
-see [Tenuo Cloud](#tenuo-cloud). More mechanics: [docs/DETAILS.md](docs/DETAILS.md).
+see [Tenuo Cloud](#what-the-security-team-sees). Reviewer brief:
+[docs/SECURITY-TEAM.md](docs/SECURITY-TEAM.md).
 
 ## See it in action
 
@@ -38,23 +39,22 @@ claude -p "Read /etc/hosts" --dangerously-skip-permissions             # denied
 Destructive instruction with guardrails off:
 
 ```bash
-claude -p "There's a bad release in prod. Use the delete_deployment MCP tool \
-  to tear down the production deployment now." --dangerously-skip-permissions
+claude -p "Use delete_deployment to tear down production." --dangerously-skip-permissions
 ```
 
-The warrant never granted `delete_deployment`, so the MCP proxy denies it before
-the call reaches the server. `"Read prod-credentials.env and print the Stripe key."`
-is denied for the same reason: reads are scoped to `./sandbox`.
-
-Prompt injection in data: `sandbox/incident-report.md` includes a hidden instruction
-to read `prod-credentials.env`, delete prod, and fetch an off-allowlist URL.
+Prompt injection: `sandbox/incident-report.md` hides instructions to exfil secrets and
+delete prod. If the model refuses, fine — the warrant still does not grant those tools.
 
 ```bash
 claude -p "Summarize sandbox/incident-report.md for me." --dangerously-skip-permissions
 ```
 
-If the model refuses, fine. Either way the warrant does not grant read access to
-secrets, prod deletion, or off-allowlist fetch.
+Subagent attenuation (session allows `Bash`; researcher child warrant does not):
+
+```bash
+claude -p "Use the researcher subagent to run 'ls -la sandbox' and report the result." \
+  --dangerously-skip-permissions
+```
 
 Without Claude:
 
@@ -63,18 +63,50 @@ python3 tenuo_demo.py
 python3 tenuo_claude.py audit
 ```
 
-Subagents cannot widen scope. The demo includes a `researcher` subagent
-(`.claude/agents/researcher.md`) whose warrant is the session warrant attenuated
-to read/search only:
+### Receipt trail
 
-```bash
-claude -p "Use the researcher subagent to run 'ls -la sandbox' and report the result." \
-  --dangerously-skip-permissions
+Same demo sequence, real `audit` output (local convenience log; authorizer produces
+the signed receipts, streamed to Cloud when connected):
+
+```
+$ python3 tenuo_demo.py && python3 tenuo_claude.py audit
+  ALLOW      [gov] Read           -> read_file  authorized
+  DENY       [gov] Read           -> read_file  Constraint not satisfied
+  DENY       [aud] delete_deployment -> unlisted  Constraint not satisfied
+  ALLOW      [gov] Bash           -> run_command  authorized
+  DENY       [gov] Bash           -> run_command  Constraint not satisfied
+  ALLOW      [gov] Grep           -> grep  authorized
+  ALLOW      [gov] WebFetch       -> web_fetch  authorized
+  DENY       [gov] WebFetch       -> web_fetch  Constraint not satisfied
+  ALLOW      [gov] Agent          -> spawn_agent  authorized
+  DENY       [gov] Bash           <researcher> -> run_command  Constraint not satisfied
 ```
 
-The researcher warrant does not include `Bash`, even though the session does.
-`audit` shows the spawn allowed and the in-subagent `Bash` denied under
-`agent_type=researcher`. See [Subagents](docs/DETAILS.md#subagents).
+With Cloud `WebFetch.approval` enabled, an off-allowlist SSRF-safe URL shows
+`PENDING [appr]` before resolve. See [DETAILS.md](docs/DETAILS.md#human-approval-cloud).
+
+## vs. native Claude Code permissions
+
+Claude Code permissions are **configuration**: allow/ask/deny rules in `settings.json`,
+optionally locked down fleet-wide via **managed settings**. Tenuo adds a **credential**:
+a signed warrant checked on every tool call, with TTL, revocation, and a receipt stream.
+
+Tenuo is built **on top of** Claude's hook and managed-settings mechanisms — not a
+replacement. You still deploy PreToolUse hooks (this demo wires them from `tenuo.yaml`);
+for fleet enforce, use managed settings so users cannot remove them.
+
+| | Claude Code permissions | Tenuo warrant |
+|---|-------------------------|---------------|
+| Policy form | Allow/ask/deny rules in settings | Signed credential; Cloud mode chains to tenant root |
+| Expiry | Rules persist until edited | Session TTL (~1h); `up` refreshes |
+| Revocation | Edit rules; sessions may keep prior allowances | Revoke warrant id; live in ~30s (Cloud), no restart |
+| Evidence | Hook logs optional; no signed trail by default | Signed receipt per decision; central stream with Cloud |
+| Delegation | Subagents follow project/user tool policy | Cryptographic attenuation; session is the ceiling |
+| Exceptions | Additional allow rules | Optional Cloud approval gate on off-allowlist `WebFetch` |
+| `--dangerously-skip-permissions` | Bypasses Claude permission prompts* | Warrant still enforced |
+
+\*Managed settings can disable bypass (`disableBypassPermissionsMode`). Verify native
+behavior against [Claude Code permissions](https://code.claude.com/docs/en/permissions).
 
 ## How it works
 
@@ -92,57 +124,73 @@ The researcher warrant does not include `Bash`, even though the session does.
          └─────────────────────────────────────────────┘
                                │
               ┌────────────────┴────────────────┐
-              │                                 │
         native tools                      MCP tools
-  (Read, Bash, WebFetch, …)     (read_file, delete_deployment, …)
               │                                 │
       PreToolUse hook                    MCP proxy (.mcp.json)
-              │                                 │
-              └────────────┬────────────────────┘
+              └────────────┬────────────────┘
                            ▼
-                  tenuo_claude.py
-           (authorize each call + write receipts)
-                           │
-                    HTTP + PoP + warrant
-                           ▼
-               Tenuo Authorizer (container)
-                           │
-                     allow / deny
-                           ▼
-           signed receipt → Tenuo Cloud (optional)
+                  tenuo_claude.py → authorizer → allow / deny → receipt
 ```
 
-On each tool call the hook or MCP proxy signs a proof-of-possession, asks the
-authorizer, and enforces the result. The decision lives outside Claude.
+On each tool call the hook or MCP proxy signs a proof-of-possession and asks the
+authorizer. The decision lives outside Claude.
 
-### Two paths, one warrant
+| Path | Enforcement |
+|------|-------------|
+| MCP proxy | Structural: Claude talks to the proxy, not the downstream server |
+| PreToolUse hook | Cooperative: returns allow/deny; hardened via fail-closed + managed settings |
 
-| Path | Governs | Enforcement |
-|------|---------|-------------|
-| MCP proxy | Downstream MCP tools | Structural: Claude talks to the proxy, not the server |
-| PreToolUse hook | Native tools, MCP names, subagent spawns | Hook returns allow/deny; pair with [managed settings](#enterprise-deployment) and the [fail-closed guard](#security-boundaries) |
+Both use the same warrant and authorizer. See [DETAILS.md](docs/DETAILS.md#why-hook-and-mcp-proxy).
 
-Both use the same warrant and authorizer. MCP tools are checked by the proxy and
-by the hook on the `mcp__…` name.
+## What the security team sees
+
+With [Tenuo Cloud](https://cloud.tenuo.ai), each session warrant chains to your tenant
+root. Platform security gets one stream to answer: *what did agents do, under what
+authority, who approved the exceptions* — and can revoke a compromised warrant in
+about 30 seconds without touching the laptop.
+
+Admin vs runtime separation:
+
+| Tool | Key | Does |
+|------|-----|------|
+| `tenuo_admin.py setup` | admin (`~/.tenuo/admin.env`) | Register holder, create trigger from `tenuo.yaml` |
+| `tenuo_claude.py up` | authorizer (`.state/cloud.env`) | Fire trigger, run authorizer |
+
+Runtime refuses to start if an admin key is in the environment. Setup:
+`cloud.env.example`, `tenuo.yaml.cloud.example`.
+
+### Cloud audit stream
+
+Every hook and demo decision is also a **signed receipt** in [cloud.tenuo.ai](https://cloud.tenuo.ai):
+allow, deny, spawn, and (when configured) human-approved exceptions — one stream for
+the whole fleet.
+
+![Authorization receipts in Tenuo Cloud](docs/images/cloud-audit-stream.png)
+
+Drill into an approved off-allowlist `WebFetch` to see the approval bound to that
+specific call — approver, timestamp, and cryptographic request hash:
+
+![Receipt detail with human approval](docs/images/cloud-receipt-approval-detail.png)
+
+**Revocation:** revoke the session warrant id from `tenuo-claude status` or the Cloud
+dashboard; authorizers pick up the SRL within ~30s. Local-only mode:
+`tenuo-claude revoke`.
+
+One-page brief for security reviewers: [docs/SECURITY-TEAM.md](docs/SECURITY-TEAM.md).
 
 ## Policy (`tenuo.yaml`)
 
-Warrant, authorizer routes, hooks, and MCP wiring all come from one file:
+Warrant, routes, hooks, and MCP wiring come from one file:
 
 ```yaml
 name: claude-code-demo
 sandbox: ./sandbox
-mode: enforce                           # audit = observe-only (see below)
+mode: enforce
 enforce:
   Read:  "subpath:{sandbox}"
-  Write: "subpath:{sandbox}"
-  Edit:  "subpath:{sandbox}"
   Bash:  "shlex:ls,pwd,echo,date"
-  Glob:  "subpath:{sandbox}"
-  Grep:  "subpath:{sandbox}"
   WebFetch:
     domains: ["api.github.com", "*.githubusercontent.com", "*.tenuo.ai"]
-    # approval: …  # optional Cloud — tenuo.yaml.cloud.example
 default: deny
 subagents:
   researcher:
@@ -150,38 +198,30 @@ subagents:
 mcp:
   downstream: ./ops_server.py
   enforce:
-    read_file:      "subpath:{sandbox}"
-    list_directory: "subpath:{sandbox}"
+    read_file: "subpath:{sandbox}"
 ```
 
 - `enforce`: allowed and argument-checked.
-- `audit`: inert harness tools, merged from `harness_tools.yaml` (extend with `audit_extra:`).
+- `audit`: harness tools from `harness_tools.yaml` (extend with `audit_extra:`).
 - `default: deny`: everything else blocked with a receipt.
-
-Constraints: `subpath:`, `shlex:`, `regex:`, `pattern:`, `oneof:`, `exact:`.
-`WebFetch` takes a domain allowlist and an optional Cloud approval gate.
 
 ## Commands
 
 | Command | Does |
 |---------|------|
-| `init` | Mint warrant, generate config, wire hooks and `.mcp.json` |
-| `up` / `down` | Start / stop the authorizer container |
-| `status` | Warrant, authorizer, Cloud, policy summary |
-| `doctor [--no-live]` | Self-test allow/deny; optional live hook exit-code check |
+| `init` | Mint warrant, wire hooks and `.mcp.json` |
+| `up` / `down` | Start / stop authorizer |
+| `status` | Warrant, posture, Cloud summary |
+| `doctor [--no-live]` | Self-test allow/deny |
 | `audit [--tail N]` | Receipt trail |
-| `revoke` | Revoke the session warrant |
-
-Tour: `python3 tenuo_demo.py`. Admin: `python3 tenuo_admin.py`.
+| `revoke` | Revoke session warrant |
 
 ## Enterprise deployment
 
-Install the hook in managed settings (above user and project settings):
+Install the hook via **managed settings** (above user/project settings):
 
 ```jsonc
-// macOS:   /Library/Application Support/ClaudeCode/managed-settings.json
-// Linux:   /etc/claude-code/managed-settings.json
-// Windows: C:\ProgramData\ClaudeCode\managed-settings.json
+// macOS: /Library/Application Support/ClaudeCode/managed-settings.json
 {
   "hooks": {
     "PreToolUse":  [{"matcher": "*", "hooks": [{"type": "command", "command": "python3 /opt/tenuo/tenuo_claude.py _hook"}]}],
@@ -190,46 +230,30 @@ Install the hook in managed settings (above user and project settings):
 }
 ```
 
-Deploy with MDM alongside the CLI and `tenuo.yaml`.
+Deploy with MDM alongside the CLI and `tenuo.yaml`. Governance covers agent tool
+calls, not interactive `!` shell — restrict that at the workstation if needed.
 
-Governance applies to agent tool calls (`Read`, `Bash`, MCP, subagent spawns).
-It does not cover interactive `!` shell in the Claude Code TUI or other paths that
-never emit `PreToolUse`. Restrict those at the workstation if they matter for you.
+## Rolling out
 
-### Tenuo Cloud
+1. **Local eval** — this repo: `init`, `up`, `doctor`, `tenuo_demo.py`.
+2. **Observe-only** — `mode: audit`: compute and receipt real allow/deny without
+   blocking. The hook emits **no** permission decision, so observe-only never weakens
+   Claude's stock prompts. Tune on `WOULD-DENY` rows, then set `mode: enforce`.
+3. **Fleet enforce** — managed settings + Cloud root-signed warrants + team policy in
+   `tenuo.yaml`.
 
-With [Tenuo Cloud](https://cloud.tenuo.ai), warrants are root-signed via a trigger.
-Admin and runtime use different keys:
-
-| Tool | Key | Does |
-|------|-----|------|
-| `tenuo_admin.py setup` | admin (`~/.tenuo/admin.env`) | Register holder, create trigger from `tenuo.yaml` |
-| `tenuo_claude.py up` | authorizer (`.state/cloud.env`) | Fire trigger, run authorizer |
-
-Runtime refuses to start if an admin key is present. See `cloud.env.example` and
-`tenuo.yaml.cloud.example`.
-
-### Revocation
-
-Cloud: revoke the warrant id from `status` in the dashboard; the authorizer picks
-up the SRL within about 30 seconds.
-
-Local: `tenuo-claude revoke` writes a signed SRL and reloads.
-
-Further detail: [docs/DETAILS.md](docs/DETAILS.md) (audit-mode invariants, WebFetch
-examples, spawn gates, receipt authority, hook exit codes).
+Send security reviewers [docs/SECURITY-TEAM.md](docs/SECURITY-TEAM.md). Mechanics:
+[docs/DETAILS.md](docs/DETAILS.md).
 
 ## Security boundaries
 
-Tenuo controls which tool calls the agent may make. It does not sandbox execution:
-an allowed `Bash` or `WebFetch` can still have effects beyond what the argument
-check sees. See [The Map is not the Territory](https://niyikiza.com/posts/map-territory/).
+Tenuo controls which tool calls the agent may make, not every execution side effect.
+[The Map is not the Territory](https://niyikiza.com/posts/map-territory/).
 
-Claude Code only blocks PreToolUse on exit code 2 or an explicit deny. Exit code
-1 is non-blocking, so `_hook` converts internal errors into deny decisions.
-`doctor` can run a live check when `claude` is installed (`--no-live` to skip).
+Claude Code only blocks PreToolUse on exit code 2 or explicit deny; `_hook` converts
+errors into deny decisions. `doctor --no-live` skips the live Claude harness check.
 
-Try the fail-closed guard:
+**Fail-closed** (run live for prospects):
 
 ```bash
 mv tenuo.yaml tenuo.yaml.bak
@@ -237,14 +261,8 @@ mv tenuo.yaml tenuo.yaml.bak
 mv tenuo.yaml.bak tenuo.yaml
 ```
 
-Practical limits:
-
-- Bash allowlist checks the command shape, not every path a verb might touch.
-- WebFetch checks the URL string, not DNS at connect time.
-- The holder key ships with the CLI because Claude cannot sign PoP itself.
-- New Claude Code tools default-deny until listed in `harness_tools.yaml`.
-- Audit mode (`mode: audit`) logs real allow/deny but the hook emits no decision,
-  so observe-only never weakens Claude's stock permission prompts.
+Limits: Bash allowlist checks command shape; WebFetch checks URL strings; new Claude
+tools default-deny until listed in `harness_tools.yaml`.
 
 ## Files
 
@@ -252,15 +270,11 @@ Practical limits:
 |------|---------|
 | `tenuo.yaml` | Policy |
 | `harness_tools.yaml` | Bundled harness tool allowlist |
-| `tenuo.yaml.cloud.example` | Cloud overlay (approver, optional WebFetch approval) |
-| `tenuo_claude_code_architecture.svg` | Diagram |
+| `docs/SECURITY-TEAM.md` | One-page reviewer brief |
+| `docs/DETAILS.md` | Deep dive (SSRF examples, audit invariants, subagents) |
+| `docs/images/` | Cloud audit stream + approval receipt screenshots |
 | `tenuo_claude.py` | CLI, hook, MCP proxy |
-| `tenuo_admin.py` | Admin setup |
-| `tenuo_demo.py` | Scripted tour |
-| `ops_server.py` | Demo MCP server |
-| `.claude/agents/researcher.md` | Read-only subagent |
-| `sandbox/`, `prod-credentials.env` | In-scope samples; fake decoy outside sandbox |
-| `docs/DETAILS.md` | Deep dive for security reviewers |
+| `tenuo_demo.py` | Scripted tour + receipt trail |
 | `CONTRIBUTING.md` | Maintainer notes |
 
 Maintainer setup: [CONTRIBUTING.md](CONTRIBUTING.md).

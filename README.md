@@ -161,8 +161,25 @@ Admin vs runtime separation:
 | `tenuo_admin.py setup` | admin (`~/.tenuo/admin.env`) | Register holder, create trigger from `tenuo.yaml` |
 | `tenuo_claude.py up` | authorizer (`.state/cloud.env`) | Fire trigger, run authorizer |
 
-Runtime refuses to start if an admin key is in the environment. Setup:
-`cloud.env.example`, `tenuo.yaml.cloud.example`.
+Runtime refuses to start if an admin key is in the environment.
+
+**Cloud credentials** — two keys, two files:
+
+| Key | Where you get it | File |
+|-----|------------------|------|
+| **Authorizer** | Quick Connect or dashboard API key (authorizer scope) | `.state/cloud.env` |
+| **Admin** | **Not** in Quick Connect — create in dashboard (Admin scope) or use the key from tenant onboarding | `~/.tenuo/admin.env` |
+
+```bash
+cp cloud.env.example .state/cloud.env      # authorizer key + API URL
+cp admin.env.example ~/.tenuo/admin.env    # admin key (setup only)
+# merge tenuo.yaml.cloud.example into tenuo.yaml, then:
+python3 tenuo_admin.py setup               # once (needs both files)
+python3 tenuo_claude.py init && python3 tenuo_claude.py up
+```
+
+See `tenuo.yaml.cloud.example` for the Cloud policy overlay. Full presentation
+runbook: [docs/PRESENTATION.md](docs/PRESENTATION.md).
 
 ### Cloud audit stream
 

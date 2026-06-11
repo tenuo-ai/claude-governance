@@ -11,7 +11,39 @@ and reviewer depth, see [DETAILS.md](DETAILS.md). For install, see [README.md](.
 ### Environment
 
 Requires [uv](https://docs.astral.sh/uv/), Docker, Claude Code, and a Tenuo Cloud
-tenant with admin + authorizer keys.
+tenant with **two API keys** (different scopes — see below).
+
+### Cloud credentials (before `setup`)
+
+You need a tenant on [cloud.tenuo.ai](https://cloud.tenuo.ai) (staging or production).
+If you do not have one yet, request access via [tenuo.ai/early-access](https://tenuo.ai/early-access.html)
+or use the tenant your platform team already provisioned.
+
+Create **two keys** in the dashboard (**Settings → API Keys**). They land in
+**different files** so runtime never sees the admin key:
+
+| Key | Scope | File | Used by |
+|-----|-------|------|---------|
+| **Authorizer** | Authorizer / agent | `.state/cloud.env` | `tenuo_claude.py up`, hooks, demo |
+| **Admin** | Admin | `~/.tenuo/admin.env` | `tenuo_admin.py setup` **once** |
+
+**Authorizer key (usually already have this)** — Quick Connect and most
+onboarding flows issue an **authorizer-scoped** key only. Copy
+`cloud.env.example` → `.state/cloud.env` and paste that key plus the
+control-plane URL (`https://api.tenuo.ai` or your staging URL).
+
+**Admin key (not included in Quick Connect — create or request it)** — the
+connect token does **not** carry admin scope. Either:
+
+1. **Dashboard:** Settings → API Keys → Create key → **Admin** scope, then
+   `cp admin.env.example ~/.tenuo/admin.env` and paste it, or
+2. **Onboarding:** use the separate admin key your Tenuo contact sent when the
+   tenant was provisioned (common for early-access / staging).
+
+This is a **platform / prep step**: admin registers the holder agent and
+creates the Cloud trigger from `tenuo.yaml`. Run `tenuo-admin setup` once
+before the demo (or after policy changes), not on every `up`. Day-to-day
+runtime uses `.state/cloud.env` only.
 
 ```bash
 git clone https://github.com/tenuo-ai/claude-governance.git   # or use your local copy
@@ -20,19 +52,19 @@ cd claude-governance
 uv venv && uv sync
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 
-# Admin key (once): ~/.tenuo/admin.env — used only by tenuo-admin
-# Authorizer key: copy cloud.env.example → .state/cloud.env
-cp cloud.env.example .state/cloud.env   # fill TENUO_CONTROL_PLANE_URL + TENUO_API_KEY
+mkdir -p .state ~/.tenuo
+cp cloud.env.example .state/cloud.env      # authorizer key + API URL
+cp admin.env.example ~/.tenuo/admin.env    # admin key (setup only)
 
 # Policy: merge cloud + WebFetch approval from tenuo.yaml.cloud.example into tenuo.yaml
 # (cloud.approver_identity, enforce.WebFetch.approval — subagents: can stay on)
 
-python3 tenuo_admin.py setup
-python3 tenuo_claude.py init      # hooks pin this venv's python — re-run if you change venvs
-python3 tenuo_claude.py up
+python3 tenuo_admin.py setup               # needs admin.env + cloud.env
+python3 tenuo_claude.py init               # hooks pin this venv's python — re-run if you change venvs
+python3 tenuo_claude.py up                 # runtime uses cloud.env only (no admin key)
 python3 tenuo_claude.py doctor --no-live
 python3 tenuo_demo.py
-python3 tenuo_demo.py --live-approval   # optional dry-run; approver must respond
+python3 tenuo_demo.py --live-approval      # optional dry-run; approver must respond
 ```
 
 Confirm Docker is running. Claude auth: `claude -p "hi"` once.
@@ -206,7 +238,10 @@ mv tenuo.yaml.bak tenuo.yaml
 
 ## Day-of checklist
 
-- [ ] `uv sync`; `source .venv/bin/activate`; `python3 tenuo_claude.py status` healthy (Cloud registered)
+- [ ] `uv sync`; `source .venv/bin/activate`
+- [ ] Admin key in `~/.tenuo/admin.env`; authorizer key in `.state/cloud.env`
+- [ ] `tenuo-admin setup` completed (once; re-run only after policy changes)
+- [ ] `python3 tenuo_claude.py status` healthy (Cloud registered)
 - [ ] `python3 tenuo_demo.py` clean run
 - [ ] Claude auth works (if live prompts)
 - [ ] Terminal font readable on screen share

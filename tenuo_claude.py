@@ -299,6 +299,23 @@ def refresh_subwarrants(cfg: dict) -> None:
         subwarrant_path(role).write_text(encode_warrant_stack([parent, child]))
 
 
+def _parse_env_value(raw: str) -> str:
+    """Parse one KEY=VALUE tail from a shell-style env file."""
+    raw = raw.strip()
+    if not raw:
+        return ""
+    if raw[0] in '"\'':
+        q = raw[0]
+        end = raw.find(q, 1)
+        if end != -1:
+            return raw[1:end]
+        return raw.strip(q)
+    # Unquoted: strip trailing inline comment.
+    if "#" in raw:
+        raw = raw[: raw.index("#")].strip()
+    return raw.strip().strip('"').strip("'")
+
+
 def read_env_file(path: Path) -> dict:
     env = {}
     if path.exists():
@@ -308,8 +325,10 @@ def read_env_file(path: Path) -> dict:
                 continue
             if line.startswith("export "):
                 line = line[len("export "):]
+            if "=" not in line:
+                continue
             k, _, v = line.partition("=")
-            env[k.strip()] = v.strip().strip('"').strip("'")
+            env[k.strip()] = _parse_env_value(v)
     return env
 
 

@@ -3,30 +3,52 @@
 [Tenuo](https://tenuo.ai) governance for [Claude Code](https://code.claude.com/docs):
 every agent tool call is checked against a signed warrant (hook → authorizer),
 with a receipt on each decision, including under `--dangerously-skip-permissions`.
-Policy is `tenuo.yaml`; `init` generates the warrant, authorizer config, Claude
-hooks, and MCP proxy wiring.
+Policy is `tenuo.yaml` in your project directory; `tenuo-claude-code init` generates
+the warrant, authorizer config, Claude hooks, and MCP proxy wiring.
+
+## Install
+
+**PyPI** (your project anywhere on disk):
+
+```bash
+pip install tenuo-claude-code
+```
+
+PyPI: [pypi.org/project/tenuo-claude-code](https://pypi.org/project/tenuo-claude-code/)
+
+```bash
+cd your-project          # must contain tenuo.yaml
+tenuo-claude-code init
+tenuo-claude-code up
+```
+
+**Demo repo** (git clone — includes sample policy, sandbox, MCP demo server):
+
+```bash
+git clone https://github.com/tenuo-ai/claude-governance.git
+cd claude-governance
+uv venv && uv sync && chmod +x bin/tenuo-claude-code
+uv run tenuo-claude-code bootstrap --local
+```
+
+`tenuo-claude` and `tenuo-admin` remain as CLI aliases for backward compatibility.
 
 ## Quick start (local, ~1 minute)
 
 Requires Python ≥ 3.10, Docker, and [Claude Code](https://code.claude.com/docs).
 
-```bash
-git clone https://github.com/tenuo-ai/claude-governance.git
-cd claude-governance
-uv venv && uv sync && source .venv/bin/activate
-uv run tenuo-claude bootstrap --local
-```
-
-That runs preflight → init → up → doctor. Then open Claude Code in this directory.
+After install (see above), bootstrap runs preflight → init → up → doctor. Open Claude
+Code in the directory that contains `tenuo.yaml`.
 
 Other entry points:
 
 | Command | When |
 |---------|------|
-| `uv run tenuo-claude check` | Diagnose deps, credentials, mode — before or after setup |
-| `uv run tenuo-claude onboard` | Interactive wizard (local or Cloud) |
-| `uv run tenuo-claude onboard --cloud` | Cloud wizard (Quick Connect + optional admin setup) |
-| `uv run tenuo-claude init --cloud` | Write `tenuo.cloud.yaml` (Cloud URL only) |
+| `tenuo-claude-code check` | Diagnose deps, credentials, wiring drift |
+| `tenuo-claude-code onboard` | Interactive wizard (local or Cloud) |
+| `tenuo-claude-code onboard --cloud` | Cloud wizard (Quick Connect + optional admin setup) |
+| `tenuo-claude-code init --cloud` | Write `tenuo.cloud.yaml` (Cloud URL only) |
+| `tenuo-claude-code refresh` | Re-apply `tenuo.yaml` after policy edits |
 
 Cloud credentials and platform setup: see [Cloud mode](#cloud-mode) below.
 **Advanced demo** (optional WebFetch human approval): [docs/PRESENTATION.md](docs/PRESENTATION.md) —
@@ -66,8 +88,9 @@ unset TENUO_ADMIN_KEY TENUO_CONNECT_TOKEN TENUO_API_KEY TENUO_CONTROL_PLANE_URL
 **3. Initialize and run:**
 
 ```bash
-python3 tenuo_claude.py init    # mint local warrant, wire hooks + MCP proxy
-python3 tenuo_claude.py up      # should print: Local mode (no Cloud).
+python3 tenuo_claude.py init     # mint local warrant, wire hooks + MCP proxy
+python3 tenuo_claude.py refresh  # after editing tenuo.yaml (policy → warrant + gateway)
+python3 tenuo_claude.py up       # should print: Local mode (no Cloud).
 python3 tenuo_claude.py doctor --no-live
 python3 tenuo_demo.py
 ```
@@ -153,9 +176,9 @@ warrants bound to it. Agent + Authorizer Quick Connect would claim a different k
 and break PoP verification.
 
 **Important:** never put the admin key in `.state/cloud.env` or your shell when running
-`tenuo-claude` / `tenuo_demo` — runtime refuses to start if an admin key is reachable.
+`tenuo-claude-code` / `tenuo_demo` — runtime refuses to start if an admin key is reachable.
 
-**2. Cloud policy** — `tenuo-claude init --cloud` writes `tenuo.cloud.yaml` (control-plane
+**2. Cloud policy** — `tenuo-claude-code init --cloud` writes `tenuo.cloud.yaml` (control-plane
 URL only). No yaml merge required.
 
 **3. One-time Cloud registration** (platform / prep — not every session):
@@ -173,7 +196,8 @@ policy. Writes `.state/cloud_state.json`. Re-run after **policy changes** (`tenu
 
 ```bash
 unset TENUO_ADMIN_KEY
-python3 tenuo_claude.py init    # wire hooks; re-run after venv or policy changes
+python3 tenuo_claude.py init    # wire hooks; re-run after venv changes
+python3 tenuo_claude.py refresh # after tenuo.yaml policy edits (warrant + gateway)
 python3 tenuo_claude.py up      # fires trigger → root-signed session warrant
 python3 tenuo_claude.py doctor --no-live
 python3 tenuo_demo.py
@@ -432,6 +456,7 @@ mcp:
 | Command | Does |
 |---------|------|
 | `init` | Mint warrant, wire hooks and `.mcp.json` |
+| `refresh` | Re-apply `tenuo.yaml` (warrant, gateway, hooks); restarts authorizer if up |
 | `up` / `down` | Start / stop authorizer |
 | `status` | Warrant, posture, Cloud summary |
 | `doctor [--no-live]` | Self-test allow/deny |
@@ -440,17 +465,72 @@ mcp:
 
 ## Enterprise deployment
 
-Install the hook via **managed settings** (above user/project settings):
+Ship the **whole directory** (or an internal package) to a fixed path, e.g.
+`/opt/tenuo/claude-governance`. Governance wiring uses the committed launcher
+`bin/tenuo-claude-code` — no machine-specific Python paths in `.mcp.json`.
+
+### Install layout
+
+```bash
+/opt/tenuo/claude-governance/
+  bin/tenuo-claude-code          # resolves .venv / TENUO_PYTHON / uv
+  tenuo.yaml                # team policy (git)
+  .mcp.json                 # portable MCP proxy wiring (git)
+  .venv/                    # created on host: uv sync
+  .state/                   # per-machine keys + warrant (never commit)
+```
+
+Optional fleet env (MDM / systemd / launchd):
+
+```bash
+export TENUO_ROOT=/opt/tenuo/claude-governance
+export TENUO_PYTHON=/opt/tenuo/claude-governance/.venv/bin/python
+# Or pin the launcher path when generating wiring on a golden image:
+export TENUO_CLAUDE_BIN=/opt/tenuo/claude-governance/bin/tenuo-claude
+```
+
+On each machine: `uv sync` (or `pip install tenuo-claude-code`), `tenuo-claude-code init`,
+`tenuo-claude-code up`. After policy changes: `tenuo-claude-code refresh`. Preflight:
+`tenuo-claude-code check` (validates launcher, hook/MCP wiring drift, authorizer).
+
+### Managed settings (hooks)
+
+Hooks override project `.claude/settings.json` when deployed via managed settings
+(highest precedence). Point at the same launcher:
 
 ```jsonc
 // macOS: /Library/Application Support/ClaudeCode/managed-settings.json
 {
   "hooks": {
-    "PreToolUse":  [{"matcher": "*", "hooks": [{"type": "command", "command": "python3 /opt/tenuo/tenuo_claude.py _hook"}]}],
-    "PostToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "python3 /opt/tenuo/tenuo_claude.py _post"}]}]
+    "PreToolUse":  [{"matcher": "*", "hooks": [{"type": "command", "command": "/opt/tenuo/claude-governance/bin/tenuo-claude-code _hook"}]}],
+    "PostToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "/opt/tenuo/claude-governance/bin/tenuo-claude-code _post"}]}]
   }
 }
 ```
+
+### MCP (structural enforcement)
+
+Project `.mcp.json` is checked into git and uses a **relative** launcher — Claude
+starts MCP from the project root:
+
+```json
+{
+  "mcpServers": {
+    "tenuo-files": {
+      "command": "tenuo-claude-code",
+      "args": ["_mcp-proxy"]
+    }
+  }
+}
+```
+
+For fleets that block project MCP config, mirror the same server in managed MCP
+policy (same command/args, or absolute path to `bin/tenuo-claude-code`). **Do not** point
+`.mcp.json` at the downstream server — that bypasses the proxy if the hook fails.
+
+**Scope precedence:** local / managed MCP entries with the same server name override
+project `.mcp.json`. Standardize on the `tenuo-files` name or enforce via
+`allowedMcpServers` in managed settings.
 
 Deploy with MDM alongside the CLI and `tenuo.yaml`. Governance covers agent tool
 calls, not interactive `!` shell — restrict that at the workstation if needed.
@@ -496,6 +576,9 @@ tools, spawns fail closed unless the new name is only audit-listed.
 | File | Purpose |
 |------|---------|
 | `tenuo.yaml` | Policy |
+| `.mcp.json` | MCP proxy wiring (`tenuo-claude-code` or `./bin/tenuo-claude-code`) |
+| `bin/tenuo-claude-code` | Git-clone launcher for hooks, MCP, and CLI |
+| `src/tenuo_claude_code/` | PyPI package source |
 | `tenuo.yaml.cloud.example` | Tool Cloud overlay template (`cloud.url` only) |
 | `tenuo.yaml.advanced.example` | Advanced overlay (WebFetch approval + approver) — optional presentations |
 | `cloud.env.example` | Runtime key template → `.state/cloud.env` |

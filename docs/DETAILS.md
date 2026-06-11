@@ -20,6 +20,26 @@ Rollout: watch `WOULD-DENY` rows in `audit`, tune policy, then set `mode: enforc
 The hook reads `mode` live (next tool call); the MCP proxy picks it up on the
 next Claude session. `status` shows the active posture.
 
+## Policy refresh (`tenuo-claude refresh`)
+
+After editing warrant-backed policy in `tenuo.yaml` (`enforce`, `default`, `audit_*`,
+`subagents`, `mcp`, approval overlay), run **`tenuo-claude refresh`** — it re-mints
+the session warrant (or re-fires the Cloud trigger), regenerates `.state/gateway.yaml`,
+rewires hooks, and restarts the authorizer if it is already running.
+
+**Cloud trigger:** capabilities in the session warrant still come from the trigger
+config on the control plane. Re-run **`tenuo-admin setup`** when those lists change,
+then `refresh`.
+
+**Live without refresh:** `mode: audit` / `mode: enforce` only (hook blocking posture).
+
+## Production wiring (`bin/tenuo-claude-code`, `.mcp.json`)
+
+Hooks and the MCP proxy invoke `tenuo-claude-code` on PATH (PyPI install) or
+`./bin/tenuo-claude-code` (git-clone workflow). Project files (`tenuo.yaml`, `.state/`)
+live in **your project directory** — discovered by walking up from cwd or via
+``TENUO_PROJECT_DIR``.
+
 ## Why hook and MCP proxy
 
 Both check the same warrant against the same authorizer. The interception point

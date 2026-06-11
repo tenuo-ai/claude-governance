@@ -11,7 +11,7 @@ name: claude-code-demo
 # signed receipt (so you see what WOULD be denied), but nothing is blocked. The
 # hook reads this live (effective on the next tool call, no re-mint); the MCP
 # proxy picks it up on the next Claude session.
-mode: enforce
+mode: audit
 
 # Files Claude may touch. {sandbox} below expands to this absolute path.
 sandbox: ./sandbox

@@ -1,9 +1,11 @@
-# Bundled harness-inert tools — source of truth for releases:
-#   src/tenuo_claude_code/data/harness_tools.yaml
+# Bundled harness-inert tools for Claude Code.
 #
 # Merged into the effective audit-allow list on every `load_config()` unless
 # tenuo.yaml sets `audit_bundled: false`. Add site-specific tools under
 # `audit_extra:` in tenuo.yaml — do not fork this list into every deployment.
+#
+# Update this file when Claude Code adds new session/planning tools so
+# enforce-mode sessions do not default-deny harmless harness calls after an upgrade.
 
 tools:
   - WebSearch

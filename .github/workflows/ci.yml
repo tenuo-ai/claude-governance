@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build & smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@38b586a14a5793e558f26abe7922f9d2e6bc3ae1 # v5.4.2
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --frozen
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Verify package metadata
+        run: |
+          uv run python -c "from tenuo_claude_code import __version__; assert __version__ == '0.1.0'"
+
+      - name: Smoke test init in temp project
+        run: |
+          tmp=$(mktemp -d)
+          cp tenuo.yaml "$tmp/"
+          mkdir -p "$tmp/sandbox"
+          touch "$tmp/sandbox/notes.txt"
+          TENUO_PROJECT_DIR="$tmp" uv run tenuo-claude-code init
+          test -f "$tmp/.state/warrant.b64"
+          test -f "$tmp/.state/gateway.yaml"
+          test -f "$tmp/.claude/settings.json"
+
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v4.6.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error

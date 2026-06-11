@@ -1,18 +1,54 @@
 [project]
-name = "tenuo-claude-governance"
+name = "tenuo-claude-code"
 version = "0.1.0"
-description = "Tenuo governance demo for Claude Code (scripts, not a library)"
+description = "Tenuo governance for Claude Code — warrants, hooks, MCP proxy, and Cloud lifecycle"
 readme = "README.md"
 requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Tenuo Contributors" }]
+keywords = ["claude-code", "governance", "security", "mcp", "agents", "warrants"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
     "tenuo==0.1.0b24",
     "mcp>=1.0",
     "PyYAML>=6.0",
 ]
 
-[tool.uv]
-# Demo repo: install deps into .venv with `uv sync` (no package build).
+[project.urls]
+Homepage = "https://tenuo.ai"
+Repository = "https://github.com/tenuo-ai/claude-governance"
+Documentation = "https://github.com/tenuo-ai/claude-governance#readme"
+Issues = "https://github.com/tenuo-ai/claude-governance/issues"
 
-[tool.uv.scripts]
-tenuo-claude = "python tenuo_claude.py"
-tenuo-admin = "python tenuo_admin.py"
+[project.scripts]
+tenuo-claude-code = "tenuo_claude_code.cli:main"
+tenuo-claude-admin = "tenuo_claude_code.admin:main"
+# Backward-compatible aliases (demo repo / early adopters)
+tenuo-claude = "tenuo_claude_code.cli:main"
+tenuo-admin = "tenuo_claude_code.admin:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tenuo_claude_code"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/tenuo_claude_code", "README.md", "LICENSE"]
+
+[tool.uv]
+package = true

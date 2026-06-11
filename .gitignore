@@ -1,16 +1,19 @@
 # Generated state (keys, warrant, gateway, receipts, cloud creds) — NEVER commit
 .state/
 
-# Generated Claude / MCP wiring (machine-specific paths; recreated by `init`)
+# Generated Claude wiring (hook timeout varies with approval overlay)
 .claude/settings.json
 .claude/settings.local.json
-.mcp.json
+
+# .mcp.json is committed (portable ./bin/tenuo-claude launcher)
 
 # Python
 __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
+dist/
+build/
 
 # Local policy overrides (optional per-developer)
 tenuo.yaml.local

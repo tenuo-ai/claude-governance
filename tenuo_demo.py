@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import argparse
 
-import tenuo_claude as tc
+import tenuo_claude_code.cli as tc
+from tenuo_claude_code.paths import bind_project_paths
 
 
 def _authz(cfg, tool, tin, role=None, *, live=False, skip_approval=False):
@@ -81,8 +82,8 @@ def run_advanced_tour(cfg, live: bool) -> None:
     if not tc.webfetch_approval(cfg):
         print("\nAdvanced (human approval) — skipped.")
         print("  Apply the advanced overlay first:")
-        print("    tenuo-claude init --advanced --approver \"Your Approver Display Name\"")
-        print("    tenuo-admin setup")
+        print("    tenuo-claude-code init --advanced --approver \"Your Approver Display Name\"")
+        print("    tenuo-claude-admin setup")
         print("  See docs/PRESENTATION.md and tenuo.yaml.advanced.example.")
         return
 
@@ -107,8 +108,9 @@ def run_advanced_tour(cfg, live: bool) -> None:
 
 
 def run_demo(*, advanced: bool, live_approval: bool) -> None:
+    bind_project_paths(tc)
     if not tc._status_json():
-        raise SystemExit("Authorizer not running. Run `tenuo-claude up` first.")
+        raise SystemExit("Authorizer not running. Run `tenuo-claude-code up` first.")
     cfg = tc.load_config()
     run_default_tour(cfg)
     if advanced:
@@ -117,7 +119,7 @@ def run_demo(*, advanced: bool, live_approval: bool) -> None:
         print("\n(Human approval overlay is configured but not shown in the default tour.)")
         print("  Run: python3 tenuo_demo.py --advanced")
     print("\nEvery line above is a signed receipt on the authorizer. "
-          "Run `tenuo-claude audit` to see the trail, `tenuo-claude revoke` to kill the warrant.")
+          "Run `tenuo-claude-code audit` to see the trail, `tenuo-claude-code revoke` to kill the warrant.")
 
 
 def main() -> None:

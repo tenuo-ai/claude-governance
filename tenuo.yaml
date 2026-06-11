@@ -65,29 +65,14 @@ enforce:
   # URLs are simply denied. `cloud.approver_identity` selects the approver.
   WebFetch:
     domains: ["api.github.com", "*.githubusercontent.com", "*.tenuo.ai"]
-    approval:
-      threshold: 1                # 1-of-N human approvals required to proceed
+    # Human approval for off-allowlist URLs is Cloud-only — see
+    # tenuo.yaml.cloud.example (mutually exclusive with subagents: today).
 
-# AUDIT-ALLOW: read-only / inert tools. Not blocked, but every call still
-# produces a signed receipt. Add a tool here ONLY if it cannot mutate project
-# state AND cannot read outside the sandbox (Glob/Grep take a path, so they
-# live in `enforce` above). Harness-internal tools (task tracking, plan mode,
-# user questions) are inert: their effects live in Claude's session, not on
-# disk, and anything they trigger is itself a hooked tool call.
-# NOTE (Cloud mode): these become granted capabilities in the trigger config —
-# re-run `tenuo-admin setup` after changing this list.
-audit:
-  - WebSearch
-  - TodoWrite        # legacy name; newer Claude Code uses the Task* tools below
-  - TaskCreate
-  - TaskUpdate
-  - TaskList
-  - TaskGet
-  - AskUserQuestion
-  - ToolSearch
-  - Skill
-  - EnterPlanMode
-  - ExitPlanMode
+# Harness-inert tools (Task*, plan mode, AskUserQuestion, …) ship in
+# harness_tools.yaml and merge at load time. Add site-specific audit-allows:
+# audit_extra:
+#   - MyCustomHarnessTool
+# audit_bundled: false   # disable bundled list (not recommended)
 
 # DEFAULT for everything else — any unknown/future tool: deny, with a signed
 # receipt. Only the enforced + audit lists above are permitted. Set to "audit"
@@ -107,11 +92,10 @@ default: deny
 #      the right child warrant, and the parent->child delegation shows in audit.
 # A role's `tools` must be a subset of what `enforce` grants above. Omit this
 # block entirely to fall back to flat coverage (one session warrant for all).
-# Temporarily disabled: session approval gate can't attenuate into a subagent that
-# drops the only gated tool (core gate-monotonicity). Re-enable after core fix.
-# subagents:
-#   researcher:                 # read-only research drone: no Bash, no egress
-#     tools: [Read, Grep, Glob]
+# Can't combine with WebFetch approval gate yet — see tenuo.yaml.cloud.example.
+subagents:
+  researcher:                 # read-only research drone: no Bash, no egress
+    tools: [Read, Grep, Glob]
 
 # MCP proxy: wrap a downstream MCP server and enforce these of its tools.
 mcp:

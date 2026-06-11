@@ -25,8 +25,10 @@ import argparse
 import base64
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -41,6 +43,7 @@ from pathlib import Path
 DEMO_DIR = Path(__file__).resolve().parent
 STATE = DEMO_DIR / ".state"
 CONFIG_FILE = DEMO_DIR / "tenuo.yaml"
+HARNESS_TOOLS_FILE = DEMO_DIR / "harness_tools.yaml"
 # Claude Code discovers custom subagents from markdown files here (project-level)
 # and ~/.claude/agents (user-level); the spawnable `subagent_type` is each file's
 # frontmatter `name:`. A declared subagents role must match one of these (or a
@@ -145,6 +148,15 @@ def is_audit_mode(cfg: dict) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def load_harness_tools() -> list[str]:
+    import yaml
+
+    if not HARNESS_TOOLS_FILE.exists():
+        return []
+    data = yaml.safe_load(HARNESS_TOOLS_FILE.read_text()) or {}
+    return [str(t) for t in (data.get("tools") or [])]
+
+
 def load_config() -> dict:
     import yaml
 
@@ -155,6 +167,19 @@ def load_config() -> dict:
     cfg["_sandbox_abs"] = str((DEMO_DIR / cfg["sandbox"]).resolve())
     cfg.setdefault("enforce", {})
     cfg.setdefault("mcp", {})
+    if cfg.get("audit_bundled", True):
+        bundled = load_harness_tools()
+        legacy = cfg.get("audit") if isinstance(cfg.get("audit"), list) else []
+        extra = [str(t) for t in (cfg.get("audit_extra") or [])]
+        seen: set[str] = set()
+        audit: list[str] = []
+        for t in bundled + legacy + extra:
+            if t not in seen:
+                seen.add(t)
+                audit.append(t)
+        cfg["audit"] = audit
+    else:
+        cfg.setdefault("audit", [])
     return cfg
 
 
@@ -1412,6 +1437,74 @@ def cmd_revoke(_args) -> None:
     cmd_up(_args)
 
 
+def check_claude_hook_exit_contract() -> bool:
+    """Live-check Claude Code PreToolUse semantics: exit 1 proceeds, exit 2 blocks."""
+    claude = shutil.which("claude")
+    if not claude:
+        print("  .. hook-exit  claude not in PATH — skipped (install Claude Code to verify)")
+        return True
+    try:
+        ver = subprocess.run([claude, "--version"], capture_output=True, text=True, timeout=15)
+        version = (ver.stdout or ver.stderr or "").strip().splitlines()[0]
+    except Exception as exc:
+        print(f"  .. hook-exit  could not read claude --version ({exc}) — skipped")
+        return True
+    print(f"  .. hook-exit  live harness ({version})")
+
+    with tempfile.TemporaryDirectory(prefix="tenuo-hook-exit-") as tmp:
+        root = Path(tmp)
+        canary = root / "CANARY.txt"
+        canary.write_text("TENUO_HOOK_CANARY")
+        claude_dir = root / ".claude"
+        claude_dir.mkdir()
+
+        def run_with_hook(exit_code: int) -> subprocess.CompletedProcess:
+            hook = root / f"hook_exit{exit_code}.py"
+            hook.write_text(f"import sys\nsys.exit({exit_code})\n")
+            settings = {
+                "hooks": {
+                    "PreToolUse": [{
+                        "matcher": "Read",
+                        "hooks": [{"type": "command",
+                                   "command": f"{sys.executable} {hook}"}],
+                    }]
+                }
+            }
+            (claude_dir / "settings.json").write_text(json.dumps(settings))
+            return subprocess.run(
+                [claude, "-p",
+                 "Read CANARY.txt. Reply with only the file contents, nothing else.",
+                 "--dangerously-skip-permissions"],
+                cwd=root, capture_output=True, text=True, timeout=90)
+
+        try:
+            r1 = run_with_hook(1)
+            r2 = run_with_hook(2)
+        except subprocess.TimeoutExpired:
+            print("  .. hook-exit  claude timed out — skipped (API/network?)")
+            return True
+        except Exception as exc:
+            print(f"  .. hook-exit  claude harness error ({exc}) — skipped")
+            return True
+
+        out1 = (r1.stdout or "") + (r1.stderr or "")
+        out2 = (r2.stdout or "") + (r2.stderr or "")
+        exit1_leaks = "TENUO_HOOK_CANARY" in out1
+        exit2_blocks = "TENUO_HOOK_CANARY" not in out2
+        ok = True
+        if exit1_leaks:
+            print("  ok  hook-exit  exit 1 is non-blocking (canary reached)")
+        else:
+            print("  XX hook-exit  exit 1 blocked unexpectedly — contract may have changed")
+            ok = False
+        if exit2_blocks:
+            print("  ok  hook-exit  exit 2 blocks the tool call")
+        else:
+            print("  XX hook-exit  exit 2 did NOT block (canary leaked)")
+            ok = False
+        return ok
+
+
 def cmd_doctor(_args) -> None:
     if not _status_json():
         raise SystemExit("Authorizer not running. Run `tenuo-claude up` first.")
@@ -1507,6 +1600,7 @@ def cmd_doctor(_args) -> None:
                   f"{'human approval (Telegram)' if gated else 'NOT gated (' + reason + ')'}")
         else:
             print(f"  .. gate  off-allowlist denied locally (approval is Cloud-only): {reason}")
+    ok = ok and check_claude_hook_exit_contract()
     print("\nDOCTOR OK" if ok else "\nDOCTOR FAILED")
     raise SystemExit(0 if ok else 1)
 

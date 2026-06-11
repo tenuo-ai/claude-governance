@@ -93,6 +93,10 @@ def run_demo(live_approval: bool = False) -> None:
         print("\nThe researcher runs under the session warrant attenuated to read/search — so "
               "Bash and WebFetch, which the SESSION itself can do, are denied to the subagent. "
               "Attenuation is one-way: a poisoned subagent prompt can't widen its own scope.")
+    else:
+        print("\nSubagents — skipped (`subagents:` not declared; flat session warrant).")
+        print("  Enable `subagents:` in tenuo.yaml to demo per-role attenuation.")
+        print("  (Mutually exclusive with WebFetch approval gate — see README.)")
 
     if live_approval and tc.webfetch_approval(cfg):
         run_live_approval(cfg)

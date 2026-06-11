@@ -1,14 +1,24 @@
 # Optional Cloud overlay — merge into tenuo.yaml (or paste under `name:`).
 #
 # 1. Copy cloud.env.example -> .state/cloud.env and fill in your keys.
-# 2. Add the block below to tenuo.yaml (keep `enforce.WebFetch.approval` if you
-#    want the human-approval gate).
+# 2. Paste the blocks below into tenuo.yaml.
 # 3. Run:  python3 tenuo_admin.py setup && python3 tenuo_claude.py up
 #
 # The admin key lives in ~/.tenuo/admin.env (never in this repo).
+#
+# NOTE: WebFetch human approval and subagents: are mutually exclusive today
+# (core gate-monotonicity). Enable approval OR subagents, not both.
 
 cloud:
   url: https://api.tenuo.ai
   # Display name of an existing Cloud identity binding (KMS key + notification
   # routing). `tenuo-admin setup` resolves this and wires the approval policy.
   approver_identity: "Your Approver Display Name"
+
+# Optional: add under enforce.WebFetch when you want Telegram approval for
+# off-allowlist URLs (Cloud-only). Remove or comment out `subagents:` first.
+#
+#   WebFetch:
+#     domains: ["api.github.com", "*.githubusercontent.com", "*.tenuo.ai"]
+#     approval:
+#       threshold: 1

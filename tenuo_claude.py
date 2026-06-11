@@ -68,7 +68,7 @@ POP_HEADER = "X-Tenuo-PoP"
 # The authorizer ships as a published container image (Docker Hub), pinned in
 # lockstep with the `tenuo` PyPI package. Override with TENUO_AUTHORIZER_IMAGE or
 # an `authorizer.image` key in tenuo.yaml.
-DEFAULT_AUTHZ_IMAGE = "tenuo/authorizer:0.1.0-beta.23"
+DEFAULT_AUTHZ_IMAGE = "tenuo/authorizer:0.1.0-beta.23-authz.2"
 
 # Claude tool -> (capability, primary arg, Claude input field for that arg)
 TOOL_DEFAULTS = {
@@ -268,16 +268,6 @@ def refresh_subwarrants(cfg: dict) -> None:
     roles = subagent_roles(cfg)
     if not roles:
         return
-    if webfetch_approval(cfg) and trigger_id(cfg):
-        # Core gate-monotonicity: a session warrant carrying an approval gate
-        # can't be attenuated into a child that DROPS the gated tool, so per-role
-        # subwarrants and the Cloud WebFetch approval gate are mutually exclusive
-        # until the core supports it. Fail loudly instead of minting children the
-        # authorizer will reject.
-        raise SystemExit(
-            "subagents + WebFetch approval gate can't be combined yet (core "
-            "gate-monotonicity). Remove `enforce.WebFetch.approval` or the "
-            "`subagents:` block from tenuo.yaml.")
     from tenuo import SigningKey, Warrant
     from tenuo_core import encode_warrant_stack
 

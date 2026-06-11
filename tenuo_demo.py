@@ -93,7 +93,6 @@ def run_demo(live_approval: bool = False) -> None:
     else:
         print("\nSubagents — skipped (`subagents:` not declared; flat session warrant).")
         print("  Enable `subagents:` in tenuo.yaml to demo per-role attenuation.")
-        print("  (Mutually exclusive with WebFetch approval gate — see README.)")
 
     if live_approval and tc.webfetch_approval(cfg):
         run_live_approval(cfg)

@@ -143,8 +143,12 @@ Roles must match a real `subagent_type` (`.claude/agents/<name>.md` frontmatter
 `name:` or a built-in). `doctor` and `status` validate this.
 
 Changing `subagents:` is a policy change: re-run `tenuo-admin setup` (Cloud) or
-`init` (local). **`subagents:` and WebFetch `approval` are mutually exclusive**
-today (gate-monotonicity); default demo ships subagents on.
+`init` (local). Subagents may drop parent approval gates for tools they no longer
+hold (e.g. a read-only `researcher` without `WebFetch`).
+
+Pair with authorizer `0.1.0-beta.23-authz.2` or newer (pinned in `tenuo_claude.py`).
+Until `tenuo` 0.1.0b24 is on PyPI, install the Python SDK from the monorepo
+(`pip install -e path/to/tenuo-python`) so subwarrant minting picks up the same fix.
 
 ## Receipts
 

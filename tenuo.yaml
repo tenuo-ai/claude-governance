@@ -66,7 +66,7 @@ enforce:
   WebFetch:
     domains: ["api.github.com", "*.githubusercontent.com", "*.tenuo.ai"]
     # Human approval for off-allowlist URLs is Cloud-only — see
-    # tenuo.yaml.cloud.example (mutually exclusive with subagents: today).
+    # tenuo.yaml.cloud.example (combinable with subagents when roles omit WebFetch).
 
 # Harness-inert tools (Task*, plan mode, AskUserQuestion, …) ship in
 # harness_tools.yaml and merge at load time. Add site-specific audit-allows:
@@ -92,7 +92,8 @@ default: deny
 #      the right child warrant, and the parent->child delegation shows in audit.
 # A role's `tools` must be a subset of what `enforce` grants above. Omit this
 # block entirely to fall back to flat coverage (one session warrant for all).
-# Can't combine with WebFetch approval gate yet — see tenuo.yaml.cloud.example.
+# WebFetch approval and subagents can be combined when subagent roles omit the
+# gated tool (e.g. researcher with Read/Grep/Glob only). See tenuo.yaml.cloud.example.
 subagents:
   researcher:                 # read-only research drone: no Bash, no egress
     tools: [Read, Grep, Glob]

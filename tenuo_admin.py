@@ -210,11 +210,6 @@ def build_warrant_config(cfg: dict, approval_policy_id: str | None = None) -> di
     # the declared roles. Lets the runtime route the Agent/Task spawn through the
     # authorizer for a root-signed decision (instead of a local-only policy gate).
     roles = tc.subagent_roles(cfg)
-    if roles and gate_webfetch:
-        raise SystemExit(
-            "subagents + WebFetch approval gate can't be combined yet (core "
-            "gate-monotonicity: a child warrant can't drop the gated tool). "
-            "Remove `enforce.WebFetch.approval` or the `subagents:` block.")
     if roles:
         per_action["spawn_agent"] = {
             "subagent_type": {"_type": "one_of", "_value": list(roles.keys())}}

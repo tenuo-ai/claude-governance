@@ -6,8 +6,8 @@
 #
 # The admin key lives in ~/.tenuo/admin.env (never in this repo).
 #
-# NOTE: WebFetch human approval and subagents: are mutually exclusive today
-# (core gate-monotonicity). Enable approval OR subagents, not both.
+# WebFetch approval and subagents can be combined when subagent roles drop the
+# gated tool (e.g. researcher with Read/Grep/Glob only).
 
 cloud:
   url: https://api.tenuo.ai
@@ -17,7 +17,7 @@ cloud:
 
 # Optional: add under enforce.WebFetch for human approval on off-allowlist URLs
 # (Cloud only; notification via the approver identity's configured channel).
-# Remove or comment out `subagents:` first.
+# Remove or comment out `subagents:` only if you want flat session coverage.
 #
 #   WebFetch:
 #     domains: ["api.github.com", "*.githubusercontent.com", "*.tenuo.ai"]

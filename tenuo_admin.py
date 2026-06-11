@@ -251,8 +251,11 @@ def resolve_approver_identity(url: str, admin: str, display_name: str) -> tuple[
                if str(i.get("display_name", "")).strip() == display_name.strip()]
     if not matches:
         raise SystemExit(
-            f"No Cloud identity named '{display_name}' (cloud.approver_identity). "
-            "Create an approver identity binding in the dashboard first.")
+            f"No Cloud identity named '{display_name}' (cloud.approver_identity).\n"
+            "  Create an identity binding in the dashboard first:\n"
+            "    https://docs.tenuo.ai/guides/adding-channels\n"
+            "    https://docs.tenuo.ai/integrations/identity-bindings\n"
+            "  Dashboard → Channels → Identity Bindings — use the exact Display Name.")
     ident = matches[0]
     pub = str(ident.get("public_key") or "")
     if not pub:

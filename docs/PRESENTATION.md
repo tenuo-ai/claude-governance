@@ -99,19 +99,21 @@ uv venv && uv sync
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 
 mkdir -p .state ~/.tenuo
-cp cloud.env.example .state/cloud.env      # authorizer key + API URL
+cp cloud.env.example .state/cloud.env      # Quick Connect token
 cp admin.env.example ~/.tenuo/admin.env    # admin key (setup only)
 
-# Policy: merge cloud + WebFetch approval from tenuo.yaml.cloud.example into tenuo.yaml
-# (cloud.approver_identity, enforce.WebFetch.approval — subagents: can stay on)
+tenuo-claude init --cloud                  # tool Cloud overlay (URL only)
 
 python3 tenuo_admin.py setup               # needs admin.env + cloud.env
-python3 tenuo_claude.py init               # hooks pin this venv's python — re-run if you change venvs
-python3 tenuo_claude.py up                 # runtime uses cloud.env only (no admin key)
+python3 tenuo_claude.py init
+python3 tenuo_claude.py up
 python3 tenuo_claude.py doctor --no-live
-python3 tenuo_demo.py
-python3 tenuo_demo.py --live-approval      # optional dry-run; approver must respond
+python3 tenuo_demo.py                      # default tour — no approval
 ```
+
+For the **advanced** human-approval beat, add the overlay separately (see
+[Advanced — Beat 5](#advanced--beat-5--human-approval-optional-3-min)) — do not enable
+it for a first run unless you need that beat.
 
 Confirm Docker is running. Claude auth: `claude -p "hi"` once.
 
@@ -121,7 +123,8 @@ rows should appear after `tenuo_demo.py`). Skim README screenshots in
 
 ### Pre-stage on screen
 
-- `tenuo.yaml` open in an editor (show `cloud:`, `enforce`, `subagents`, `mcp`)
+- `tenuo.yaml` open in an editor (show `enforce`, `subagents`, `mcp`)
+- `tenuo.cloud.yaml` for Cloud; `tenuo.advanced.yaml` only if running the approval beat
 - Architecture diagram: `tenuo_claude_code_architecture.svg` or README
 - `python3 tenuo_claude.py status` (root-signed warrant, web-approval, subagents)
 - [cloud.tenuo.ai](https://cloud.tenuo.ai) Receipts tab
@@ -145,8 +148,8 @@ Run from the demo directory with the authorizer up and Cloud connected.
 
 ### Beat 1 — Policy is one file (2 min)
 
-Show `tenuo.yaml`: `cloud`, `sandbox`, `enforce`, `WebFetch` (+ `approval` if enabled),
-`subagents`, `mcp`.
+Show `tenuo.yaml`: `sandbox`, `enforce`, `WebFetch` domains, `subagents`, `mcp`.
+(If running the advanced beat later, show `tenuo.advanced.yaml` separately.)
 
 ```bash
 python3 tenuo_claude.py status
@@ -167,7 +170,7 @@ Switch to **cloud.tenuo.ai → Receipts** — same allow/deny/approved rows, sig
 **Say:** Every CLI line is a real authorizer decision. Cloud is the fleet view and audit record.
 
 Call out: poisoned-file read denied, `delete_deployment` denied, shlex blocks chaining,
-SSRF URLs denied, off-allowlist WebFetch **PAUSE** (approval) if wired.
+SSRF URLs denied, off-allowlist WebFetch **denied by allowlist** (default tour).
 
 ### Beat 3 — Guardrails off, governance on (5 min)
 
@@ -205,17 +208,22 @@ claude -p "Use the researcher subagent to run 'ls -la sandbox' and report the re
 **Say:** The session can run `ls`; the researcher child warrant cannot. Attenuation is
 cryptographic — show `agent_type=researcher` in audit / Cloud.
 
-### Beat 5 — Human approval (optional, 3 min)
+### Advanced — Beat 5 — Human approval (optional, 3 min)
 
-Requires `WebFetch.approval` + `cloud.approver_identity` in `tenuo.yaml` and
-`tenuo-admin setup`. Works **with** `subagents:` when roles omit WebFetch (default
-`researcher` is read-only).
+**Not part of the default tour.** Requires `tenuo.advanced.yaml`, a **pre-provisioned
+approver identity** in Cloud, and `tenuo-admin setup`.
+
+**Platform prep** (before the call — [Adding channels](https://docs.tenuo.ai/guides/adding-channels),
+[Identity bindings](https://docs.tenuo.ai/integrations/identity-bindings)):
 
 ```bash
-python3 tenuo_demo.py --live-approval
+tenuo-claude init --advanced --approver "Jane Doe"   # exact Cloud Display Name
+tenuo-admin setup
+python3 tenuo_demo.py --advanced
+python3 tenuo_demo.py --advanced --live-approval   # blocks until approver responds
 ```
 
-Have the approver ready on their configured notification channel. After approve,
+Have the approver online on their configured notification channel. After approve,
 show receipt detail in Cloud (approver, request hash) — see `docs/images/cloud-receipt-approval-detail.png`.
 
 ### Beat 6 — Revocation + fail-closed (4 min)

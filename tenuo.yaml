@@ -16,12 +16,10 @@ mode: enforce
 # Files Claude may touch. {sandbox} below expands to this absolute path.
 sandbox: ./sandbox
 
-# Optional Tenuo Cloud (root-signed warrants, signed audit stream, WebFetch
-# human approval). Not required for local mode. Copy the `cloud:` block from
-# `tenuo.yaml.cloud.example`, set `.state/cloud.env` from `cloud.env.example`,
-# then run `tenuo-admin setup` once before `tenuo-claude up`.
-#cloud:
-#  approver_identity: "Niki Aimable"
+# Optional Tenuo Cloud (root-signed warrants, signed audit stream). Not required
+# for local mode. Tool overlay: `tenuo-claude init --cloud` → tenuo.cloud.yaml.
+# Demo overlay (WebFetch human approval): tenuo.advanced.yaml — optional; see tenuo.yaml.advanced.example
+# and docs/PRESENTATION.md. Then `tenuo-admin setup` once before `tenuo-claude up`.
 
 # ENFORCED tools: explicitly allowed AND argument-checked. These may mutate, but
 # only within scope. Constraint DSL:

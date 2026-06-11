@@ -12,3 +12,7 @@ dependencies = [
 
 [tool.uv]
 # Demo repo: install deps into .venv with `uv sync` (no package build).
+
+[tool.uv.scripts]
+tenuo-claude = "python tenuo_claude.py"
+tenuo-admin = "python tenuo_admin.py"

@@ -8,6 +8,9 @@ manages the Cloud-connected authorizer lifecycle.
     tenuo-claude init     # generate keys, warrant, gateway, Claude hooks, .mcp.json
     tenuo-claude up        # start the authorizer (+ connect Cloud if configured)
     tenuo-claude status    # warrant / authorizer / Cloud / policy summary
+    tenuo-claude check     # preflight: deps, credentials, mode, next steps
+    tenuo-claude onboard   # interactive local or Cloud setup wizard
+    tenuo-claude bootstrap # check + init + up + doctor (--local default)
     tenuo-claude audit      # pretty-print the signed receipt trail
     tenuo-claude revoke     # revoke this session's warrant
     tenuo-claude doctor     # self-test enforcement without Claude (--no-live skips harness)
@@ -43,7 +46,11 @@ from pathlib import Path
 DEMO_DIR = Path(__file__).resolve().parent
 STATE = DEMO_DIR / ".state"
 CONFIG_FILE = DEMO_DIR / "tenuo.yaml"
+CLOUD_PROFILE = DEMO_DIR / "tenuo.cloud.yaml"  # optional overlay; merged at load time
+ADVANCED_PROFILE = DEMO_DIR / "tenuo.advanced.yaml"  # optional: WebFetch human approval
+CLOUD_ENV_EXAMPLE = DEMO_DIR / "cloud.env.example"
 HARNESS_TOOLS_FILE = DEMO_DIR / "harness_tools.yaml"
+ADMIN_ENV = Path.home() / ".tenuo" / "admin.env"
 # Claude Code discovers custom subagents from markdown files here (project-level)
 # and ~/.claude/agents (user-level); the spawnable `subagent_type` is each file's
 # frontmatter `name:`. A declared subagents role must match one of these (or a
@@ -158,12 +165,26 @@ def load_harness_tools() -> list[str]:
     return [str(t) for t in (data.get("tools") or [])]
 
 
+def _deep_merge(base: dict, overlay: dict) -> None:
+    for k, v in overlay.items():
+        if k in base and isinstance(base[k], dict) and isinstance(v, dict):
+            _deep_merge(base[k], v)
+        else:
+            base[k] = v
+
+
 def load_config() -> dict:
     import yaml
 
     if not CONFIG_FILE.exists():
         raise SystemExit(f"Missing {CONFIG_FILE}")
     cfg = yaml.safe_load(CONFIG_FILE.read_text()) or {}
+    if CLOUD_PROFILE.exists():
+        overlay = yaml.safe_load(CLOUD_PROFILE.read_text()) or {}
+        _deep_merge(cfg, overlay)
+    if ADVANCED_PROFILE.exists():
+        overlay = yaml.safe_load(ADVANCED_PROFILE.read_text()) or {}
+        _deep_merge(cfg, overlay)
     cfg.setdefault("sandbox", "./sandbox")
     cfg["_sandbox_abs"] = str((DEMO_DIR / cfg["sandbox"]).resolve())
     cfg.setdefault("enforce", {})
@@ -690,7 +711,7 @@ def resolve_subagent_role(role: str, defs: dict[str, Path] | None = None) -> tup
 
 
 def authorize_call(cfg: dict, tool: str, tin: dict, agent_type, roles: dict,
-                   live: bool = False):
+                   live: bool = False, skip_approval_gate: bool = False):
     """Decide one tool call. Returns (allowed, reason, governed, tenuo_tool).
 
     Three layers, in order:
@@ -731,7 +752,7 @@ def authorize_call(cfg: dict, tool: str, tin: dict, agent_type, roles: dict,
     # WebFetch with an approval gate: off-allowlist URLs come back as
     # `approval-required`, which we resolve via Cloud + the human approver
     # (live) or merely report (doctor / demo / audit mode).
-    if tool == "WebFetch" and webfetch_approval(cfg):
+    if tool == "WebFetch" and webfetch_approval(cfg) and not skip_approval_gate:
         allowed, reason = authorize_with_approval(
             cfg, tool, tenuo_tool, route, sign_args, body, warrant_b64, live=live)
     else:
@@ -1179,6 +1200,339 @@ def cloud_creds(cfg: dict) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Onboarding helpers (check / onboard / bootstrap / cloud profile)
+# ---------------------------------------------------------------------------
+
+
+def cloud_mode_files() -> dict[str, bool]:
+    return {
+        "cloud_env": CLOUD_ENV.exists(),
+        "cloud_state": CLOUD_STATE.exists(),
+        "cloud_profile": CLOUD_PROFILE.exists(),
+    }
+
+
+def intended_mode(cfg: dict | None = None) -> str:
+    """Return ``local`` or ``cloud`` from on-disk artifacts."""
+    files = cloud_mode_files()
+    if files["cloud_env"] or files["cloud_profile"]:
+        return "cloud"
+    if cfg and cfg.get("cloud"):
+        return "cloud"
+    return "local"
+
+
+def probe_runtime_creds(creds: dict) -> tuple[bool, str]:
+    url, key = creds.get("url"), creds.get("api_key")
+    if not url or not key:
+        return False, "missing control-plane URL or runtime key"
+    status, body = cloud_api("GET", url, key, "/v1/revocations/srl/signed")
+    if status == 200:
+        return True, "runtime key accepted by Cloud"
+    if status == 401:
+        return False, "invalid_api_key (use Quick Connect token, not ak_… id)"
+    if status == 403:
+        return False, "forbidden — wrong key role for this endpoint"
+    return False, f"HTTP {status}: {body}"
+
+
+def write_cloud_env(connect_token: str, authorizer_name: str | None = None) -> None:
+    STATE.mkdir(parents=True, exist_ok=True)
+    cfg = load_config() if CONFIG_FILE.exists() else {}
+    name = authorizer_name or cfg.get("name", "claude-code-demo")
+    # Validate before writing.
+    _parse_connect_token(connect_token.strip())
+    CLOUD_ENV.write_text(
+        "# Written by tenuo-claude onboard — edit as needed.\n"
+        f'export TENUO_CONNECT_TOKEN="{connect_token.strip()}"\n'
+        f'export TENUO_AUTHORIZER_NAME="{name}"\n'
+    )
+
+
+def write_admin_env(admin_key: str) -> None:
+    ADMIN_ENV.parent.mkdir(parents=True, exist_ok=True)
+    ADMIN_ENV.write_text(f'export TENUO_ADMIN_KEY="{admin_key.strip()}"\n')
+    try:
+        ADMIN_ENV.chmod(0o600)
+    except OSError:
+        pass
+
+
+def write_cloud_profile(*, url: str) -> None:
+    import yaml
+
+    data: dict = {"cloud": {"url": url.rstrip("/")}}
+    CLOUD_PROFILE.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+
+
+def write_advanced_profile(*, approver: str, threshold: int = 1) -> None:
+    import yaml
+
+    data: dict = {
+        "cloud": {"approver_identity": approver},
+        "enforce": {"WebFetch": {"approval": {"threshold": threshold}}},
+    }
+    ADVANCED_PROFILE.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+
+
+def disable_cloud_artifacts() -> list[str]:
+    """Move Cloud/advanced files aside for local mode. Returns paths moved."""
+    moved = []
+    for path in (CLOUD_ENV, CLOUD_STATE, CLOUD_PROFILE, ADVANCED_PROFILE):
+        if path.exists():
+            dest = path.with_suffix(path.suffix + ".bak")
+            n = 0
+            while dest.exists():
+                n += 1
+                dest = path.with_name(f"{path.name}.bak{n}")
+            path.rename(dest)
+            moved.append(f"{path.name} -> {dest.name}")
+    return moved
+
+
+def _docker_ok() -> tuple[bool, str]:
+    try:
+        r = subprocess.run(["docker", "info"], capture_output=True, text=True, timeout=15)
+    except FileNotFoundError:
+        return False, "Docker not installed"
+    except subprocess.TimeoutExpired:
+        return False, "Docker not responding"
+    if r.returncode != 0:
+        tail = (r.stderr or r.stdout or "").strip().splitlines()
+        return False, tail[-1] if tail else "docker info failed"
+    return True, "Docker daemon running"
+
+
+def _check_line(ok: bool | None, label: str, detail: str = "", hint: str = "") -> bool:
+    """Print one preflight line. ``None`` = warn. Returns False if hard fail."""
+    mark = "ok" if ok is True else ("!!" if ok is False else "..")
+    msg = f"  {mark} {label}"
+    if detail:
+        msg += f" — {detail}"
+    print(msg)
+    if hint:
+        print(f"      → {hint}")
+    return ok is not False
+
+
+def cmd_check(_args) -> None:
+    """Preflight before init/up: deps, credentials, mode, suggested next steps."""
+    ok = True
+    print("Preflight check\n")
+
+    py_ok = sys.version_info >= (3, 10)
+    ok = _check_line(py_ok, "python", f"{sys.version_info.major}.{sys.version_info.minor}") and ok
+
+    try:
+        import tenuo  # noqa: F401
+        import yaml  # noqa: F401
+        ok = _check_line(True, "python deps", "tenuo, PyYAML installed") and ok
+    except ImportError as exc:
+        ok = _check_line(False, "python deps", str(exc),
+                         "run: uv sync  (or pip install -r requirements.txt)") and ok
+
+    d_ok, d_msg = _docker_ok()
+    ok = _check_line(d_ok, "docker", d_msg,
+                     "install Docker Desktop / engine — authorizer runs in a container") and ok
+
+    claude = shutil.which("claude")
+    _check_line(bool(claude), "claude CLI", claude or "not on PATH",
+                "install Claude Code; optional for check/doctor --no-live")
+
+    ok = _check_line(CONFIG_FILE.exists(), "tenuo.yaml", str(CONFIG_FILE)) and ok
+
+    cfg = None
+    if CONFIG_FILE.exists():
+        try:
+            cfg = load_config()
+        except SystemExit as exc:
+            ok = _check_line(False, "policy load", str(exc)) and ok
+
+    hooks = DEMO_DIR / ".claude" / "settings.json"
+    if hooks.exists():
+        _check_line(True, "claude hooks", "wired (.claude/settings.json)")
+    else:
+        _check_line(None, "claude hooks", "not wired yet", "run: tenuo-claude init")
+
+    mode = intended_mode(cfg)
+    files = cloud_mode_files()
+    _check_line(True, "mode", mode, None)
+    if mode == "local" and any(files.values()):
+        _check_line(None, "cloud files", "present but mode is local",
+                    "remove/rename .state/cloud.env or run: tenuo-claude init --local")
+
+    reach = runtime_env()
+    admin_leak = next((v for v in ADMIN_KEY_VARS if reach.get(v)), None)
+    if admin_leak:
+        ok = _check_line(False, "runtime env", f"{admin_leak} is exported",
+                         "unset it; admin key belongs in ~/.tenuo/admin.env only") and ok
+    else:
+        _check_line(True, "runtime env", "no admin key leaked")
+
+    if mode == "cloud" or files["cloud_env"]:
+        if not files["cloud_env"]:
+            ok = _check_line(False, "cloud.env", "missing",
+                             "run: tenuo-claude onboard --cloud") and ok
+        else:
+            creds = cloud_creds(cfg or {})
+            parsed = bool(creds.get("url") and creds.get("api_key"))
+            ok = _check_line(parsed, "connect credentials", "parsed from cloud.env") and ok
+            if parsed:
+                p_ok, p_msg = probe_runtime_creds(creds)
+                ok = _check_line(p_ok, "cloud probe", p_msg) and ok
+        if ADMIN_ENV.exists():
+            _check_line(True, "admin.env", str(ADMIN_ENV))
+        else:
+            _check_line(None, "admin.env", "missing",
+                        "needed once for tenuo-admin setup (Settings → API Keys)")
+        if files["cloud_state"]:
+            st = load_cloud_state()
+            tid = st.get("trigger_id")
+            _check_line(bool(tid), "cloud setup", f"trigger {tid}" if tid else "incomplete")
+        else:
+            _check_line(None, "cloud setup", "not run yet", "run: tenuo-admin setup")
+        if cfg and webfetch_approval(cfg) and not load_cloud_state().get("web_fetch_approval_policy_id"):
+            _check_line(None, "web approval", "policy not wired", "re-run: tenuo-admin setup")
+
+    run_cfg = cfg or {"name": "claude-code-demo"}
+    if WARRANT.exists():
+        exp = warrant_expired()
+        _check_line(None if exp else True, "warrant",
+                    "present" + (" (expired — run up)" if exp else ""))
+    elif mode == "local":
+        _check_line(None, "warrant", "missing", "run: tenuo-claude init")
+
+    if authorizer_running(run_cfg):
+        _check_line(True, "authorizer", f"up ({AUTHZ_URL})")
+    else:
+        _check_line(None, "authorizer", "down", "run: tenuo-claude up")
+
+    print("\nSuggested next steps:")
+    if not hooks.exists():
+        print("  tenuo-claude init")
+    elif mode == "cloud" and not files["cloud_state"]:
+        print("  tenuo-admin setup && tenuo-claude up")
+    elif not authorizer_running(run_cfg):
+        print("  tenuo-claude up")
+    elif WARRANT.exists() and not warrant_expired():
+        print("  tenuo-claude doctor --no-live")
+        print("  open Claude Code in this directory")
+    else:
+        print("  tenuo-claude up   # refresh warrant if expired")
+    print("\nCHECK OK" if ok else "\nCHECK FAILED — fix items marked !!")
+    raise SystemExit(0 if ok else 1)
+
+
+def _prompt(text: str, default: str = "") -> str:
+    try:
+        suffix = f" [{default}]" if default else ""
+        line = input(f"{text}{suffix}: ").strip()
+    except EOFError:
+        line = ""
+    return line or default
+
+
+def cmd_onboard(args) -> None:
+    """Interactive wizard for local or Cloud onboarding."""
+    cloud = getattr(args, "cloud", False)
+    local = getattr(args, "local", False)
+    if not cloud and not local:
+        choice = _prompt("Mode — (l)ocal or (c)loud", "local").lower()
+        cloud = choice.startswith("c")
+        local = not cloud
+
+    print("\nRunning preflight…")
+    try:
+        cmd_check(argparse.Namespace())
+    except SystemExit as exc:
+        if exc.code not in (0, None):
+            if not _prompt("Preflight failed — continue anyway?", "n").lower().startswith("y"):
+                raise SystemExit(1)
+
+    if local or not cloud:
+        moved = disable_cloud_artifacts()
+        if moved:
+            print("Moved aside for local mode:", ", ".join(moved))
+        cmd_init(argparse.Namespace(cloud=False, local=True))
+        cmd_up(argparse.Namespace())
+        try:
+            cmd_doctor(argparse.Namespace(no_live=True))
+        except SystemExit as exc:
+            raise SystemExit(exc.code or 1)
+        print("\nOnboard complete (local). Open Claude Code in this directory.")
+        return
+
+    # Cloud path
+    token = getattr(args, "connect_token", None) or os.environ.get("TENUO_CONNECT_TOKEN")
+    if not token and CLOUD_ENV.exists():
+        token = runtime_env().get("TENUO_CONNECT_TOKEN")
+    if not token and not getattr(args, "yes", False):
+        token = _prompt("Paste Quick Connect token (tenuo_ct_…)")
+    if not token:
+        raise SystemExit("Cloud onboarding needs TENUO_CONNECT_TOKEN (Quick Connect → Authorizer Only).")
+    write_cloud_env(token)
+
+    url = _parse_connect_token(token.strip())["url"]
+    write_cloud_profile(url=url)
+    print(f"Wrote {CLOUD_PROFILE.name}")
+
+    if getattr(args, "advanced", False) or getattr(args, "demo", False):
+        approver = getattr(args, "approver", None)
+        if not approver and not getattr(args, "yes", False):
+            approver = _prompt("Approver display name (must exist in Cloud)")
+        if not approver:
+            raise SystemExit("--advanced requires an approver display name.")
+        write_advanced_profile(approver=approver)
+        print(f"Wrote {ADVANCED_PROFILE.name} (advanced — re-run `tenuo-admin setup`)")
+
+    admin_key = getattr(args, "admin_key", None) or os.environ.get("TENUO_ADMIN_KEY")
+    if not admin_key and ADMIN_ENV.exists():
+        admin_key = read_env_file(ADMIN_ENV).get("TENUO_ADMIN_KEY")
+    if not admin_key and not getattr(args, "yes", False):
+        admin_key = _prompt("Paste tenant-admin key for one-time setup (blank = skip)", "")
+    if admin_key:
+        write_admin_env(admin_key)
+        print(f"Wrote {ADMIN_ENV}")
+
+    cmd_init(argparse.Namespace(cloud=False, local=False))
+
+    if admin_key:
+        env = os.environ.copy()
+        for var in ADMIN_KEY_VARS:
+            env.pop(var, None)
+        r = subprocess.run(
+            [sys.executable, str(DEMO_DIR / "tenuo_admin.py"), "setup"],
+            cwd=DEMO_DIR, env=env,
+        )
+        if r.returncode != 0:
+            raise SystemExit("tenuo-admin setup failed — fix errors above and re-run setup")
+    else:
+        print("\nSkipped tenuo-admin setup (no admin key). Platform team must run setup once.")
+
+    for var in ADMIN_KEY_VARS:
+        os.environ.pop(var, None)
+    cmd_up(argparse.Namespace())
+    try:
+        cmd_doctor(argparse.Namespace(no_live=True))
+    except SystemExit as exc:
+        raise SystemExit(exc.code or 1)
+    print("\nOnboard complete (cloud). Open Claude Code in this directory.")
+
+
+def cmd_bootstrap(args) -> None:
+    """check → init → up → doctor (--local default)."""
+    local = getattr(args, "local", True) and not getattr(args, "cloud", False)
+    if local:
+        cmd_onboard(argparse.Namespace(local=True, cloud=False, yes=True))
+    else:
+        cmd_onboard(argparse.Namespace(local=False, cloud=True, yes=getattr(args, "yes", False),
+                                        advanced=getattr(args, "advanced", False) or getattr(args, "demo", False),
+                                        connect_token=getattr(args, "connect_token", None),
+                                        approver=getattr(args, "approver", None),
+                                        admin_key=getattr(args, "admin_key", None)))
+
+
 def load_cloud_state() -> dict:
     if CLOUD_STATE.exists():
         try:
@@ -1422,6 +1776,12 @@ def cmd_status(_args) -> None:
               f"{cp.get('authorizer_id') or ''}")
     else:
         print(f"authorizer  : down (run `tenuo-claude up`)")
+    files = cloud_mode_files()
+    if files["cloud_env"] and not files["cloud_state"]:
+        print("cloud       : credentials present — run `tenuo-admin setup` then `tenuo-claude up`")
+    elif mode := intended_mode(cfg):
+        if mode == "cloud" and files["cloud_profile"]:
+            print(f"cloud       : profile {CLOUD_PROFILE.name} merged")
 
 
 # ---------------------------------------------------------------------------
@@ -1668,7 +2028,32 @@ def cmd_doctor(args) -> None:
     raise SystemExit(0 if ok else 1)
 
 
-def cmd_init(_args) -> None:
+def cmd_init(args) -> None:
+    if getattr(args, "local", False):
+        moved = disable_cloud_artifacts()
+        if moved:
+            print("Local mode — moved aside:", ", ".join(moved))
+    elif getattr(args, "cloud", False):
+        url = getattr(args, "cloud_url", None)
+        if not url and CLOUD_ENV.exists():
+            creds = cloud_creds(load_config())
+            url = creds.get("url")
+        write_cloud_profile(url=url or "https://api.tenuo.ai")
+        print(f"Cloud profile written: {CLOUD_PROFILE.name}")
+        if getattr(args, "advanced", False) or getattr(args, "demo", False):
+            approver = getattr(args, "approver", None)
+            if not approver:
+                raise SystemExit("--advanced requires --approver (Cloud identity display name).")
+            write_advanced_profile(approver=approver)
+            print(f"Advanced profile written: {ADVANCED_PROFILE.name}")
+        if not CLOUD_ENV.exists() and CLOUD_ENV_EXAMPLE.exists():
+            print(f"Next: copy {CLOUD_ENV_EXAMPLE.name} → .state/cloud.env and paste Quick Connect token")
+    if (getattr(args, "advanced", False) or getattr(args, "demo", False)) and not getattr(args, "cloud", False):
+        approver = getattr(args, "approver", None)
+        if not approver:
+            raise SystemExit("--advanced requires --approver (Cloud identity display name).")
+        write_advanced_profile(approver=approver)
+        print(f"Advanced profile written: {ADVANCED_PROFILE.name} — re-run `tenuo-admin setup`")
     cfg = load_config()
     info = generate(cfg)
     print("Initialized tenuo-claude.")
@@ -1684,6 +2069,7 @@ def cmd_init(_args) -> None:
 
 COMMANDS = {
     "init": cmd_init, "up": cmd_up, "down": cmd_down, "status": cmd_status,
+    "check": cmd_check, "onboard": cmd_onboard, "bootstrap": cmd_bootstrap,
     "audit": cmd_audit, "revoke": cmd_revoke, "doctor": cmd_doctor,
     "_hook": cmd_hook, "_post": cmd_post, "_mcp-proxy": cmd_mcp_proxy,
 }
@@ -1693,8 +2079,34 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="tenuo-claude", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd")
-    for name in ["init", "up", "down", "status", "revoke", "_hook", "_post", "_mcp-proxy"]:
+    for name in ["up", "down", "status", "check", "revoke", "_hook", "_post", "_mcp-proxy"]:
         sub.add_parser(name)
+    pi = sub.add_parser("init")
+    pi.add_argument("--cloud", action="store_true", help="write tenuo.cloud.yaml (Cloud URL)")
+    pi.add_argument("--local", action="store_true", help="move Cloud files aside for local mode")
+    pi.add_argument("--advanced", action="store_true",
+                    help="write tenuo.advanced.yaml (WebFetch human approval — optional demo add-on)")
+    pi.add_argument("--demo", action="store_true", help=argparse.SUPPRESS)  # deprecated alias
+    pi.add_argument("--approver", help="approver identity display name (requires --advanced)")
+    pi.add_argument("--cloud-url", help="control plane URL (with --cloud; default from connect token or api.tenuo.ai)")
+    po = sub.add_parser("onboard", help="interactive local or Cloud setup wizard")
+    po.add_argument("--local", action="store_true", help="local mode (default when neither flag set)")
+    po.add_argument("--cloud", action="store_true", help="Cloud mode")
+    po.add_argument("--advanced", action="store_true",
+                    help="also write advanced overlay (WebFetch approval; with --cloud)")
+    po.add_argument("--demo", action="store_true", help=argparse.SUPPRESS)
+    po.add_argument("--yes", "-y", action="store_true", help="non-interactive where possible")
+    po.add_argument("--connect-token", help="Quick Connect token (Cloud)")
+    po.add_argument("--admin-key", help="tenant-admin key for one-time setup (Cloud)")
+    po.add_argument("--approver", help="approver display name (requires --advanced)")
+    pb = sub.add_parser("bootstrap", help="check + init + up + doctor")
+    pb.add_argument("--cloud", action="store_true", help="Cloud quickstart (default: local)")
+    pb.add_argument("--advanced", action="store_true", help="include advanced overlay (with --cloud)")
+    pb.add_argument("--demo", action="store_true", help=argparse.SUPPRESS)
+    pb.add_argument("--yes", "-y", action="store_true")
+    pb.add_argument("--connect-token")
+    pb.add_argument("--admin-key")
+    pb.add_argument("--approver")
     pd = sub.add_parser("doctor")
     pd.add_argument("--no-live", action="store_true",
                     help="skip live Claude Code PreToolUse exit-code harness")
@@ -1708,7 +2120,7 @@ def main() -> None:
     # credential. Admin actions live in `tenuo-admin`. Skip the internal hook
     # handlers — they have their own fail-closed contract and must emit a deny
     # decision rather than raise (a raised SystemExit would be fail-open).
-    if args.cmd not in ("_hook", "_post", "_mcp-proxy"):
+    if args.cmd not in ("_hook", "_post", "_mcp-proxy", "onboard", "bootstrap"):
         assert_no_admin_key()
     COMMANDS[args.cmd](args)
 

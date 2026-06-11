@@ -6,9 +6,33 @@ with a receipt on each decision, including under `--dangerously-skip-permissions
 Policy is `tenuo.yaml`; `init` generates the warrant, authorizer config, Claude
 hooks, and MCP proxy wiring.
 
-## Setup
+## Quick start (local, ~1 minute)
 
 Requires Python ≥ 3.10, Docker, and [Claude Code](https://code.claude.com/docs).
+
+```bash
+git clone https://github.com/tenuo-ai/claude-governance.git
+cd claude-governance
+uv venv && uv sync && source .venv/bin/activate
+uv run tenuo-claude bootstrap --local
+```
+
+That runs preflight → init → up → doctor. Then open Claude Code in this directory.
+
+Other entry points:
+
+| Command | When |
+|---------|------|
+| `uv run tenuo-claude check` | Diagnose deps, credentials, mode — before or after setup |
+| `uv run tenuo-claude onboard` | Interactive wizard (local or Cloud) |
+| `uv run tenuo-claude onboard --cloud` | Cloud wizard (Quick Connect + optional admin setup) |
+| `uv run tenuo-claude init --cloud` | Write `tenuo.cloud.yaml` (Cloud URL only) |
+
+Cloud credentials and platform setup: see [Cloud mode](#cloud-mode) below.
+**Advanced demo** (optional WebFetch human approval): [docs/PRESENTATION.md](docs/PRESENTATION.md) —
+separate `tenuo.advanced.yaml` overlay; not part of the default tour.
+
+## Setup
 
 **Python environment (recommended — [uv](https://docs.astral.sh/uv/)):**
 
@@ -61,9 +85,9 @@ No `web-approval:` line. Revoke with `python3 tenuo_claude.py revoke`.
 ### Cloud mode
 
 Root-signed session warrants, central receipt stream in
-[cloud.tenuo.ai](https://cloud.tenuo.ai), optional **human approval** on off-allowlist
-`WebFetch`, fleet revocation (~30s SRL sync). Customer presentation runbook:
-[docs/PRESENTATION.md](docs/PRESENTATION.md).
+[cloud.tenuo.ai](https://cloud.tenuo.ai), fleet revocation (~30s SRL sync). Optional
+**human approval** on off-allowlist `WebFetch` is an [advanced demo add-on](#advanced-demo-human-approval-optional), not default setup.
+Presentation runbook: [docs/PRESENTATION.md](docs/PRESENTATION.md).
 
 **1. Tenant + keys** — you need **two API keys** in **two files** (separation of duties):
 
@@ -131,21 +155,8 @@ and break PoP verification.
 **Important:** never put the admin key in `.state/cloud.env` or your shell when running
 `tenuo-claude` / `tenuo_demo` — runtime refuses to start if an admin key is reachable.
 
-**2. Policy overlay** — merge from `tenuo.yaml.cloud.example` into `tenuo.yaml`:
-
-```yaml
-cloud:
-  approver_identity: "Your Approver Display Name"   # must exist in Cloud
-
-enforce:
-  WebFetch:
-    domains: ["api.github.com", "*.githubusercontent.com", "*.tenuo.ai"]
-    approval:          # optional — omit for strict deny on off-allowlist URLs
-      threshold: 1
-```
-
-`approver_identity` is required when `WebFetch.approval` is set. Subagents can stay on
-when child roles omit `WebFetch` (default `researcher` is read-only).
+**2. Cloud policy** — `tenuo-claude init --cloud` writes `tenuo.cloud.yaml` (control-plane
+URL only). No yaml merge required.
 
 **3. One-time Cloud registration** (platform / prep — not every session):
 
@@ -154,9 +165,9 @@ unset TENUO_ADMIN_KEY   # only needed if exported in your shell
 python3 tenuo_admin.py setup
 ```
 
-Creates the holder agent, Cloud trigger, and (if configured) approval policy. Writes
-`.state/cloud_state.json`. Re-run after **policy changes** (`tenuo.yaml` cloud block,
-`subagents:`, or `WebFetch.approval`).
+Creates the holder agent, Cloud trigger, and (if `tenuo.advanced.yaml` is present) approval
+policy. Writes `.state/cloud_state.json`. Re-run after **policy changes** (`tenuo.yaml`,
+`tenuo.cloud.yaml`, `tenuo.advanced.yaml` (if present), `subagents:`).
 
 **4. Daily developer flow:**
 
@@ -166,17 +177,51 @@ python3 tenuo_claude.py init    # wire hooks; re-run after venv or policy change
 python3 tenuo_claude.py up      # fires trigger → root-signed session warrant
 python3 tenuo_claude.py doctor --no-live
 python3 tenuo_demo.py
-python3 tenuo_demo.py --live-approval   # optional; approver must respond
 ```
 
 **5. Verify** — `python3 tenuo_claude.py status` should show:
 
 ```text
-web-approval: off-allowlist WebFetch -> human approval (…) | policy apol_…
 authorizer  : up (…) | cloud: registered authz_…
 ```
 
+(`web-approval:` in `status` appears only with `tenuo.advanced.yaml` — see
+[Advanced demo](#advanced-demo-human-approval-optional) below.)
+
 Revoke from Cloud dashboard or `tenuo-claude status` warrant id (~30s SRL sync).
+
+---
+
+### Advanced demo: human approval (optional)
+
+The **default** demo (`python3 tenuo_demo.py`) covers scope, deny, SSRF, and subagents —
+off-allowlist `WebFetch` is **denied by the domain allowlist**, not sent for approval.
+
+Human approval on off-allowlist URLs is an **advanced add-on** for customer presentations.
+Use a separate overlay so it never mixes with the core tool or default tour:
+
+**Prerequisite — approver in Tenuo Cloud (platform prep, not this repo):**
+
+`tenuo-admin setup` **references** an existing approver; it does not create one. Before
+`init --advanced`, someone with dashboard access must:
+
+1. **Connect a notification channel** (Slack or Telegram) —
+   [Adding notification channels](https://docs.tenuo.ai/guides/adding-channels)
+2. **Create an identity binding** with a **Display Name** (e.g. `Jane Doe`) —
+   [Identity bindings](https://docs.tenuo.ai/integrations/identity-bindings)
+   (Dashboard → Channels → Identity Bindings)
+
+The `--approver` string must match that **Display Name** exactly.
+
+```bash
+tenuo-claude init --advanced --approver "Jane Doe"
+# or: cp tenuo.yaml.advanced.example tenuo.advanced.yaml and edit
+tenuo-admin setup    # wires approval policy; re-run after overlay changes
+python3 tenuo_demo.py --advanced              # shows PAUSE for off-allowlist WebFetch
+python3 tenuo_demo.py --advanced --live-approval   # blocks until approver responds
+```
+
+Runbook: [docs/PRESENTATION.md](docs/PRESENTATION.md).
 
 ---
 
@@ -188,7 +233,7 @@ in Cloud mode until you remove them **and restart the authorizer**:
 | To switch **to local** | To switch **to Cloud** |
 |------------------------|------------------------|
 | Move aside `.state/cloud.env` and `.state/cloud_state.json` | Restore both files |
-| Comment/remove `cloud:` and `WebFetch.approval` in `tenuo.yaml` | Restore overlay from `tenuo.yaml.cloud.example` |
+| Comment/remove `tenuo.cloud.yaml` / `tenuo.advanced.yaml` | Restore overlay files |
 | `tenuo-claude down` → `init` → `up` | `tenuo-admin setup` (if needed) → `down` → `up` |
 | Status: `cloud: disabled` | Status: `cloud: registered …` |
 
@@ -451,7 +496,8 @@ tools, spawns fail closed unless the new name is only audit-listed.
 | File | Purpose |
 |------|---------|
 | `tenuo.yaml` | Policy |
-| `tenuo.yaml.cloud.example` | Cloud overlay template (`cloud:`, `WebFetch.approval`) |
+| `tenuo.yaml.cloud.example` | Tool Cloud overlay template (`cloud.url` only) |
+| `tenuo.yaml.advanced.example` | Advanced overlay (WebFetch approval + approver) — optional presentations |
 | `cloud.env.example` | Runtime key template → `.state/cloud.env` |
 | `admin.env.example` | Admin key template → `~/.tenuo/admin.env` |
 | `harness_tools.yaml` | Bundled harness tool allowlist |

@@ -1,26 +1,12 @@
-# Optional Cloud overlay — merge into tenuo.yaml (or paste under `name:`).
+# Tool Cloud overlay — merged when `tenuo.cloud.yaml` exists.
+# Written by `tenuo-claude init --cloud` or `tenuo-claude onboard --cloud`.
 #
-# 1. Quick Connect: cloud.tenuo.ai -> Agents -> Quick Connect -> Authorizer Only.
-#    Copy tenuo_ct_... into .state/cloud.env (see cloud.env.example).
-# 2. Paste the blocks below into tenuo.yaml.
-# 3. Run:  python3 tenuo_admin.py setup && python3 tenuo_claude.py up
+# 1. Quick Connect: cloud.tenuo.ai → Agents → Quick Connect → Authorizer Only.
+#    Copy tenuo_ct_… into .state/cloud.env (see cloud.env.example).
+# 2. Run: tenuo-admin setup && tenuo-claude up
 #
-# The admin key lives in ~/.tenuo/admin.env (never in this repo).
-#
-# WebFetch approval and subagents can be combined when subagent roles drop the
-# gated tool (e.g. researcher with Read/Grep/Glob only).
+# For customer presentations (WebFetch human approval), add the separate advanced
+# overlay from tenuo.yaml.advanced.example — see docs/PRESENTATION.md.
 
 cloud:
   url: https://api.tenuo.ai
-  # Display name of an existing Cloud identity binding (KMS key + notification
-  # routing). `tenuo-admin setup` resolves this and wires the approval policy.
-  approver_identity: "Your Approver Display Name"
-
-# Optional: add under enforce.WebFetch for human approval on off-allowlist URLs
-# (Cloud only; notification via the approver identity's configured channel).
-# Remove or comment out `subagents:` only if you want flat session coverage.
-#
-#   WebFetch:
-#     domains: ["api.github.com", "*.githubusercontent.com", "*.tenuo.ai"]
-#     approval:
-#       threshold: 1

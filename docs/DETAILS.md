@@ -95,7 +95,7 @@ End to end:
    hook `timeout` is extended so Claude waits for the approver.
 
 Receipts: `PENDING [appr]` while parked, then `ALLOW`/`DENY`. In audit mode the
-gate is reported only, never blocks. `python3 tenuo_demo.py --live-approval` drives
+gate is reported only, never blocks. `python3 tenuo_demo.py --advanced --live-approval` drives
 the full flow.
 
 **Live demo:** the session blocks on that tool call until someone responds. Have

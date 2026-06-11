@@ -38,7 +38,7 @@ jobs:
           cp tenuo.yaml "$tmp/"
           mkdir -p "$tmp/sandbox"
           touch "$tmp/sandbox/notes.txt"
-          TENUO_PROJECT_DIR="$tmp" uv run tenuo-claude-code init
+          TENUO_PROJECT_DIR="$tmp" uv run tenuo-claude init
           test -f "$tmp/.state/warrant.b64"
           test -f "$tmp/.state/gateway.yaml"
           test -f "$tmp/.claude/settings.json"

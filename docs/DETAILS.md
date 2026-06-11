@@ -33,10 +33,10 @@ then `refresh`.
 
 **Live without refresh:** `mode: audit` / `mode: enforce` only (hook blocking posture).
 
-## Production wiring (`bin/tenuo-claude-code`, `.mcp.json`)
+## Production wiring (`bin/tenuo-claude`, `.mcp.json`)
 
-Hooks and the MCP proxy invoke `tenuo-claude-code` on PATH (PyPI install) or
-`./bin/tenuo-claude-code` (git-clone workflow). Project files (`tenuo.yaml`, `.state/`)
+Hooks and the MCP proxy invoke `tenuo-claude` on PATH (PyPI install) or
+`./bin/tenuo-claude` (git-clone workflow). Project files (`tenuo.yaml`, `.state/`)
 live in **your project directory** — discovered by walking up from cwd or via
 ``TENUO_PROJECT_DIR``.
 

@@ -7,8 +7,8 @@ Internal scaffolding for the standalone repo — not required for running the de
 Use a project venv so the launcher resolves the same interpreter everywhere:
 
 ```bash
-uv venv && uv sync && chmod +x bin/tenuo-claude-code
-./bin/tenuo-claude-code init   # or: uv run tenuo-claude-code init
+uv venv && uv sync && chmod +x bin/tenuo-claude
+./bin/tenuo-claude init   # or: uv run tenuo-claude init
 ```
 
 Re-run `init` or `refresh` after switching venvs. `.venv/` is gitignored.
@@ -23,7 +23,7 @@ The following stay local and are gitignored:
 |------|----------|
 | `.state/` | Holder/issuer keys, warrant, receipts, `cloud.env` |
 | `.claude/settings.json` | Generated hook wiring (timeout varies with approval overlay) |
-| `.mcp.json` | **Committed** — uses `tenuo-claude-code` on PATH or `./bin/tenuo-claude-code` |
+| `.mcp.json` | **Committed** — uses `tenuo-claude` on PATH or `./bin/tenuo-claude` |
 | `src/tenuo_claude_code/` | PyPI package (CLI, admin, bundled harness list) |
 | `~/.tenuo/admin.env` | Admin key for `tenuo-admin setup` only |
 
@@ -40,7 +40,7 @@ cd demo/claude-governance   # or your export copy
 
 git init
 git add .gitignore README.md CONTRIBUTING.md docs/ requirements.txt pyproject.toml \
-  .python-version uv.lock cloud.env.example .mcp.json bin/tenuo-claude-code \
+  .python-version uv.lock cloud.env.example .mcp.json bin/tenuo-claude \
   harness_tools.yaml tenuo.yaml tenuo.yaml.cloud.example \
   src/tenuo_claude_code/ tenuo_claude.py tenuo_admin.py tenuo_demo.py ops_server.py \
   tenuo_claude_code_architecture.svg \

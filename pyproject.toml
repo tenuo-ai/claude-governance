@@ -34,11 +34,11 @@ Documentation = "https://github.com/tenuo-ai/claude-governance#readme"
 Issues = "https://github.com/tenuo-ai/claude-governance/issues"
 
 [project.scripts]
-tenuo-claude-code = "tenuo_claude_code.cli:main"
-tenuo-claude-admin = "tenuo_claude_code.admin:main"
-# Backward-compatible aliases (demo repo / early adopters)
 tenuo-claude = "tenuo_claude_code.cli:main"
 tenuo-admin = "tenuo_claude_code.admin:main"
+# Long-form aliases (match PyPI package name)
+tenuo-claude-code = "tenuo_claude_code.cli:main"
+tenuo-claude-admin = "tenuo_claude_code.admin:main"
 
 [build-system]
 requires = ["hatchling"]

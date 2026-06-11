@@ -1,11 +1,8 @@
 #!/usr/bin/env bash
-# Stable launcher for hooks, MCP proxy, and the tenuo-claude-code CLI.
+# Stable launcher for hooks, MCP proxy, and the tenuo-claude CLI.
 #
 # Resolves Python from TENUO_PYTHON, the project .venv, uv, or python3 on PATH.
 # Reference from .mcp.json and Claude hooks when using the git-clone workflow.
-#
-# Enterprise: set TENUO_ROOT to the governed project directory and optionally
-# TENUO_PYTHON to a fleet-managed interpreter.
 set -euo pipefail
 
 if [[ -n "${TENUO_ROOT:-}" ]]; then
@@ -34,6 +31,6 @@ if [[ -x "$ROOT/.venv/bin/python" ]]; then
   run_python "$ROOT/.venv/bin/python" "$@"
 fi
 if command -v uv >/dev/null 2>&1; then
-  exec uv run tenuo-claude-code "$@"
+  exec uv run tenuo-claude "$@"
 fi
 run_python python3 "$@"

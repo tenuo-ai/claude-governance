@@ -4,7 +4,7 @@
 Separation of duties: this is the ONLY place that holds a tenant-admin Cloud
 key and the ONLY code that performs admin actions (create agent, create/patch
 trigger). It is meant to be run by platform-sec / CI — not by the developer or
-the agent. The runtime CLI (``tenuo-claude-code``) has no path to these endpoints
+the agent. The runtime CLI (``tenuo-claude``) has no path to these endpoints
 and refuses to run if an admin key is reachable from its environment.
 
 Credentials
@@ -540,7 +540,7 @@ def cmd_setup(_args) -> None:
         print("  warning  : could not read initiator identity from warrant; left allow_api_key on")
 
     tc.save_cloud_state({"holder_pub_hex": holder_hex, "root": root})
-    print(f"\nSetup complete. `tenuo-claude-code up` now fires {tid} for a root-signed session warrant.")
+    print(f"\nSetup complete. `tenuo-claude up` now fires {tid} for a root-signed session warrant.")
 
 
 def cmd_show(_args) -> None:

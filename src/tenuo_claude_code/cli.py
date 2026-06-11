@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""tenuo-claude-code — govern, enforce, and audit Claude Code with Tenuo.
+"""tenuo-claude — govern, enforce, and audit Claude Code with Tenuo.
 
 One CLI driven by one policy file (tenuo.yaml in your project directory). It
 generates the warrant, gateway config, Claude hooks, and MCP proxy wiring so
 nothing drifts, and manages the Cloud-connected authorizer lifecycle.
 
-Install: ``pip install tenuo-claude-code``  (or ``uv sync`` in the demo repo)
+Install: ``pip install tenuo-claude-code``  (command: ``tenuo-claude``)
 
-    tenuo-claude-code init      # generate keys, warrant, gateway, Claude hooks
-    tenuo-claude-code refresh   # re-apply tenuo.yaml after policy edits
-    tenuo-claude-code up        # start the authorizer (+ connect Cloud if configured)
-    tenuo-claude-code status    # warrant / authorizer / Cloud / policy summary
-    tenuo-claude-code check     # preflight: deps, credentials, wiring drift
-    tenuo-claude-code doctor    # self-test enforcement without Claude
+    tenuo-claude init      # generate keys, warrant, gateway, Claude hooks
+    tenuo-claude refresh   # re-apply tenuo.yaml after policy edits
+    tenuo-claude up        # start the authorizer (+ connect Cloud if configured)
+    tenuo-claude status    # warrant / authorizer / Cloud / policy summary
+    tenuo-claude check     # preflight: deps, credentials, wiring drift
+    tenuo-claude doctor    # self-test enforcement without Claude
 
 Internal entrypoints (wired into Claude, not called by hand):
     _hook  _post  _mcp-proxy
@@ -117,8 +117,8 @@ def slug(name: str) -> str:
 def wiring_command_parts(subcommand: str) -> tuple[str, list[str]]:
     """Stable command for Claude hooks / MCP wiring (portable across machines).
 
-    Priority: ``TENUO_CLAUDE_BIN`` → repo ``bin/tenuo-claude-code`` → ``tenuo-claude-code``
-    on PATH (bare name) → legacy ``tenuo-claude-code`` alias → ``python -m`` fallback.
+    Priority: ``TENUO_CLAUDE_BIN`` → repo ``bin/tenuo-claude`` → ``tenuo-claude``
+    on PATH (bare name) → ``tenuo-claude-code`` alias → ``python -m`` fallback.
     """
     override = os.environ.get("TENUO_CLAUDE_BIN", "").strip()
     if override:
@@ -608,7 +608,7 @@ def authorize_with_approval(cfg: dict, claude_tool: str, tenuo_tool: str, route:
     policy_id = load_cloud_state().get("web_fetch_approval_policy_id")
     if not (creds.get("url") and creds.get("api_key") and policy_id):
         return False, ("approval required, but the Cloud approver isn't configured — "
-                       "run `tenuo-claude-admin setup` (approval gates require Tenuo Cloud)")
+                       "run `tenuo-admin setup` (approval gates require Tenuo Cloud)")
     threshold = int(rb.get("required_approvals") or 1)
     if not live:
         return False, f"{APPROVAL_PENDING_REASON}: {threshold} approval(s) required"
@@ -1069,7 +1069,7 @@ def refresh_policy(cfg: dict | None = None) -> str:
     """Re-read tenuo.yaml into runtime artifacts (wiring, gateway, warrant, subwarrants).
 
     Local mode re-mints the session warrant from policy. Cloud trigger mode re-fires
-    the trigger (capabilities still come from the trigger config — run `tenuo-claude-admin
+    the trigger (capabilities still come from the trigger config — run `tenuo-admin
     setup` first when enforce/audit/subagent policy changed on Cloud).
     """
     cfg = cfg or load_config()
@@ -1086,10 +1086,10 @@ def refresh_policy(cfg: dict | None = None) -> str:
         wid = Warrant.from_base64(warrant_b64).id
     elif ISSUER_KEY.exists() and HOLDER_KEY.exists():
         if not WARRANT.exists():
-            raise SystemExit("Run `tenuo-claude-code init` first.")
+            raise SystemExit("Run `tenuo-claude init` first.")
         wid = remint_session(cfg)
     else:
-        raise SystemExit("Run `tenuo-claude-code init` first.")
+        raise SystemExit("Run `tenuo-claude init` first.")
 
     refresh_subwarrants(cfg)
     return wid
@@ -1098,7 +1098,7 @@ def refresh_policy(cfg: dict | None = None) -> str:
 def write_claude_wiring(cfg: dict) -> None:
     """Generate .claude/settings.json (hooks) and .mcp.json (MCP proxy).
 
-    Uses ``bin/tenuo-claude-code`` (or ``TENUO_CLAUDE_BIN``) so wiring stays portable —
+    Uses ``bin/tenuo-claude`` (or ``TENUO_CLAUDE_BIN``) so wiring stays portable —
     no machine-specific Python paths. Re-run ``init`` / ``refresh`` after moving
     the repo or changing the fleet install path.
     """
@@ -1128,7 +1128,7 @@ def generate(cfg: dict) -> dict:
     Path(sandbox).mkdir(parents=True, exist_ok=True)
 
     issuer = SigningKey.generate()
-    # REUSE an existing holder key: `tenuo-claude-admin setup` claims this key with the
+    # REUSE an existing holder key: `tenuo-admin setup` claims this key with the
     # Cloud agent, and a Cloud-issued warrant binds to it (PoP). Regenerating it
     # on re-init would silently break every cloud-issued warrant until the agent
     # key is rotated and re-claimed.
@@ -1146,7 +1146,7 @@ def generate(cfg: dict) -> dict:
     write_gateway(cfg, enforced_capabilities(cfg))
 
     STATE_JSON.write_text(json.dumps({
-        "name": cfg.get("name", "tenuo-claude-code"), "warrant_id": warrant.id,
+        "name": cfg.get("name", "tenuo-claude"), "warrant_id": warrant.id,
         "issuer_pub_hex": issuer.public_key.to_bytes().hex(), "sandbox": sandbox,
         "authorizer_url": AUTHZ_URL}, indent=2))
 
@@ -1238,7 +1238,7 @@ def assert_no_admin_key() -> None:
             raise SystemExit(
                 f"Refusing to run: {var} is present in the runtime environment.\n"
                 "Admin credentials must not reach the agent/runtime plane.\n"
-                "Move it to ~/.tenuo/admin.env and run admin actions via `tenuo-claude-admin`.")
+                "Move it to ~/.tenuo/admin.env and run admin actions via `tenuo-admin`.")
 
 
 def cloud_creds(cfg: dict) -> dict:
@@ -1310,7 +1310,7 @@ def write_cloud_env(connect_token: str, authorizer_name: str | None = None) -> N
     # Validate before writing.
     _parse_connect_token(connect_token.strip())
     CLOUD_ENV.write_text(
-        "# Written by tenuo-claude-code onboard — edit as needed.\n"
+        "# Written by tenuo-claude onboard — edit as needed.\n"
         f'export TENUO_CONNECT_TOKEN="{connect_token.strip()}"\n'
         f'export TENUO_AUTHORIZER_NAME="{name}"\n'
     )
@@ -1396,7 +1396,7 @@ def _check_wiring(cfg: dict | None, ok: bool) -> bool:
                 smoke_ok = r.returncode == 0
                 ok = _check_line(
                     smoke_ok, "launcher smoke", "status ok" if smoke_ok else "status failed",
-                    "" if smoke_ok else "run: uv sync && tenuo-claude-code refresh") and ok
+                    "" if smoke_ok else "run: uv sync && tenuo-claude refresh") and ok
             except subprocess.TimeoutExpired:
                 ok = _check_line(False, "launcher smoke", "timed out",
                                  "check authorizer / docker") and ok
@@ -1419,12 +1419,12 @@ def _check_wiring(cfg: dict | None, ok: bool) -> bool:
             ok = _check_line(
                 not drift, "hook wiring",
                 "current" if not drift else f"stale (want {expect!r})",
-                "" if not drift else "tenuo-claude-code refresh") and ok
+                "" if not drift else "tenuo-claude refresh") and ok
         except (json.JSONDecodeError, IndexError, KeyError):
             ok = _check_line(False, "hook wiring", "unreadable settings.json",
-                             "tenuo-claude-code refresh") and ok
+                             "tenuo-claude refresh") and ok
     else:
-        _check_line(None, "claude hooks", "not wired yet", "run: tenuo-claude-code init")
+        _check_line(None, "claude hooks", "not wired yet", "run: tenuo-claude init")
 
     expected_mcp = mcp_wiring(cfg)
     mcp_path = DEMO_DIR / ".mcp.json"
@@ -1436,12 +1436,12 @@ def _check_wiring(cfg: dict | None, ok: bool) -> bool:
                 ok = _check_line(
                     not drift, "mcp wiring",
                     "current" if not drift else "stale",
-                    "" if not drift else "tenuo-claude-code refresh") and ok
+                    "" if not drift else "tenuo-claude refresh") and ok
             except json.JSONDecodeError:
                 ok = _check_line(False, "mcp wiring", "invalid JSON",
-                                 "tenuo-claude-code refresh") and ok
+                                 "tenuo-claude refresh") and ok
         else:
-            _check_line(None, "mcp wiring", "missing", "tenuo-claude-code init")
+            _check_line(None, "mcp wiring", "missing", "tenuo-claude init")
     elif mcp_path.exists():
         _check_line(None, "mcp wiring", "present but mcp.downstream unset",
                     "remove .mcp.json or restore mcp: in tenuo.yaml")
@@ -1488,7 +1488,7 @@ def cmd_check(_args) -> None:
     _check_line(True, "mode", mode, None)
     if mode == "local" and any(files.values()):
         _check_line(None, "cloud files", "present but mode is local",
-                    "remove/rename .state/cloud.env or run: tenuo-claude-code init --local")
+                    "remove/rename .state/cloud.env or run: tenuo-claude init --local")
 
     reach = runtime_env()
     admin_leak = next((v for v in ADMIN_KEY_VARS if reach.get(v)), None)
@@ -1501,7 +1501,7 @@ def cmd_check(_args) -> None:
     if mode == "cloud" or files["cloud_env"]:
         if not files["cloud_env"]:
             ok = _check_line(False, "cloud.env", "missing",
-                             "run: tenuo-claude-code onboard --cloud") and ok
+                             "run: tenuo-claude onboard --cloud") and ok
         else:
             creds = cloud_creds(cfg or {})
             parsed = bool(creds.get("url") and creds.get("api_key"))
@@ -1513,15 +1513,15 @@ def cmd_check(_args) -> None:
             _check_line(True, "admin.env", str(ADMIN_ENV))
         else:
             _check_line(None, "admin.env", "missing",
-                        "needed once for tenuo-claude-admin setup (Settings → API Keys)")
+                        "needed once for tenuo-admin setup (Settings → API Keys)")
         if files["cloud_state"]:
             st = load_cloud_state()
             tid = st.get("trigger_id")
             _check_line(bool(tid), "cloud setup", f"trigger {tid}" if tid else "incomplete")
         else:
-            _check_line(None, "cloud setup", "not run yet", "run: tenuo-claude-admin setup")
+            _check_line(None, "cloud setup", "not run yet", "run: tenuo-admin setup")
         if cfg and webfetch_approval(cfg) and not load_cloud_state().get("web_fetch_approval_policy_id"):
-            _check_line(None, "web approval", "policy not wired", "re-run: tenuo-claude-admin setup")
+            _check_line(None, "web approval", "policy not wired", "re-run: tenuo-admin setup")
 
     run_cfg = cfg or {"name": "claude-code-demo"}
     if WARRANT.exists():
@@ -1529,26 +1529,26 @@ def cmd_check(_args) -> None:
         _check_line(None if exp else True, "warrant",
                     "present" + (" (expired — run up)" if exp else ""))
     elif mode == "local":
-        _check_line(None, "warrant", "missing", "run: tenuo-claude-code init")
+        _check_line(None, "warrant", "missing", "run: tenuo-claude init")
 
     if authorizer_running(run_cfg):
         _check_line(True, "authorizer", f"up ({AUTHZ_URL})")
     else:
-        _check_line(None, "authorizer", "down", "run: tenuo-claude-code up")
+        _check_line(None, "authorizer", "down", "run: tenuo-claude up")
 
     print("\nSuggested next steps:")
     hooks_wired = (DEMO_DIR / ".claude" / "settings.json").exists()
     if not hooks_wired:
-        print("  tenuo-claude-code init")
+        print("  tenuo-claude init")
     elif mode == "cloud" and not files["cloud_state"]:
-        print("  tenuo-claude-admin setup && tenuo-claude-code up")
+        print("  tenuo-admin setup && tenuo-claude up")
     elif not authorizer_running(run_cfg):
-        print("  tenuo-claude-code up")
+        print("  tenuo-claude up")
     elif WARRANT.exists() and not warrant_expired():
-        print("  tenuo-claude-code doctor --no-live")
+        print("  tenuo-claude doctor --no-live")
         print("  open Claude Code in this directory")
     else:
-        print("  tenuo-claude-code up   # refresh warrant if expired")
+        print("  tenuo-claude up   # refresh warrant if expired")
     print("\nCHECK OK" if ok else "\nCHECK FAILED — fix items marked !!")
     raise SystemExit(0 if ok else 1)
 
@@ -1613,7 +1613,7 @@ def cmd_onboard(args) -> None:
         if not approver:
             raise SystemExit("--advanced requires an approver display name.")
         write_advanced_profile(approver=approver)
-        print(f"Wrote {ADVANCED_PROFILE.name} (advanced — re-run `tenuo-claude-admin setup`)")
+        print(f"Wrote {ADVANCED_PROFILE.name} (advanced — re-run `tenuo-admin setup`)")
 
     admin_key = getattr(args, "admin_key", None) or os.environ.get("TENUO_ADMIN_KEY")
     if not admin_key and ADMIN_ENV.exists():
@@ -1635,9 +1635,9 @@ def cmd_onboard(args) -> None:
             cwd=DEMO_DIR, env=env,
         )
         if r.returncode != 0:
-            raise SystemExit("tenuo-claude-admin setup failed — fix errors above and re-run setup")
+            raise SystemExit("tenuo-admin setup failed — fix errors above and re-run setup")
     else:
-        print("\nSkipped tenuo-claude-admin setup (no admin key). Platform team must run setup once.")
+        print("\nSkipped tenuo-admin setup (no admin key). Platform team must run setup once.")
 
     for var in ADMIN_KEY_VARS:
         os.environ.pop(var, None)
@@ -1686,7 +1686,7 @@ def fire_session_warrant(cfg: dict, creds: dict) -> tuple[str, str]:
     """Fire the configured trigger -> (warrant_b64, tenant_root_hex). Runtime key."""
     tid = trigger_id(cfg)
     if not tid:
-        raise SystemExit("No trigger configured. Run `tenuo-claude-admin setup` first.")
+        raise SystemExit("No trigger configured. Run `tenuo-admin setup` first.")
     agent = load_cloud_state().get("agent_id", "")
     event = {"sandbox": cfg["_sandbox_abs"], "agent_id": agent}
     status, body = cloud_api("POST", creds["url"], creds["api_key"],
@@ -1705,7 +1705,7 @@ def authorizer_image(cfg: dict) -> str:
 
 
 def container_name(cfg: dict) -> str:
-    return f"tenuo-authorizer-{slug(cfg.get('name', 'tenuo-claude-code'))}"
+    return f"tenuo-authorizer-{slug(cfg.get('name', 'tenuo-claude'))}"
 
 
 def docker(*args: str) -> subprocess.CompletedProcess:
@@ -1746,7 +1746,7 @@ def cmd_up(_args) -> None:
     use_trigger = bool(creds["url"] and creds["api_key"] and trigger_id(cfg))
 
     if not WARRANT.exists() and not use_trigger:
-        raise SystemExit("Run `tenuo-claude-code init` first.")
+        raise SystemExit("Run `tenuo-claude init` first.")
     refreshed = False
     if warrant_expired() or (use_trigger and not WARRANT.exists()):
         # Re-apply tenuo.yaml (reuse issuer locally; re-fire trigger on Cloud).
@@ -1775,7 +1775,7 @@ def cmd_up(_args) -> None:
         denv["TENUO_API_KEY"] = api_key
     if cloud:
         denv["TENUO_CONTROL_PLANE_URL"] = cloud_url
-        denv["TENUO_AUTHORIZER_NAME"] = cfg.get("name", "tenuo-claude-code")
+        denv["TENUO_AUTHORIZER_NAME"] = cfg.get("name", "tenuo-claude")
 
     if use_trigger:
         # Cloud-issued session warrant: fire the trigger, trust the tenant ROOT
@@ -1863,7 +1863,7 @@ def cmd_status(_args) -> None:
         try:
             from tenuo import Warrant
             w = Warrant.from_base64(WARRANT.read_text())
-            flag = ("  !! EXPIRED — run `tenuo-claude-code up` to refresh"
+            flag = ("  !! EXPIRED — run `tenuo-claude up` to refresh"
                     if w.is_expired() else "")
             print(f"  expires   : {w.expires_at()}{flag}")
         except Exception:
@@ -1878,7 +1878,7 @@ def cmd_status(_args) -> None:
         cs = load_cloud_state()
         who = cs.get("web_fetch_approver") or (cfg.get("cloud") or {}).get("approver_identity") or "?"
         pid = cs.get("web_fetch_approval_policy_id")
-        wired = f"policy {pid}" if pid else "NOT set up (run `tenuo-claude-admin setup`)"
+        wired = f"policy {pid}" if pid else "NOT set up (run `tenuo-admin setup`)"
         print(f"web-approval: off-allowlist WebFetch -> human approval ({who}) | {wired}")
     roles = subagent_roles(cfg)
     if roles:
@@ -1896,10 +1896,10 @@ def cmd_status(_args) -> None:
         print(f"authorizer  : up ({AUTHZ_URL}) | cloud: {cp.get('status')} "
               f"{cp.get('authorizer_id') or ''}")
     else:
-        print(f"authorizer  : down (run `tenuo-claude-code up`)")
+        print(f"authorizer  : down (run `tenuo-claude up`)")
     files = cloud_mode_files()
     if files["cloud_env"] and not files["cloud_state"]:
-        print("cloud       : credentials present — run `tenuo-claude-admin setup` then `tenuo-claude-code up`")
+        print("cloud       : credentials present — run `tenuo-admin setup` then `tenuo-claude up`")
     elif mode := intended_mode(cfg):
         if mode == "cloud" and files["cloud_profile"]:
             print(f"cloud       : profile {CLOUD_PROFILE.name} merged")
@@ -1939,7 +1939,7 @@ def cmd_audit(args) -> None:
 def cmd_revoke(_args) -> None:
     cfg = load_config()
     if not STATE_JSON.exists():
-        raise SystemExit("Run `tenuo-claude-code init` first.")
+        raise SystemExit("Run `tenuo-claude init` first.")
     st = json.loads(STATE_JSON.read_text())
     wid = st["warrant_id"]
     env = runtime_env()
@@ -2048,7 +2048,7 @@ def check_claude_hook_exit_contract() -> bool:
 
 def cmd_doctor(args) -> None:
     if not _status_json():
-        raise SystemExit("Authorizer not running. Run `tenuo-claude-code up` first.")
+        raise SystemExit("Authorizer not running. Run `tenuo-claude up` first.")
     cfg = load_config()
     sb = cfg["_sandbox_abs"]
     # Plant a symlink inside the sandbox pointing outside it: the path string
@@ -2126,9 +2126,9 @@ def cmd_doctor(args) -> None:
         pid = st.get("web_fetch_approval_policy_id")
         approver = st.get("web_fetch_approver")
         cloud_ready = bool((cfg.get("cloud") or {}).get("url") and pid)
-        # The policy + approver identity are wired at `tenuo-claude-admin setup`.
+        # The policy + approver identity are wired at `tenuo-admin setup`.
         ok = ok and (bool(pid) if cloud_ready else True)
-        print(f"  {'ok ' if pid else '.. '}policy {pid or 'not set up (run tenuo-claude-admin setup)'}"
+        print(f"  {'ok ' if pid else '.. '}policy {pid or 'not set up (run tenuo-admin setup)'}"
               f"{f'  approver={approver}' if approver else ''}")
         # An off-allowlist but SSRF-safe URL must pause for approval (Cloud gate),
         # never pass silently. In local mode it's a hard constraint-deny instead.
@@ -2174,14 +2174,14 @@ def cmd_init(args) -> None:
         if not approver:
             raise SystemExit("--advanced requires --approver (Cloud identity display name).")
         write_advanced_profile(approver=approver)
-        print(f"Advanced profile written: {ADVANCED_PROFILE.name} — re-run `tenuo-claude-admin setup`")
+        print(f"Advanced profile written: {ADVANCED_PROFILE.name} — re-run `tenuo-admin setup`")
     cfg = load_config()
     info = generate(cfg)
-    print("Initialized tenuo-claude-code.")
+    print("Initialized tenuo-claude.")
     print(f"  warrant  : {info['warrant_id']}")
     print(f"  sandbox  : {info['sandbox']}")
     print(f"  wired    : .claude/settings.json (PreToolUse/PostToolUse), .mcp.json, .state/gateway.yaml")
-    print("Next: `tenuo-claude-code up` then use Claude Code in this directory.")
+    print("Next: `tenuo-claude up` then use Claude Code in this directory.")
 
 
 def cmd_refresh(args) -> None:
@@ -2196,7 +2196,7 @@ def cmd_refresh(args) -> None:
     print(f"  gateway  : .state/{GATEWAY.name}")
     print(f"  wiring   : .claude/settings.json, .mcp.json")
     if use_trigger:
-        print("  note     : enforce/audit/subagent changes need `tenuo-claude-admin setup` first")
+        print("  note     : enforce/audit/subagent changes need `tenuo-admin setup` first")
 
     if was_running and not getattr(args, "no_restart", False):
         print("Restarting authorizer (reload gateway)…")
@@ -2205,7 +2205,7 @@ def cmd_refresh(args) -> None:
     elif was_running:
         print("Authorizer left running (--no-restart). Run `down` then `up` to reload gateway.")
     else:
-        print("Next: `tenuo-claude-code up`")
+        print("Next: `tenuo-claude up`")
 
 
 # ---------------------------------------------------------------------------
@@ -2267,7 +2267,7 @@ def main() -> None:
         parser.print_help()
         return
     # Separation of duties: the runtime/agent plane must never carry an admin
-    # credential. Admin actions live in `tenuo-claude-admin`. Skip the internal hook
+    # credential. Admin actions live in `tenuo-admin`. Skip the internal hook
     # handlers — they have their own fail-closed contract and must emit a deny
     # decision rather than raise (a raised SystemExit would be fail-open).
     if args.cmd not in ("_hook", "_post", "_mcp-proxy", "onboard", "bootstrap"):

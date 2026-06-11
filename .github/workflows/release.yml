@@ -25,8 +25,12 @@ jobs:
         run: uv build
 
       - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # v1.13.0
-        with:
-          password: ${{ secrets.PYPI_TOKEN }}
-          packages-dir: dist/
-          skip-existing: true
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
+        run: |
+          if [ -z "${UV_PUBLISH_TOKEN}" ]; then
+            echo "::error::PYPI_TOKEN is not configured on tenuo-ai/claude-governance."
+            echo "Add it under Settings → Secrets → Actions (same upload token as tenuo-ai/tenuo)."
+            exit 1
+          fi
+          uv publish --token "${UV_PUBLISH_TOKEN}"

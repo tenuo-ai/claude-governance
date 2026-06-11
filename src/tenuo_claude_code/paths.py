@@ -19,11 +19,11 @@ __all__ = [
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 
-CLI_COMMAND = "tenuo-claude-code"
-CLI_COMMAND_LEGACY = "tenuo-claude"
-ADMIN_COMMAND = "tenuo-claude-admin"
-ADMIN_COMMAND_LEGACY = "tenuo-admin"
-BIN_LAUNCHER = "tenuo-claude-code"
+CLI_COMMAND = "tenuo-claude"
+CLI_COMMAND_LEGACY = "tenuo-claude-code"
+ADMIN_COMMAND = "tenuo-admin"
+ADMIN_COMMAND_LEGACY = "tenuo-claude-admin"
+BIN_LAUNCHER = "tenuo-claude"
 
 
 def find_project_root(start: Path | None = None) -> Path:

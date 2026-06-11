@@ -562,7 +562,7 @@ git add .gitignore README.md requirements.txt cloud.env.example \
 git status    # confirm .state/ and .mcp.json are NOT listed
 git commit -m "Initial commit: Tenuo governance demo for Claude Code"
 
-gh repo create tenuo/claude-governance --private --source=. --remote=origin --push
+gh repo create tenuo-ai/claude-governance --private --source=. --remote=origin --push
 # adjust org/name as needed
 ```
 

@@ -24,10 +24,6 @@ python3 tenuo_demo.py                   # allow/deny tour without Claude
 
 Or without uv: `python3 -m pip install -r requirements.txt` (same pins).
 
-**Subagent + approval fix (until `tenuo` 0.1.0b24 on PyPI):** install the Python SDK
-from the monorepo after sync — `uv pip install -e /path/to/tenuo-python` — then
-`tenuo-claude up` again to refresh subwarrants.
-
 For root-signed warrants and optional human approval on off-allowlist `WebFetch`,
 see [Tenuo Cloud](#what-the-security-team-sees). Reviewer brief:
 [docs/SECURITY-TEAM.md](docs/SECURITY-TEAM.md).

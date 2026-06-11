@@ -152,8 +152,7 @@ Changing `subagents:` is a policy change: re-run `tenuo-admin setup` (Cloud) or
 `init` (local). Subagents may drop parent approval gates for tools they no longer
 hold (e.g. a read-only `researcher` without `WebFetch`).
 
-Pair with authorizer `0.1.0-beta.23-authz.2` or newer (pinned in `tenuo_claude.py`).
-Until `tenuo` 0.1.0b24 is on PyPI: `uv pip install -e path/to/tenuo-python` (see README).
+Requires `tenuo` 0.1.0b24+ and authorizer `0.1.0-beta.24` (pinned in `tenuo_claude.py`).
 
 ## Receipts
 

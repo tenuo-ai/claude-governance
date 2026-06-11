@@ -13,13 +13,6 @@ python3 tenuo_claude.py init   # records sys.executable in .claude/settings.json
 
 Re-run `init` after switching venvs or Python versions. `.venv/` is gitignored.
 
-Until `tenuo` 0.1.0b24 ships on PyPI (subagent + approval gate fix in `tenuo_core`):
-
-```bash
-uv pip install -e /path/to/tenuo/tenuo-python
-python3 tenuo_claude.py up     # refresh subwarrants
-```
-
 ## Never commit secrets
 
 The following stay local and are gitignored:

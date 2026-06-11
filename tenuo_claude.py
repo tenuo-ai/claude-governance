@@ -69,7 +69,7 @@ POP_HEADER = "X-Tenuo-PoP"
 # The authorizer ships as a published container image (Docker Hub), pinned in
 # lockstep with the `tenuo` PyPI package. Override with TENUO_AUTHORIZER_IMAGE or
 # an `authorizer.image` key in tenuo.yaml.
-DEFAULT_AUTHZ_IMAGE = "tenuo/authorizer:0.1.0-beta.23-authz.2"
+DEFAULT_AUTHZ_IMAGE = "tenuo/authorizer:0.1.0-beta.24"
 
 # Claude tool -> (capability, primary arg, Claude input field for that arg)
 TOOL_DEFAULTS = {

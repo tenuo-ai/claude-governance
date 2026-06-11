@@ -388,6 +388,10 @@ def cmd_setup(_args) -> None:
                         f"Agent '{aname}' is pending (incomplete claim); "
                         f"delete failed ({s_del}): {del_body}")
                 status, body = tc.cloud_api("POST", url, admin, "/v1/agents", create_body)
+                park = (body.get("error") or {}).get("code") if isinstance(body, dict) else None
+                if status == 409 and park == "agent_name_parked":
+                    status, body = tc.cloud_api("POST", url, admin, "/v1/agents",
+                                                {**create_body, "reuse_revoked_name": True})
                 if status != 201:
                     raise SystemExit(
                         f"Agent '{aname}' was pending; recreate failed ({status}): {body}")

@@ -246,7 +246,7 @@ def resolve_approver_identity(url: str, admin: str, display_name: str) -> tuple[
     """Find an EXISTING Cloud identity binding by display name -> (id, public_key_hex).
 
     The identity carries the approver's KMS public key and notification routing
-    (e.g. Telegram). We never create or mutate it here — platform-sec owns
+    (e.g. Telegram, Slack). We never create or mutate it here — platform-sec owns
     identities; setup only references one. Fails loudly if absent or keyless.
     """
     status, body = tc.cloud_api("GET", url, admin, "/v1/identities")
@@ -270,7 +270,7 @@ def ensure_webfetch_approval_policy(url: str, admin: str, name: str, threshold: 
     """Create-or-reuse a web_fetch approval policy and link the approver. -> policy_id.
 
     The policy holds the approver key set + threshold + TTL; linking the identity
-    is what routes the approval prompt to the human (Telegram). Idempotent.
+    is what routes the approval prompt to the human. Idempotent.
     """
     status, body = tc.cloud_api("GET", url, admin, "/v1/approvals/policies")
     existing = None
@@ -302,8 +302,8 @@ def ensure_webfetch_approval_policy(url: str, admin: str, name: str, threshold: 
             raise SystemExit(f"Create approval policy failed ({s}): {b}")
         policy_id = str(b["id"])
         print(f"  approval : policy {policy_id} '{name}' (created)")
-    # Link the identity so the approver is notified (Telegram) and authorized to
-    # sign. Treat already-linked (409/422) as success.
+    # Link the identity so the approver is notified and authorized to sign.
+    # Treat already-linked (409/422) as success.
     s, b = tc.cloud_api("POST", url, admin, f"/v1/identities/{identity_id}/add-to-policy",
                         {"policy_id": policy_id})
     if s not in (200, 201, 204, 409, 422):
@@ -436,7 +436,7 @@ def cmd_setup(_args) -> None:
             int(approval.get("threshold", 1)), approver_key, identity_id)
         tc.save_cloud_state({"web_fetch_approval_policy_id": approval_policy_id,
                              "web_fetch_approver": approver_name})
-        print(f"  approval : approver '{approver_name}' ({approver_key[:16]}…) via Telegram")
+        print(f"  approval : approver '{approver_name}' ({approver_key[:16]}…)")
 
     # 3) Trigger — create or update with the warrant_config from tenuo.yaml.
     wc = build_warrant_config(cfg, approval_policy_id)

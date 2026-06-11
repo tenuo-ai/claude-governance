@@ -22,9 +22,8 @@ def _authz(cfg, tool, tin, role=None, live=False):
 
     `role` plays the part of Claude's `agent_type`: None = main thread (session
     warrant / spawn gate), set = a call made inside that subagent (its own
-    attenuated warrant). `live` drives the real Cloud approval flow (blocks on
-    Telegram); the deterministic tour keeps it off so off-allowlist WebFetch is
-    only REPORTED as approval-required, never actually paused.
+    attenuated warrant). `live=True` runs the real Cloud approval flow (blocks until
+    an approver responds). The default tour reports approval-required without pausing.
     """
     roles = tc.subagent_roles(cfg)
     allowed, reason, gov, _ = tc.authorize_call(cfg, tool, tin, role, roles, live=live)
@@ -65,14 +64,12 @@ def run_demo(live_approval: bool = False) -> None:
         extra = "" if allowed else f"({reason})"
         scope = "enforced" if gov else ("audit" if tool in tc.audit_map(cfg) else "default")
         print(f"  {tag} {tool:17} [{scope:8}] {label} {extra}")
-    print("\nThe two denials up top are the whole pitch: a poisoned file told the agent "
-          "to leak prod secrets and delete prod. Tenuo didn't have to detect the injection "
-          "— the warrant never granted those capabilities.")
+    print("\nPoisoned-file scenario: the warrant denies prod delete and secret read "
+          "whether or not the model catches the injection.")
     if tc.webfetch_approval(cfg):
-        print("\nWebFetch is now THREE-WAY: allowlisted domains pass, SSRF/metadata is "
-              "denied outright, and an off-allowlist-but-safe URL (example.com above) "
-              "PAUSES for a human approval in Telegram — signed by Cloud's KMS, verified "
-              "by the authorizer. (Run with --live-approval to drive it end to end.)")
+        print("\nWebFetch with approval enabled: allowlisted domains pass, SSRF is "
+              "denied, off-allowlist safe URLs wait for approver sign-off in Cloud "
+              "(Telegram, Slack, etc.). Run with --live-approval to exercise it.")
 
     if tc.subagent_roles(cfg):
         print("\nSubagents (Claude Code `Agent` tool) — spawn gate + per-subagent warrant")
@@ -106,14 +103,12 @@ def run_demo(live_approval: bool = False) -> None:
 
 
 def run_live_approval(cfg) -> None:
-    """Interactive beat: drive the real Cloud + Telegram approval for an
-    off-allowlist URL. Blocks until the approver responds (or it times out)."""
+    """Drive a real Cloud approval for an off-allowlist WebFetch URL."""
     url = "https://example.com/off-allowlist-demo"
-    print("\nHuman approval (Telegram) — LIVE")
+    print("\nHuman approval — LIVE")
     print("-" * 40)
     print(f"  WebFetch {url}")
-    print("  off-allowlist + SSRF-safe -> creating a Cloud approval request; "
-          "approve or deny in Telegram now…")
+    print("  off-allowlist + SSRF-safe; waiting for approver (Telegram/Slack/etc.)…")
     allowed, reason, _ = _authz(cfg, "WebFetch", {"url": url}, live=True)
     print(f"  -> {'ALLOWED' if allowed else 'BLOCKED'}: {reason}")
 
@@ -123,7 +118,7 @@ def main() -> None:
         prog="tenuo-demo", description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--live-approval", action="store_true",
-                        help="drive the real Telegram approval for an off-allowlist WebFetch")
+                        help="run real Cloud approval for an off-allowlist WebFetch")
     args = parser.parse_args()
     # Runtime plane: like the operator-facing tenuo-claude commands, the demo
     # must never run with an admin credential reachable in its environment.

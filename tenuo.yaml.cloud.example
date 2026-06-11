@@ -15,8 +15,9 @@ cloud:
   # routing). `tenuo-admin setup` resolves this and wires the approval policy.
   approver_identity: "Your Approver Display Name"
 
-# Optional: add under enforce.WebFetch when you want Telegram approval for
-# off-allowlist URLs (Cloud-only). Remove or comment out `subagents:` first.
+# Optional: add under enforce.WebFetch for human approval on off-allowlist URLs
+# (Cloud only; Telegram, Slack, etc. via the approver identity). Remove or
+# comment out `subagents:` first.
 #
 #   WebFetch:
 #     domains: ["api.github.com", "*.githubusercontent.com", "*.tenuo.ai"]

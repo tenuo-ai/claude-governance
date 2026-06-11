@@ -57,7 +57,7 @@ enforce:
   #
   # The optional `approval` block adds a THIRD outcome between allow and deny:
   #   * allowlisted domain        -> allowed directly (exempt from approval)
-  #   * off-allowlist but SSRF-safe-> PAUSED for human approval (Telegram)
+  #   * off-allowlist but SSRF-safe-> paused for human approval (Cloud)
   #   * SSRF / metadata / loopback -> still hard-denied by url_safe (no gate)
   # Approval is a Cloud-only feature: the gate carries the approver's KMS public
   # key from a Cloud approval policy, and the approval is signed by Cloud's KMS.

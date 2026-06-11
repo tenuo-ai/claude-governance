@@ -10,7 +10,7 @@ manages the Cloud-connected authorizer lifecycle.
     tenuo-claude status    # warrant / authorizer / Cloud / policy summary
     tenuo-claude audit      # pretty-print the signed receipt trail
     tenuo-claude revoke     # revoke this session's warrant
-    tenuo-claude doctor     # self-test enforcement without Claude
+    tenuo-claude doctor     # self-test enforcement without Claude (--no-live skips harness)
     tenuo-claude down       # stop the authorizer
 
 Internal entrypoints (wired into Claude, not called by hand):
@@ -400,7 +400,7 @@ def authorize(tenuo_tool: str, route: str, sign_args: dict, body=None,
 # the required approvals (the call is paused, not denied — provide signatures).
 APPROVAL_REQUIRED_CODE = 1707
 APPROVALS_HEADER = "X-Tenuo-Approvals"
-# Bounded wait for the human to approve in Telegram. Kept under the Claude hook
+# Bounded wait for the approver. Kept under the Claude hook timeout budget.
 # `timeout` set in generate() so the hook resolves rather than being killed.
 APPROVAL_POLL_SECONDS = 150
 APPROVAL_POLL_INTERVAL = 3
@@ -427,7 +427,7 @@ def encode_approvals_header(sigs: list) -> str:
 
 def request_cloud_approval(creds: dict, policy_id: str, claude_tool: str, tenuo_tool: str,
                            args: dict, rb: dict, warrant_b64: str | None):
-    """Create a Cloud approval request, poll Telegram, return signed approval(s).
+    """Create a Cloud approval request, poll until resolved, return signed approval(s).
 
     Returns (signatures, reason). Signatures are base64 CBOR blobs for
     X-Tenuo-Approvals. The request_hash and attestation bind to the exact args.
@@ -475,7 +475,7 @@ def request_cloud_approval(creds: dict, policy_id: str, claude_tool: str, tenuo_
     receipt_base = {"phase": "pre", "source": "approval", "claude_tool": claude_tool,
                     "tenuo_tool": tenuo_tool, "args": args, "approval_request_id": rid}
     write_receipt({**receipt_base, "decision": "pending",
-                   "reason": "awaiting human approval (Telegram)"})
+                   "reason": "awaiting human approval"})
 
     deadline = time.time() + APPROVAL_POLL_SECONDS
     while time.time() < deadline:
@@ -492,7 +492,7 @@ def request_cloud_approval(creds: dict, policy_id: str, claude_tool: str, tenuo_
                     if r.get("signed_approval")]
             if sigs:
                 write_receipt({**receipt_base, "decision": "allow",
-                               "reason": "approved via Telegram"})
+                               "reason": "approved"})
                 return sigs, "approved"
             write_receipt({**receipt_base, "decision": "deny",
                            "reason": "approved but no signature returned"})
@@ -528,7 +528,7 @@ def authorize_with_approval(cfg: dict, claude_tool: str, tenuo_tool: str, route:
                        "run `tenuo-admin setup` (approval gates require Tenuo Cloud)")
     threshold = int(rb.get("required_approvals") or 1)
     if not live:
-        return False, f"{APPROVAL_PENDING_REASON}: {threshold} human approval(s) via Telegram"
+        return False, f"{APPROVAL_PENDING_REASON}: {threshold} approval(s) required"
 
     sigs, areason = request_cloud_approval(
         creds, policy_id, claude_tool, tenuo_tool, sign_args, rb, warrant_b64)
@@ -538,7 +538,7 @@ def authorize_with_approval(cfg: dict, claude_tool: str, tenuo_tool: str, route:
         tenuo_tool, route, sign_args, body, warrant_b64,
         approvals_b64=encode_approvals_header(sigs))
     if allowed:
-        return True, "approved via Telegram"
+        return True, "approved"
     return False, f"re-authorize after approval failed: {reason}"
 
 
@@ -747,8 +747,7 @@ def cmd_hook(_args) -> None:
         # calls have no agent_type and run under the session warrant as usual.
         agent_type = event.get("agent_type")
         roles = subagent_roles(cfg)
-        # Enforce mode drives the live approval flow (block on Telegram); audit
-        # mode only reports that approval WOULD be required (never blocks).
+        # Enforce mode drives the live approval flow; audit mode only reports.
         allowed, reason, governed, tenuo_tool = (
             authorize_call(cfg, tool, tin, agent_type, roles, live=not audit_only))
         write_receipt(
@@ -761,8 +760,7 @@ def cmd_hook(_args) -> None:
         scope = f" (subagent:{agent_type})" if agent_type else ""
         decision = "allow" if allowed else "deny"
         if allowed:
-            # Surface a human-approval allow ("approved via Telegram") so the
-            # transcript shows WHY a normally-gated call went through.
+            # Include approval outcome in the hook reason when relevant.
             extra = f" — {reason}" if "approv" in (reason or "").lower() else ""
             reason_text = f"Tenuo {kind}: {tool}{scope}{extra}"
         else:
@@ -983,10 +981,7 @@ def write_claude_wiring(cfg: dict) -> None:
     py = sys.executable
     claude_dir = DEMO_DIR / ".claude"
     claude_dir.mkdir(exist_ok=True)
-    # PreToolUse `timeout` (seconds): a WebFetch approval gate parks the call
-    # while a human approves in Telegram, so the hook must outlast the bounded
-    # poll (APPROVAL_POLL_SECONDS) instead of Claude killing it. A bit of head
-    # room over the poll keeps the resolved decision authoritative.
+    # PreToolUse timeout: when approval is enabled, the hook must outlast the poll window.
     hook_timeout = APPROVAL_POLL_SECONDS + 30 if webfetch_approval(cfg) else 30
     (claude_dir / "settings.json").write_text(json.dumps({"hooks": {
         "PreToolUse": [{"matcher": "*", "hooks": [
@@ -1399,7 +1394,7 @@ def cmd_audit(args) -> None:
             d = r.get("decision", "")
             # In observe-only mode a "deny" was logged but NOT enforced.
             if d == "pending":
-                mark = "PENDING"   # parked on a human approval (Telegram)
+                mark = "PENDING"   # parked on human approval
             elif r.get("shadow") and d == "deny":
                 mark = "WOULD-DENY"
             else:
@@ -1458,9 +1453,15 @@ def check_claude_hook_exit_contract() -> bool:
         claude_dir = root / ".claude"
         claude_dir.mkdir()
 
-        def run_with_hook(exit_code: int) -> subprocess.CompletedProcess:
+        def run_with_hook(exit_code: int) -> tuple[subprocess.CompletedProcess, Path]:
+            marker = root / f"hook_ran_{exit_code}.txt"
+            marker.unlink(missing_ok=True)
             hook = root / f"hook_exit{exit_code}.py"
-            hook.write_text(f"import sys\nsys.exit({exit_code})\n")
+            hook.write_text(
+                "import sys\n"
+                f"from pathlib import Path\n"
+                f"Path({str(marker)!r}).write_text('exit={exit_code}\\n')\n"
+                f"sys.exit({exit_code})\n")
             settings = {
                 "hooks": {
                     "PreToolUse": [{
@@ -1471,15 +1472,16 @@ def check_claude_hook_exit_contract() -> bool:
                 }
             }
             (claude_dir / "settings.json").write_text(json.dumps(settings))
-            return subprocess.run(
+            proc = subprocess.run(
                 [claude, "-p",
                  "Read CANARY.txt. Reply with only the file contents, nothing else.",
                  "--dangerously-skip-permissions"],
                 cwd=root, capture_output=True, text=True, timeout=90)
+            return proc, marker
 
         try:
-            r1 = run_with_hook(1)
-            r2 = run_with_hook(2)
+            r1, m1 = run_with_hook(1)
+            r2, m2 = run_with_hook(2)
         except subprocess.TimeoutExpired:
             print("  .. hook-exit  claude timed out — skipped (API/network?)")
             return True
@@ -1487,25 +1489,31 @@ def check_claude_hook_exit_contract() -> bool:
             print(f"  .. hook-exit  claude harness error ({exc}) — skipped")
             return True
 
-        out1 = (r1.stdout or "") + (r1.stderr or "")
-        out2 = (r2.stdout or "") + (r2.stderr or "")
-        exit1_leaks = "TENUO_HOOK_CANARY" in out1
-        exit2_blocks = "TENUO_HOOK_CANARY" not in out2
         ok = True
-        if exit1_leaks:
-            print("  ok  hook-exit  exit 1 is non-blocking (canary reached)")
-        else:
-            print("  XX hook-exit  exit 1 blocked unexpectedly — contract may have changed")
-            ok = False
-        if exit2_blocks:
-            print("  ok  hook-exit  exit 2 blocks the tool call")
-        else:
-            print("  XX hook-exit  exit 2 did NOT block (canary leaked)")
-            ok = False
+        for exit_code, proc, marker in ((1, r1, m1), (2, r2, m2)):
+            out = (proc.stdout or "") + (proc.stderr or "")
+            leaked = "TENUO_HOOK_CANARY" in out
+            ran = marker.is_file()
+            if not ran:
+                print(f"  XX hook-exit  exit {exit_code}: hook never ran "
+                      f"(project settings not loaded? trust prompt?)")
+                ok = False
+                continue
+            if exit_code == 1:
+                if leaked:
+                    print("  ok  hook-exit  exit 1 is non-blocking (canary reached)")
+                else:
+                    print("  XX hook-exit  exit 1 blocked unexpectedly — contract may have changed")
+                    ok = False
+            elif leaked:
+                print("  XX hook-exit  exit 2 did NOT block (canary leaked)")
+                ok = False
+            else:
+                print("  ok  hook-exit  exit 2 blocks the tool call")
         return ok
 
 
-def cmd_doctor(_args) -> None:
+def cmd_doctor(args) -> None:
     if not _status_json():
         raise SystemExit("Authorizer not running. Run `tenuo-claude up` first.")
     cfg = load_config()
@@ -1597,10 +1605,13 @@ def cmd_doctor(_args) -> None:
         if cloud_ready:
             ok = ok and gated
             print(f"  {'ok ' if gated else 'XX '}gate  off-allowlist -> "
-                  f"{'human approval (Telegram)' if gated else 'NOT gated (' + reason + ')'}")
+                  f"{'approval required' if gated else 'NOT gated (' + reason + ')'}")
         else:
             print(f"  .. gate  off-allowlist denied locally (approval is Cloud-only): {reason}")
-    ok = ok and check_claude_hook_exit_contract()
+    if not getattr(args, "no_live", False):
+        ok = ok and check_claude_hook_exit_contract()
+    else:
+        print("  .. hook-exit  skipped (--no-live)")
     print("\nDOCTOR OK" if ok else "\nDOCTOR FAILED")
     raise SystemExit(0 if ok else 1)
 
@@ -1630,9 +1641,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="tenuo-claude", description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd")
-    for name in ["init", "up", "down", "status", "revoke", "doctor",
-                 "_hook", "_post", "_mcp-proxy"]:
+    for name in ["init", "up", "down", "status", "revoke", "_hook", "_post", "_mcp-proxy"]:
         sub.add_parser(name)
+    pd = sub.add_parser("doctor")
+    pd.add_argument("--no-live", action="store_true",
+                    help="skip live Claude Code PreToolUse exit-code harness")
     pa = sub.add_parser("audit")
     pa.add_argument("--tail", type=int, default=None)
     args = parser.parse_args()

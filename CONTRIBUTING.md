@@ -26,7 +26,15 @@ Before pushing, verify nothing sensitive is staged:
 
 ```bash
 git status --ignored
-git diff --cached | rg -i 'tc_[a-zA-Z0-9]{20,}|sk_live_(?!FAKEFAKE)|/Users/' || true
+if git diff --cached | rg -i 'tc_[a-zA-Z0-9]{20,}|/Users/'; then
+  echo "ERROR: possible API key or home path in staged diff" >&2
+  exit 1
+fi
+if git diff --cached | rg -i 'sk_live_' | rg -v FAKEFAKE; then
+  echo "ERROR: possible live Stripe key in staged diff" >&2
+  exit 1
+fi
+echo "Secret scan: clean"
 ```
 
 If this folder stays inside the monorepo, use a **separate clone** of the private
@@ -56,5 +64,6 @@ to catch default-denies on tools not yet in the bundled list.
 ## Hook exit-code contract
 
 `doctor` runs a live Claude Code harness check when the `claude` binary is on
-`PATH` (see `check_claude_hook_exit_contract()`). Re-run after Claude Code upgrades;
-update the documented baseline version in the README if semantics change.
+`PATH` (see `check_claude_hook_exit_contract()`). The hook writes a marker file
+before exiting so doctor can tell "hook never ran" from "exit 2 didn't block."
+Use `doctor --no-live` in automation. Re-run after Claude Code upgrades.

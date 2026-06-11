@@ -11,7 +11,7 @@ and reviewer depth, see [DETAILS.md](DETAILS.md). For install, see [README.md](.
 ### Environment
 
 Requires [uv](https://docs.astral.sh/uv/), Docker, Claude Code, and a Tenuo Cloud
-tenant with **two API keys** (different scopes — see below).
+tenant with **two API keys** (different roles — see below).
 
 ### Cloud credentials (before `setup`)
 
@@ -19,24 +19,26 @@ You need a tenant on [cloud.tenuo.ai](https://cloud.tenuo.ai) (staging or produc
 If you do not have one yet, request access via [tenuo.ai/early-access](https://tenuo.ai/early-access.html)
 or use the tenant your platform team already provisioned.
 
-Create **two keys** in the dashboard (**Settings → API Keys**). They land in
-**different files** so runtime never sees the admin key:
+You need **two keys** with different RBAC roles. They land in **different files**
+so runtime never sees the admin key:
 
-| Key | Scope | File | Used by |
-|-----|-------|------|---------|
-| **Authorizer** | Authorizer / agent | `.state/cloud.env` | `tenuo_claude.py up`, hooks, demo |
-| **Admin** | Admin | `~/.tenuo/admin.env` | `tenuo_admin.py setup` **once** |
+| Key | Role / source | File | Used by |
+|-----|---------------|------|---------|
+| **Runtime** | Quick Connect (authorizer service account) | `.state/cloud.env` | `tenuo_claude.py up`, hooks, demo |
+| **Admin** | Tenant admin (not in Quick Connect) | `~/.tenuo/admin.env` | `tenuo_admin.py setup` **once** |
 
-**Authorizer key (usually already have this)** — Quick Connect and most
-onboarding flows issue an **authorizer-scoped** key only. Copy
-`cloud.env.example` → `.state/cloud.env` and paste that key plus the
-control-plane URL (`https://api.tenuo.ai` or your staging URL).
+**Runtime key (usually already have this)** — Quick Connect bundles the
+authorizer runtime key. Copy `cloud.env.example` → `.state/cloud.env` and paste
+that key plus the control-plane URL (`https://api.tenuo.ai` or your staging URL).
+This identity needs RBAC permissions for **agent claim** and **trigger fire**
+(assigned automatically to the Quick Connect authorizer role).
 
-**Admin key (not included in Quick Connect — create or request it)** — the
-connect token does **not** carry admin scope. Either:
+**Admin key (not included in Quick Connect — create or request it)** — tenant
+administration: register holder agents, create/update triggers, wire approval
+policies. Either:
 
-1. **Dashboard:** Settings → API Keys → Create key → **Admin** scope, then
-   `cp admin.env.example ~/.tenuo/admin.env` and paste it, or
+1. **Dashboard:** Settings → API Keys → Create key with the **tenant admin**
+   role, then `cp admin.env.example ~/.tenuo/admin.env` and paste it, or
 2. **Onboarding:** use the separate admin key your Tenuo contact sent when the
    tenant was provisioned (common for early-access / staging).
 

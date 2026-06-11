@@ -6,27 +6,152 @@ with a receipt on each decision, including under `--dangerously-skip-permissions
 Policy is `tenuo.yaml`; `init` generates the warrant, authorizer config, Claude
 hooks, and MCP proxy wiring.
 
-## Quickstart
+## Setup
 
 Requires Python ≥ 3.10, Docker, and (for live demos) [Claude Code](https://code.claude.com/docs).
-Cloud is optional; local mode works with a local issuer key.
 
 **Python environment (recommended — [uv](https://docs.astral.sh/uv/)):**
 
 ```bash
 uv venv && uv sync
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
-python3 tenuo_claude.py init   # hooks pin this interpreter — re-run init if you change venvs
-python3 tenuo_claude.py up
-python3 tenuo_claude.py doctor          # --no-live skips the Claude harness check
-python3 tenuo_demo.py                   # allow/deny tour without Claude
 ```
 
 Or without uv: `python3 -m pip install -r requirements.txt` (same pins).
 
-For root-signed warrants and optional human approval on off-allowlist `WebFetch`,
-see [Tenuo Cloud](#what-the-security-team-sees). Reviewer brief:
-[docs/SECURITY-TEAM.md](docs/SECURITY-TEAM.md).
+Re-run `init` after switching venvs — hooks pin `sys.executable` in `.claude/settings.json`.
+
+### Local mode
+
+No Tenuo Cloud account. Warrants are minted from a **local issuer key** in `.state/`.
+Receipts stay in `.state/receipts.jsonl`. Off-allowlist `WebFetch` URLs are **denied**
+(no human approval).
+
+**1. Policy** — stock `tenuo.yaml` is ready. Do **not** add `cloud:` or
+`WebFetch.approval` (those are Cloud-only).
+
+**2. Ensure Cloud files are absent** (otherwise `up` stays in Cloud mode):
+
+```bash
+# if you previously ran Cloud setup:
+mv .state/cloud.env .state/cloud.env.bak 2>/dev/null
+mv .state/cloud_state.json .state/cloud_state.json.bak 2>/dev/null
+unset TENUO_ADMIN_KEY TENUO_API_KEY TENUO_CONTROL_PLANE_URL
+```
+
+**3. Initialize and run:**
+
+```bash
+python3 tenuo_claude.py init    # mint local warrant, wire hooks + MCP proxy
+python3 tenuo_claude.py up      # should print: Local mode (no Cloud).
+python3 tenuo_claude.py doctor --no-live
+python3 tenuo_demo.py
+```
+
+**4. Verify** — `python3 tenuo_claude.py status` should show:
+
+```text
+authorizer  : up (http://127.0.0.1:9090) | cloud: disabled
+```
+
+No `web-approval:` line. Revoke with `python3 tenuo_claude.py revoke`.
+
+---
+
+### Cloud mode
+
+Root-signed session warrants, central receipt stream in
+[cloud.tenuo.ai](https://cloud.tenuo.ai), optional **human approval** on off-allowlist
+`WebFetch`, fleet revocation (~30s SRL sync). Customer presentation runbook:
+[docs/PRESENTATION.md](docs/PRESENTATION.md).
+
+**1. Tenant + keys** — you need **two API keys** in **two files** (separation of duties):
+
+| Key | Role | File | Used by |
+|-----|------|------|---------|
+| **Runtime** | Quick Connect authorizer service account | `.state/cloud.env` | `tenuo_claude.py up`, hooks, demo |
+| **Admin** | Tenant admin (not in Quick Connect) | `~/.tenuo/admin.env` | `tenuo_admin.py setup` **once** |
+
+```bash
+mkdir -p .state ~/.tenuo
+cp cloud.env.example .state/cloud.env
+cp admin.env.example ~/.tenuo/admin.env
+# Edit cloud.env: paste Quick Connect runtime key + API URL (staging or prod).
+# Edit admin.env: paste tenant-admin key from dashboard or onboarding.
+```
+
+Quick Connect gives the **runtime** key only. Create the **admin** key in the dashboard
+(Settings → API Keys, tenant-admin role) or use the one from tenant onboarding.
+
+**Important:** never put the admin key in `.state/cloud.env` or your shell when running
+`tenuo-claude` / `tenuo_demo` — runtime refuses to start if an admin key is reachable.
+
+**2. Policy overlay** — merge from `tenuo.yaml.cloud.example` into `tenuo.yaml`:
+
+```yaml
+cloud:
+  approver_identity: "Your Approver Display Name"   # must exist in Cloud
+
+enforce:
+  WebFetch:
+    domains: ["api.github.com", "*.githubusercontent.com", "*.tenuo.ai"]
+    approval:          # optional — omit for strict deny on off-allowlist URLs
+      threshold: 1
+```
+
+`approver_identity` is required when `WebFetch.approval` is set. Subagents can stay on
+when child roles omit `WebFetch` (default `researcher` is read-only).
+
+**3. One-time Cloud registration** (platform / prep — not every session):
+
+```bash
+unset TENUO_ADMIN_KEY   # only needed if exported in your shell
+python3 tenuo_admin.py setup
+```
+
+Creates the holder agent, Cloud trigger, and (if configured) approval policy. Writes
+`.state/cloud_state.json`. Re-run after **policy changes** (`tenuo.yaml` cloud block,
+`subagents:`, or `WebFetch.approval`).
+
+**4. Daily developer flow:**
+
+```bash
+unset TENUO_ADMIN_KEY
+python3 tenuo_claude.py init    # wire hooks; re-run after venv or policy changes
+python3 tenuo_claude.py up      # fires trigger → root-signed session warrant
+python3 tenuo_claude.py doctor --no-live
+python3 tenuo_demo.py
+python3 tenuo_demo.py --live-approval   # optional; approver must respond
+```
+
+**5. Verify** — `python3 tenuo_claude.py status` should show:
+
+```text
+web-approval: off-allowlist WebFetch -> human approval (…) | policy apol_…
+authorizer  : up (…) | cloud: registered authz_…
+```
+
+Revoke from Cloud dashboard or `tenuo-claude status` warrant id (~30s SRL sync).
+
+---
+
+### Switching local ↔ Cloud
+
+`up` picks mode from **files on disk**, not yaml alone. If Cloud files exist, you stay
+in Cloud mode until you remove them **and restart the authorizer**:
+
+| To switch **to local** | To switch **to Cloud** |
+|------------------------|------------------------|
+| Move aside `.state/cloud.env` and `.state/cloud_state.json` | Restore both files |
+| Comment/remove `cloud:` and `WebFetch.approval` in `tenuo.yaml` | Restore overlay from `tenuo.yaml.cloud.example` |
+| `tenuo-claude down` → `init` → `up` | `tenuo-admin setup` (if needed) → `down` → `up` |
+| Status: `cloud: disabled` | Status: `cloud: registered …` |
+
+`down` is required when switching — a running container keeps its old Cloud env until
+replaced.
+
+Reviewer brief: [docs/SECURITY-TEAM.md](docs/SECURITY-TEAM.md). Deep dive:
+[docs/DETAILS.md](docs/DETAILS.md).
 
 ## See it in action
 
@@ -159,27 +284,9 @@ Admin vs runtime separation:
 | Tool | Key | Does |
 |------|-----|------|
 | `tenuo_admin.py setup` | admin (`~/.tenuo/admin.env`) | Register holder, create trigger from `tenuo.yaml` |
-| `tenuo_claude.py up` | authorizer (`.state/cloud.env`) | Fire trigger, run authorizer |
+| `tenuo_claude.py up` | runtime (`.state/cloud.env`) | Fire trigger, run authorizer |
 
-Runtime refuses to start if an admin key is in the environment.
-
-**Cloud credentials** — two keys, two files:
-
-| Key | Where you get it | File |
-|-----|------------------|------|
-| **Authorizer** | Quick Connect or dashboard API key (authorizer scope) | `.state/cloud.env` |
-| **Admin** | **Not** in Quick Connect — create in dashboard (Admin scope) or use the key from tenant onboarding | `~/.tenuo/admin.env` |
-
-```bash
-cp cloud.env.example .state/cloud.env      # authorizer key + API URL
-cp admin.env.example ~/.tenuo/admin.env    # admin key (setup only)
-# merge tenuo.yaml.cloud.example into tenuo.yaml, then:
-python3 tenuo_admin.py setup               # once (needs both files)
-python3 tenuo_claude.py init && python3 tenuo_claude.py up
-```
-
-See `tenuo.yaml.cloud.example` for the Cloud policy overlay. Full presentation
-runbook: [docs/PRESENTATION.md](docs/PRESENTATION.md).
+See [Setup → Cloud mode](#cloud-mode) for step-by-step credentials and commands.
 
 ### Cloud audit stream
 
@@ -260,7 +367,7 @@ calls, not interactive `!` shell — restrict that at the workstation if needed.
 
 ## Rolling out
 
-1. **Local eval** — this repo: `init`, `up`, `doctor`, `tenuo_demo.py`.
+1. **Local eval** — [Setup → Local mode](#local-mode): `init`, `up`, `doctor`, `tenuo_demo.py`.
 2. **Observe-only** — `mode: audit`: compute and receipt real allow/deny without
    blocking. The hook emits **no** permission decision, so observe-only never weakens
    Claude's stock prompts. Tune on `WOULD-DENY` rows, then set `mode: enforce`.
@@ -299,6 +406,9 @@ tools, spawns fail closed unless the new name is only audit-listed.
 | File | Purpose |
 |------|---------|
 | `tenuo.yaml` | Policy |
+| `tenuo.yaml.cloud.example` | Cloud overlay template (`cloud:`, `WebFetch.approval`) |
+| `cloud.env.example` | Runtime key template → `.state/cloud.env` |
+| `admin.env.example` | Admin key template → `~/.tenuo/admin.env` |
 | `harness_tools.yaml` | Bundled harness tool allowlist |
 | `docs/SECURITY-TEAM.md` | One-page reviewer brief |
 | `docs/DETAILS.md` | Deep dive (SSRF examples, audit invariants, subagents) |

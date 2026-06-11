@@ -1123,9 +1123,9 @@ ADMIN_KEY_VARS = ("TENUO_ADMIN_KEY", "TENUO_ADMIN_API_KEY")
 
 
 def assert_no_admin_key() -> None:
-    """Separation of duties: the runtime/agent plane must NEVER carry an
-    admin-scoped credential. Admin actions (create agent/trigger) live in
-    `tenuo_admin.py` with their own out-of-tree key (~/.tenuo/admin.env).
+    """Separation of duties: the runtime/agent plane must NEVER carry a tenant-admin
+    API key. Admin actions (create agent/trigger) live in `tenuo_admin.py` with
+    their own out-of-tree key (~/.tenuo/admin.env).
 
     Fail closed if an admin key is reachable from the runtime environment or
     leaks into .state/cloud.env — that would let a compromised session escalate.
@@ -1140,15 +1140,16 @@ def assert_no_admin_key() -> None:
 
 
 def cloud_creds(cfg: dict) -> dict:
-    """Resolve Cloud URL + the AUTHORIZER key from cfg + .state/cloud.env.
+    """Resolve Cloud URL + the runtime authorizer key from cfg + .state/cloud.env.
 
     Note: no admin key here by design — runtime fires triggers and consumes
-    warrants with an authorizer-scoped key only. See tenuo_admin.py.
+    warrants with the Quick Connect / authorizer service-account key only.
+    See tenuo_admin.py.
     """
     env = runtime_env()
     return {
         "url": (cfg.get("cloud") or {}).get("url") or env.get("TENUO_CONTROL_PLANE_URL"),
-        "api_key": env.get("TENUO_API_KEY"),   # authorizer scope: claim + fire
+        "api_key": env.get("TENUO_API_KEY"),   # runtime key: claim + fire (RBAC)
         "root": env.get("TENUO_TENANT_ROOT"),
     }
 
@@ -1174,7 +1175,7 @@ def trigger_id(cfg: dict) -> str | None:
 
 
 def fire_session_warrant(cfg: dict, creds: dict) -> tuple[str, str]:
-    """Fire the configured trigger -> (warrant_b64, tenant_root_hex). Authorizer scope."""
+    """Fire the configured trigger -> (warrant_b64, tenant_root_hex). Runtime key."""
     tid = trigger_id(cfg)
     if not tid:
         raise SystemExit("No trigger configured. Run `tenuo-admin setup` first.")

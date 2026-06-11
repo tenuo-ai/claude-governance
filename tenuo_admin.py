@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """tenuo-admin — the ADMIN/setup plane for the Claude Code demo.
 
-Separation of duties: this is the ONLY place that holds an admin-scoped Cloud
+Separation of duties: this is the ONLY place that holds a tenant-admin Cloud
 key and the ONLY code that performs admin actions (create agent, create/patch
 trigger). It is meant to be run by platform-sec / CI — not by the developer or
 the agent. The runtime CLI (`tenuo-claude`) has no path to these endpoints and
@@ -9,10 +9,10 @@ refuses to run if an admin key is reachable from its environment.
 
 Credentials
 -----------
-  * Admin-scoped key (admin actions): read from $TENUO_ADMIN_KEY /
+  * Tenant-admin API key (admin actions): read from $TENUO_ADMIN_KEY /
     $TENUO_ADMIN_API_KEY, or from ~/.tenuo/admin.env. NEVER from .state/cloud.env.
-  * Authorizer-scoped key + control-plane URL: read from .state/cloud.env. The
-    authorizer key is used for claim + fire so the trigger locks to the RUNTIME
+  * Runtime / authorizer API key + control-plane URL: read from .state/cloud.env.
+    Used for agent claim + trigger fire so the trigger locks to the runtime
     service account (the identity that actually fires at session start), not the
     admin one.
 
@@ -313,7 +313,7 @@ def ensure_webfetch_approval_policy(url: str, admin: str, name: str, threshold: 
 def cmd_setup(_args) -> None:
     """One-time: register the holder agent + create the trigger from tenuo.yaml.
 
-    Admin-scoped key creates the agent + trigger. The authorizer-scoped key
+    Admin key creates the agent + trigger. The runtime key in cloud.env
     claims the holder key and fires (so the trigger locks to the runtime SA).
     Idempotent: re-running reuses the agent and updates the trigger.
     """
@@ -325,7 +325,7 @@ def cmd_setup(_args) -> None:
         raise SystemExit("Set TENUO_CONTROL_PLANE_URL + TENUO_API_KEY in .state/cloud.env.")
     if not creds["admin_key"]:
         raise SystemExit(
-            "tenuo-admin setup needs an admin-scoped key.\n"
+            "tenuo-admin setup needs a tenant-admin API key.\n"
             "  export TENUO_ADMIN_KEY=tc_...   (or add it to ~/.tenuo/admin.env)")
 
     url, api_key, admin = creds["url"], creds["api_key"], creds["admin_key"]
@@ -372,26 +372,67 @@ def cmd_setup(_args) -> None:
         if status == 201:
             agent_id, reg_token = body["id"], body["registration_token"]
         elif status == 409:
-            # An ACTIVE agent already owns this name but it isn't in local state
-            # (local .state was wiped while Cloud kept the agent). Adopt it by
-            # rotating its key so we can re-claim with this machine's fresh key.
+            # Name is taken in Cloud but local state was wiped (or never saved).
+            # Active -> rotate key and re-claim; revoked/parked -> reclaim name.
             s, info = tc.cloud_api("GET", url, admin, f"/v1/agents/by-name/{aname}")
             if s != 200 or not isinstance(info, dict):
                 raise SystemExit(f"Agent '{aname}' exists but could not be adopted ({s}): {info}")
             agent_id = info["id"]
-            s, rot = tc.cloud_api("POST", url, admin, f"/v1/agents/{agent_id}/rotate", {})
-            if s not in (200, 201) or not isinstance(rot, dict):
-                raise SystemExit(f"Rotate key for '{aname}' failed ({s}): {rot}")
-            reg_token = rot["registration_token"]
-            print(f"  agent    : {agent_id} '{aname}' (adopted existing; key rotated)")
+            agent_status = (info.get("status") or "").lower()
+            if agent_status == "pending":
+                # Stuck mid-rotation (rotate issued a token but claim never ran).
+                # Delete and recreate — cannot rotate or reuse while pending.
+                s_del, del_body = tc.cloud_api("DELETE", url, admin, f"/v1/agents/{agent_id}")
+                if s_del not in (200, 204):
+                    raise SystemExit(
+                        f"Agent '{aname}' is pending (incomplete claim); "
+                        f"delete failed ({s_del}): {del_body}")
+                status, body = tc.cloud_api("POST", url, admin, "/v1/agents", create_body)
+                if status != 201:
+                    raise SystemExit(
+                        f"Agent '{aname}' was pending; recreate failed ({status}): {body}")
+                agent_id, reg_token = body["id"], body["registration_token"]
+                print(f"  agent    : {agent_id} '{aname}' (replaced pending agent)")
+            elif agent_status != "active":
+                status, body = tc.cloud_api("POST", url, admin, "/v1/agents",
+                                            {**create_body, "reuse_revoked_name": True})
+                if status != 201:
+                    raise SystemExit(
+                        f"Agent '{aname}' is {agent_status or 'not active'}; "
+                        f"reuse_revoked_name failed ({status}): {body}")
+                agent_id, reg_token = body["id"], body["registration_token"]
+                print(f"  agent    : {agent_id} '{aname}' (reclaimed {agent_status} name)")
+            else:
+                s, rot = tc.cloud_api("POST", url, admin, f"/v1/agents/{agent_id}/rotate", {})
+                if s not in (200, 201) or not isinstance(rot, dict):
+                    rot_code = (rot.get("error") or {}).get("code") if isinstance(rot, dict) else None
+                    if rot_code == "agent_not_active":
+                        status, body = tc.cloud_api("POST", url, admin, "/v1/agents",
+                                                    {**create_body, "reuse_revoked_name": True})
+                        if status != 201:
+                            raise SystemExit(
+                                f"Agent '{aname}' is not active; "
+                                f"reuse_revoked_name failed ({status}): {body}")
+                        agent_id, reg_token = body["id"], body["registration_token"]
+                        print(f"  agent    : {agent_id} '{aname}' (reclaimed inactive name)")
+                    else:
+                        raise SystemExit(f"Rotate key for '{aname}' failed ({s}): {rot}")
+                else:
+                    reg_token = rot["registration_token"]
+                    print(f"  agent    : {agent_id} '{aname}' (adopted existing; key rotated)")
         else:
             raise SystemExit(f"Create agent failed ({status}): {body}")
-        # 2) Claim — bind the holder public key (hex). Authorizer scope.
+        # 2) Claim — bind the holder public key (hex). Runtime key (Quick Connect).
         status, body = tc.cloud_api("POST", url, api_key, "/v1/agents/claim",
                                     {"agent_id": agent_id, "public_key": holder_hex,
                                      "registration_token": reg_token})
         if status != 200:
-            raise SystemExit(f"Claim agent failed ({status}): {body}")
+            hint = ""
+            if status == 403:
+                hint = (
+                    "\n  .state/cloud.env must hold the Quick Connect / authorizer "
+                    "runtime key (RBAC: agent claim + trigger fire), not the admin key.")
+            raise SystemExit(f"Claim agent failed ({status}): {body}{hint}")
         print(f"  agent    : {agent_id} '{aname}' (registered + key claimed)")
         tc.save_cloud_state({"agent_id": agent_id, "agent_name": aname})
     else:

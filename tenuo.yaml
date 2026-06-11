@@ -20,6 +20,8 @@ sandbox: ./sandbox
 # human approval). Not required for local mode. Copy the `cloud:` block from
 # `tenuo.yaml.cloud.example`, set `.state/cloud.env` from `cloud.env.example`,
 # then run `tenuo-admin setup` once before `tenuo-claude up`.
+#cloud:
+#  approver_identity: "Niki Aimable"
 
 # ENFORCED tools: explicitly allowed AND argument-checked. These may mutate, but
 # only within scope. Constraint DSL:
@@ -65,8 +67,8 @@ enforce:
   # URLs are simply denied. `cloud.approver_identity` selects the approver.
   WebFetch:
     domains: ["api.github.com", "*.githubusercontent.com", "*.tenuo.ai"]
-    # Human approval for off-allowlist URLs is Cloud-only — see
-    # tenuo.yaml.cloud.example (combinable with subagents when roles omit WebFetch).
+#    approval:
+#      threshold: 1
 
 # Harness-inert tools (Task*, plan mode, AskUserQuestion, …) ship in
 # harness_tools.yaml and merge at load time. Add site-specific audit-allows:

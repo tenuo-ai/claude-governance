@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write  # trusted publishing (OIDC) when PYPI_TOKEN is unset
 
 jobs:
   publish-pypi:
@@ -28,9 +29,12 @@ jobs:
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
         run: |
-          if [ -z "${UV_PUBLISH_TOKEN}" ]; then
-            echo "::error::PYPI_TOKEN is not configured on tenuo-ai/claude-governance."
-            echo "Add it under Settings → Secrets → Actions (same upload token as tenuo-ai/tenuo)."
-            exit 1
+          if [ -n "${UV_PUBLISH_TOKEN}" ]; then
+            echo "Publishing with PYPI_TOKEN secret..."
+            uv publish
+          else
+            echo "No PYPI_TOKEN — using trusted publishing (OIDC)."
+            echo "PyPI must list a trusted publisher for:"
+            echo "  owner=tenuo-ai  repo=claude-governance  workflow=release.yml"
+            uv publish --trusted-publishing always
           fi
-          uv publish --token "${UV_PUBLISH_TOKEN}"

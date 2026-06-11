@@ -70,6 +70,40 @@ echo "Secret scan: clean"
 If this folder stays inside the monorepo, use a **separate clone** of the private
 repo for day-to-day demo work so `.state/` never lands in the main tree.
 
+## PyPI releases (maintainers)
+
+Package on PyPI: **`tenuo-claude-code`**. CLI: **`tenuo-claude`**, **`tenuo-admin`**.
+
+CI builds on push/PR. **Release** (`.github/workflows/release.yml`) publishes on
+tag `v*` or manual dispatch.
+
+### Option A — Trusted publishing (recommended, no GitHub secret)
+
+1. Open [PyPI publishing settings](https://pypi.org/manage/account/publishing/) →
+   **Add a new pending publisher**:
+   - PyPI project name: `tenuo-claude-code`
+   - Owner: `tenuo-ai`
+   - Repository: `claude-governance`
+   - Workflow: `release.yml`
+   - Environment name: *(leave blank)*
+2. Push a tag (or re-run Release workflow after saving):
+
+```bash
+git tag -f v0.1.0 && git push -f origin v0.1.0
+```
+
+### Option B — API token
+
+Add `PYPI_TOKEN` to this repo (Settings → Secrets → Actions), then:
+
+```bash
+gh workflow run release.yml -R tenuo-ai/claude-governance
+```
+
+### New versions
+
+Bump `version` in `pyproject.toml` and `src/tenuo_claude_code/__init__.py`, then tag.
+
 ## Code layout
 
 `tenuo_claude.py` is intentionally standalone for the demo, but the enforcement

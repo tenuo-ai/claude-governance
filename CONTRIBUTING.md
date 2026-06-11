@@ -2,6 +2,24 @@
 
 Internal scaffolding for the standalone repo — not required for running the demo.
 
+## Python environment
+
+Use a project venv so hooks and the MCP proxy resolve the same interpreter:
+
+```bash
+uv venv && uv sync && source .venv/bin/activate
+python3 tenuo_claude.py init   # records sys.executable in .claude/settings.json
+```
+
+Re-run `init` after switching venvs or Python versions. `.venv/` is gitignored.
+
+Until `tenuo` 0.1.0b24 ships on PyPI (subagent + approval gate fix in `tenuo_core`):
+
+```bash
+uv pip install -e /path/to/tenuo/tenuo-python
+python3 tenuo_claude.py up     # refresh subwarrants
+```
+
 ## Never commit secrets
 
 The following stay local and are gitignored:
@@ -24,7 +42,8 @@ never appears in the log:
 cd demo/claude-governance   # or your export copy
 
 git init
-git add .gitignore README.md CONTRIBUTING.md docs/ requirements.txt cloud.env.example \
+git add .gitignore README.md CONTRIBUTING.md docs/ requirements.txt pyproject.toml \
+  .python-version uv.lock cloud.env.example \
   harness_tools.yaml tenuo.yaml tenuo.yaml.cloud.example tenuo_claude.py tenuo_admin.py \
   tenuo_demo.py ops_server.py tenuo_claude_code_architecture.svg \
   sandbox/ prod-credentials.env

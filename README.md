@@ -11,13 +11,22 @@ hooks, and MCP proxy wiring.
 Requires Python ≥ 3.10, Docker, and (for live demos) [Claude Code](https://code.claude.com/docs).
 Cloud is optional; local mode works with a local issuer key.
 
+**Python environment (recommended — [uv](https://docs.astral.sh/uv/)):**
+
 ```bash
-python3 -m pip install -r requirements.txt
-python3 tenuo_claude.py init
+uv venv && uv sync
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+python3 tenuo_claude.py init   # hooks pin this interpreter — re-run init if you change venvs
 python3 tenuo_claude.py up
 python3 tenuo_claude.py doctor          # --no-live skips the Claude harness check
 python3 tenuo_demo.py                   # allow/deny tour without Claude
 ```
+
+Or without uv: `python3 -m pip install -r requirements.txt` (same pins).
+
+**Subagent + approval fix (until `tenuo` 0.1.0b24 on PyPI):** install the Python SDK
+from the monorepo after sync — `uv pip install -e /path/to/tenuo-python` — then
+`tenuo-claude up` again to refresh subwarrants.
 
 For root-signed warrants and optional human approval on off-allowlist `WebFetch`,
 see [Tenuo Cloud](#what-the-security-team-sees). Reviewer brief:

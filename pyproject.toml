@@ -1,0 +1,14 @@
+[project]
+name = "tenuo-claude-governance"
+version = "0.1.0"
+description = "Tenuo governance demo for Claude Code (scripts, not a library)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "tenuo==0.1.0b23",
+    "mcp>=1.0",
+    "PyYAML>=6.0",
+]
+
+[tool.uv]
+# Demo repo: install deps into .venv with `uv sync` (no package build).

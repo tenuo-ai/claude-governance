@@ -7,6 +7,7 @@
 # `tenuo` is pinned in lockstep with the authorizer image tag
 # (tenuo 0.1.0b23  <->  tenuo/authorizer:0.1.0-beta.23-authz.2) and bundles `tenuo_core`.
 #
+#   uv sync                    # preferred — see pyproject.toml
 #   python3 -m pip install -r requirements.txt
 #
 # Requires Python >= 3.10 (uses `X | None` annotations and the walrus operator).

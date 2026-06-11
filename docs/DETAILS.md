@@ -153,8 +153,7 @@ Changing `subagents:` is a policy change: re-run `tenuo-admin setup` (Cloud) or
 hold (e.g. a read-only `researcher` without `WebFetch`).
 
 Pair with authorizer `0.1.0-beta.23-authz.2` or newer (pinned in `tenuo_claude.py`).
-Until `tenuo` 0.1.0b24 is on PyPI, install the Python SDK from the monorepo
-(`pip install -e path/to/tenuo-python`) so subwarrant minting picks up the same fix.
+Until `tenuo` 0.1.0b24 is on PyPI: `uv pip install -e path/to/tenuo-python` (see README).
 
 ## Receipts
 

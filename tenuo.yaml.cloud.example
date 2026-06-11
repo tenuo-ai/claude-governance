@@ -1,6 +1,7 @@
 # Optional Cloud overlay — merge into tenuo.yaml (or paste under `name:`).
 #
-# 1. Copy cloud.env.example -> .state/cloud.env and fill in your keys.
+# 1. Quick Connect: cloud.tenuo.ai -> Agents -> Quick Connect -> Authorizer Only.
+#    Copy tenuo_ct_... into .state/cloud.env (see cloud.env.example).
 # 2. Paste the blocks below into tenuo.yaml.
 # 3. Run:  python3 tenuo_admin.py setup && python3 tenuo_claude.py up
 #

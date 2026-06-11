@@ -322,7 +322,9 @@ def cmd_setup(_args) -> None:
     cfg = tc.load_config()
     creds = admin_creds(cfg)
     if not creds["url"] or not creds["api_key"]:
-        raise SystemExit("Set TENUO_CONTROL_PLANE_URL + TENUO_API_KEY in .state/cloud.env.")
+        raise SystemExit(
+            "Set runtime Cloud credentials in .state/cloud.env:\n"
+            "  TENUO_CONNECT_TOKEN (Quick Connect) or TENUO_CONTROL_PLANE_URL + TENUO_API_KEY")
     if not creds["admin_key"]:
         raise SystemExit(
             "tenuo-admin setup needs a tenant-admin API key.\n"

@@ -27,14 +27,29 @@ so runtime never sees the admin key:
 | **Runtime** | Quick Connect (authorizer service account) | `.state/cloud.env` | `tenuo_claude.py up`, hooks, demo |
 | **Admin** | Tenant admin (not in Quick Connect) | `~/.tenuo/admin.env` | `tenuo_admin.py setup` **once** |
 
-**Runtime key (usually already have this)** — Quick Connect bundles the
-authorizer runtime key. Copy `cloud.env.example` → `.state/cloud.env` and paste
-that key plus the control-plane URL (`https://api.tenuo.ai` or your staging URL).
-This identity needs RBAC permissions for **agent claim** and **trigger fire**
-(assigned automatically to the Quick Connect authorizer role).
+**Runtime key — Quick Connect (do this first)**
 
-**Admin key (not included in Quick Connect — create or request it)** — tenant
-administration: register holder agents, create/update triggers, wire approval
+1. [cloud.tenuo.ai](https://cloud.tenuo.ai) → **Agents** → **Quick Connect**
+2. Connection type: **Authorizer Only** (you register the demo holder agent later
+   with the admin key via `tenuo-admin setup`)
+3. Copy the connect token (`tenuo_ct_…`) — shown once; treat like a password
+4. `cp cloud.env.example .state/cloud.env` and paste:
+
+   ```bash
+   export TENUO_CONNECT_TOKEN="tenuo_ct_..."
+   export TENUO_AUTHORIZER_NAME="claude-code-demo"
+   ```
+
+   Alternative: in Quick Connect choose deployment **Manual** and copy
+   `TENUO_CONTROL_PLANE_URL` + `TENUO_API_KEY` instead (staging:
+   `https://api-staging.tenuo.ai`, prod: `https://api.tenuo.ai` — no `/v1` suffix).
+
+Do **not** paste `ak_…` key IDs from the API Keys table; those are identifiers, not
+secrets. The connect token embeds the real `tc_…` bearer key used on Cloud API calls.
+
+**Admin key (not in Quick Connect — create or request separately)**
+
+Tenant administration: register holder agents, create/update triggers, wire approval
 policies. Either:
 
 1. **Dashboard:** Settings → API Keys → Create key with the **tenant admin**
@@ -46,6 +61,35 @@ This is a **platform / prep step**: admin registers the holder agent and
 creates the Cloud trigger from `tenuo.yaml`. Run `tenuo-admin setup` once
 before the demo (or after policy changes), not on every `up`. Day-to-day
 runtime uses `.state/cloud.env` only.
+
+**Why Authorizer Only, not Agent + Authorizer?**
+
+Quick Connect **Agent + Authorizer** is for embedded SDKs where one process owns
+both identities and auto-claims the agent with the authorizer's signing key. This
+demo is a **sidecar PEP**: the authorizer container verifies; Claude Code (via the
+hook) is the holder that signs PoP. Those are separate keys:
+
+| Identity | Key material | Role |
+|----------|--------------|------|
+| **Authorizer service account** | Quick Connect `tc_…` in `.state/cloud.env` | Heartbeat, SRL sync, receipts, trigger fire, agent claim API |
+| **Holder agent** | `.state/holder_key.b64` (local Ed25519) | Signs PoP on every tool call |
+| **Tenant admin** | `~/.tenuo/admin.env` | Creates agent + trigger (setup only) |
+
+PoP is checked **locally by the authorizer**, not by Cloud on each call:
+
+1. `tenuo-admin setup` registers a holder agent and **claims** it with the public
+   key from `.state/holder_key.b64`.
+2. `tenuo-claude up` fires the trigger; Cloud issues a warrant whose `holder`
+   field resolves to that claimed key (`holder: ${event.agent_id}` in the trigger
+   template).
+3. On each tool call the hook signs PoP with the **holder private key** and sends
+   `X-Tenuo-Warrant` + `X-Tenuo-PoP` to the authorizer.
+4. The authorizer verifies the warrant chain and that PoP matches the holder.
+
+Using **Agent + Authorizer** Quick Connect would pre-create and auto-claim an agent
+with a *different* key than `.state/holder_key.b64`, so warrants and PoP would not
+match. **Authorizer Only** gives the sidecar credentials; `tenuo-admin setup` wires
+the holder agent and PoP key separately.
 
 ```bash
 git clone https://github.com/tenuo-ai/claude-governance.git   # or use your local copy

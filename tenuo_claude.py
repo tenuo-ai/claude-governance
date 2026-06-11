@@ -340,6 +340,21 @@ def runtime_env() -> dict:
     return env
 
 
+def _parse_connect_token(raw: str) -> dict:
+    """Extract endpoint + API key from a dashboard Quick Connect token."""
+    try:
+        from tenuo_core import ConnectToken
+
+        ct = ConnectToken.parse(raw)
+        return {"url": ct.endpoint, "api_key": ct.api_key}
+    except ImportError as e:
+        raise SystemExit(
+            "TENUO_CONNECT_TOKEN requires tenuo_core (install tenuo==0.1.0b24)."
+        ) from e
+    except Exception as e:
+        raise SystemExit(f"Invalid TENUO_CONNECT_TOKEN: {e}") from e
+
+
 # ---------------------------------------------------------------------------
 # Enforcement core (shared by the hook, the MCP proxy, doctor, and tenuo_demo)
 # ---------------------------------------------------------------------------
@@ -1142,14 +1157,24 @@ def assert_no_admin_key() -> None:
 def cloud_creds(cfg: dict) -> dict:
     """Resolve Cloud URL + the runtime authorizer key from cfg + .state/cloud.env.
 
+    Accepts either ``TENUO_CONNECT_TOKEN`` (Quick Connect) or explicit
+    ``TENUO_CONTROL_PLANE_URL`` + ``TENUO_API_KEY``. Explicit vars win when set.
+
     Note: no admin key here by design — runtime fires triggers and consumes
     warrants with the Quick Connect / authorizer service-account key only.
     See tenuo_admin.py.
     """
     env = runtime_env()
+    url = (cfg.get("cloud") or {}).get("url") or env.get("TENUO_CONTROL_PLANE_URL")
+    api_key = env.get("TENUO_API_KEY")
+    connect = env.get("TENUO_CONNECT_TOKEN")
+    if connect:
+        parsed = _parse_connect_token(connect)
+        url = url or parsed["url"]
+        api_key = api_key or parsed["api_key"]
     return {
-        "url": (cfg.get("cloud") or {}).get("url") or env.get("TENUO_CONTROL_PLANE_URL"),
-        "api_key": env.get("TENUO_API_KEY"),   # runtime key: claim + fire (RBAC)
+        "url": url,
+        "api_key": api_key,
         "root": env.get("TENUO_TENANT_ROOT"),
     }
 
@@ -1437,9 +1462,10 @@ def cmd_revoke(_args) -> None:
     st = json.loads(STATE_JSON.read_text())
     wid = st["warrant_id"]
     env = runtime_env()
-    cloud = bool(((cfg.get("cloud") or {}).get("url")) and env.get("TENUO_API_KEY"))
+    creds = cloud_creds(cfg)
+    cloud = bool(creds.get("url") and creds.get("api_key"))
     if cloud:
-        url = (cfg.get("cloud") or {}).get("url")
+        url = creds["url"]
         print(f"Cloud mode. Revoke from the dashboard or an admin key:\n"
               f"  curl -X POST {url}/v1/revocations \\\n"
               f"    -H \"Authorization: Bearer $ADMIN_API_KEY\" -H 'Content-Type: application/json' \\\n"

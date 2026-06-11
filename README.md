@@ -216,8 +216,6 @@ up the SRL within about 30 seconds.
 
 Local: `tenuo-claude revoke` writes a signed SRL and reloads.
 
-Local: `tenuo-claude revoke` writes a signed SRL and reloads.
-
 Further detail: [docs/DETAILS.md](docs/DETAILS.md) (audit-mode invariants, WebFetch
 examples, spawn gates, receipt authority, hook exit codes).
 

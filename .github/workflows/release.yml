@@ -25,16 +25,16 @@ jobs:
       - name: Build
         run: uv build
 
-      - name: Publish to PyPI (token)
-        if: ${{ secrets.PYPI_TOKEN != '' }}
+      - name: Publish to PyPI
         env:
-          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
-        run: uv publish
-
-      - name: Publish to PyPI (trusted publishing)
-        if: ${{ secrets.PYPI_TOKEN == '' }}
+          PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
         run: |
-          echo "No PYPI_TOKEN — using trusted publishing (OIDC)."
-          echo "PyPI must list a pending publisher for:"
-          echo "  owner=tenuo-ai  repo=claude-governance  workflow=release.yml"
-          uv publish --trusted-publishing always
+          if [ -n "${PYPI_TOKEN}" ]; then
+            echo "Publishing with PYPI_TOKEN secret..."
+            UV_PUBLISH_TOKEN="${PYPI_TOKEN}" uv publish
+          else
+            echo "No PYPI_TOKEN — using trusted publishing (OIDC)."
+            echo "PyPI must list a pending publisher for:"
+            echo "  owner=tenuo-ai  repo=claude-governance  workflow=release.yml"
+            uv publish --trusted-publishing always
+          fi

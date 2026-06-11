@@ -1,0 +1,16 @@
+# Tenuo for Claude Code — runtime dependencies.
+#
+# The authorizer itself is NOT a Python dependency: it runs as a container
+# (tenuo/authorizer, pinned in tenuo_claude.py, started by `tenuo-claude up`).
+# These are only what the CLI / hooks / MCP proxy import.
+#
+# `tenuo` is pinned in lockstep with the authorizer image tag
+# (tenuo 0.1.0b23  <->  tenuo/authorizer:0.1.0-beta.23) and bundles `tenuo_core`.
+#
+#   python3 -m pip install -r requirements.txt
+#
+# Requires Python >= 3.10 (uses `X | None` annotations and the walrus operator).
+
+tenuo==0.1.0b23
+mcp>=1.0
+PyYAML>=6.0

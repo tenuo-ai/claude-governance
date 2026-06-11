@@ -1,0 +1,5 @@
+Project Atlas - working notes
+
+- Q3 migration is on track; staging cutover scheduled for next Tuesday.
+- Open question: do we keep the legacy ingest path during rollover?
+- Reminder: rotate the demo signing keys before any external showing.

@@ -69,7 +69,7 @@ def run_demo(live_approval: bool = False) -> None:
     if tc.webfetch_approval(cfg):
         print("\nWebFetch with approval enabled: allowlisted domains pass, SSRF is "
               "denied, off-allowlist safe URLs wait for approver sign-off in Cloud "
-              "(Telegram, Slack, etc.). Run with --live-approval to exercise it.")
+              "via the approver's configured channel. Run with --live-approval to exercise it.")
 
     if tc.subagent_roles(cfg):
         print("\nSubagents (Claude Code `Agent` tool) — spawn gate + per-subagent warrant")
@@ -108,7 +108,7 @@ def run_live_approval(cfg) -> None:
     print("\nHuman approval — LIVE")
     print("-" * 40)
     print(f"  WebFetch {url}")
-    print("  off-allowlist + SSRF-safe; waiting for approver (Telegram/Slack/etc.)…")
+    print("  off-allowlist + SSRF-safe; waiting for approver on their configured channel…")
     allowed, reason, _ = _authz(cfg, "WebFetch", {"url": url}, live=True)
     print(f"  -> {'ALLOWED' if allowed else 'BLOCKED'}: {reason}")
 

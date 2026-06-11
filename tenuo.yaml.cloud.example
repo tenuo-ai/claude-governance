@@ -16,8 +16,8 @@ cloud:
   approver_identity: "Your Approver Display Name"
 
 # Optional: add under enforce.WebFetch for human approval on off-allowlist URLs
-# (Cloud only; Telegram, Slack, etc. via the approver identity). Remove or
-# comment out `subagents:` first.
+# (Cloud only; notification via the approver identity's configured channel).
+# Remove or comment out `subagents:` first.
 #
 #   WebFetch:
 #     domains: ["api.github.com", "*.githubusercontent.com", "*.tenuo.ai"]

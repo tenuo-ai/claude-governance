@@ -245,8 +245,8 @@ def build_warrant_config(cfg: dict, approval_policy_id: str | None = None) -> di
 def resolve_approver_identity(url: str, admin: str, display_name: str) -> tuple[str, str]:
     """Find an EXISTING Cloud identity binding by display name -> (id, public_key_hex).
 
-    The identity carries the approver's KMS public key and notification routing
-    (e.g. Telegram, Slack). We never create or mutate it here — platform-sec owns
+    The identity carries the approver's KMS public key and notification routing on
+    their configured channel. We never create or mutate it here — platform-sec owns
     identities; setup only references one. Fails loudly if absent or keyless.
     """
     status, body = tc.cloud_api("GET", url, admin, "/v1/identities")

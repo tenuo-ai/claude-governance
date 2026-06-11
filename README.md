@@ -20,7 +20,7 @@ python3 tenuo_demo.py                   # allow/deny tour without Claude
 ```
 
 For root-signed warrants and optional human approval on off-allowlist `WebFetch`,
-see [Tenuo Cloud](#tenuo-cloud).
+see [Tenuo Cloud](#tenuo-cloud). More mechanics: [docs/DETAILS.md](docs/DETAILS.md).
 
 ## See it in action
 
@@ -74,7 +74,7 @@ claude -p "Use the researcher subagent to run 'ls -la sandbox' and report the re
 
 The researcher warrant does not include `Bash`, even though the session does.
 `audit` shows the spawn allowed and the in-subagent `Bash` denied under
-`agent_type=researcher`. See [Subagents](#subagents).
+`agent_type=researcher`. See [Subagents](docs/DETAILS.md#subagents).
 
 ## How it works
 
@@ -198,8 +198,8 @@ never emit `PreToolUse`. Restrict those at the workstation if they matter for yo
 
 ### Tenuo Cloud
 
-With Cloud, warrants are root-signed via a trigger. Admin and runtime use
-different keys:
+With [Tenuo Cloud](https://cloud.tenuo.ai), warrants are root-signed via a trigger.
+Admin and runtime use different keys:
 
 | Tool | Key | Does |
 |------|-----|------|
@@ -216,52 +216,28 @@ up the SRL within about 30 seconds.
 
 Local: `tenuo-claude revoke` writes a signed SRL and reloads.
 
-## Details
+Local: `tenuo-claude revoke` writes a signed SRL and reloads.
 
-Audit mode (`mode: audit`) computes allow/deny and writes receipts without
-blocking. Use it to review `WOULD-DENY` lines, tune policy, then switch to
-`enforce`.
-
-WebFetch: allowlisted domains over https plus SSRF checks (metadata, loopback,
-encoded IPs, suffix spoof). Off-allowlist URLs are denied unless you enable the
-Cloud approval gate.
-
-### Human approval
-
-For off-allowlist URLs that still pass SSRF checks, Cloud can require approver
-sign-off before the fetch runs. The prompt goes to whatever channel the approver
-identity uses (Telegram, Slack, etc.). Allowlisted hosts and hard SSRF failures
-are unchanged. Cloud only.
-
-`python3 tenuo_demo.py --live-approval` runs the full flow. In a live session the
-agent blocks on that tool call until someone approves or it times out. Have an
-approver ready; Claude's hook timeout can expire first and look like a deny.
-
-### Subagents
-
-Spawn is gated (`spawn_agent` with a `oneof` of role names). Each role gets a
-child warrant attenuated from the session warrant. The session is the ceiling.
-
-`doctor` checks that each declared role matches a file under `.claude/agents/`.
-You cannot enable `subagents:` and WebFetch `approval` in the same policy today;
-the default ships with subagents on.
-
-### Receipts
-
-PreToolUse, PostToolUse, and the MCP proxy all feed the authorizer. Enforced tools
-are constraint-checked; audit-listed harness tools are logged; everything else is
-default-deny. Subagent calls include `agent_type`.
+Further detail: [docs/DETAILS.md](docs/DETAILS.md) (audit-mode invariants, WebFetch
+examples, spawn gates, receipt authority, hook exit codes).
 
 ## Security boundaries
 
 Tenuo controls which tool calls the agent may make. It does not sandbox execution:
-a allowed `Bash` or `WebFetch` can still have effects beyond what the argument
-check sees. See [The Map is not the Territory](https://niyikiza.com/posts/map-territory/)
-for the model.
+an allowed `Bash` or `WebFetch` can still have effects beyond what the argument
+check sees. See [The Map is not the Territory](https://niyikiza.com/posts/map-territory/).
 
 Claude Code only blocks PreToolUse on exit code 2 or an explicit deny. Exit code
 1 is non-blocking, so `_hook` converts internal errors into deny decisions.
 `doctor` can run a live check when `claude` is installed (`--no-live` to skip).
+
+Try the fail-closed guard:
+
+```bash
+mv tenuo.yaml tenuo.yaml.bak
+# every tool call denied: Tenuo hook error (fail-closed): Missing …/tenuo.yaml
+mv tenuo.yaml.bak tenuo.yaml
+```
 
 Practical limits:
 
@@ -269,6 +245,8 @@ Practical limits:
 - WebFetch checks the URL string, not DNS at connect time.
 - The holder key ships with the CLI because Claude cannot sign PoP itself.
 - New Claude Code tools default-deny until listed in `harness_tools.yaml`.
+- Audit mode (`mode: audit`) logs real allow/deny but the hook emits no decision,
+  so observe-only never weakens Claude's stock permission prompts.
 
 ## Files
 
@@ -284,6 +262,7 @@ Practical limits:
 | `ops_server.py` | Demo MCP server |
 | `.claude/agents/researcher.md` | Read-only subagent |
 | `sandbox/`, `prod-credentials.env` | In-scope samples; fake decoy outside sandbox |
+| `docs/DETAILS.md` | Deep dive for security reviewers |
 | `CONTRIBUTING.md` | Maintainer notes |
 
 Maintainer setup: [CONTRIBUTING.md](CONTRIBUTING.md).

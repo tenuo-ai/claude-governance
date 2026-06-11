@@ -204,6 +204,9 @@ mcp:
 - `enforce`: allowed and argument-checked.
 - `audit`: harness tools from `harness_tools.yaml` (extend with `audit_extra:`).
 - `default: deny`: everything else blocked with a receipt.
+- `mcp.enforce`: bare downstream tool name + `path` arg only (single MCP server in this demo).
+- With `subagents:` on, bundled **Workflow** is audit-allowed but its inner agent
+  calls use undeclared roles and are denied — see [DETAILS.md](docs/DETAILS.md#subagents).
 
 ## Commands
 
@@ -263,6 +266,11 @@ mv tenuo.yaml.bak tenuo.yaml
 
 Limits: Bash allowlist checks command shape; WebFetch checks URL strings; new Claude
 tools default-deny until listed in `harness_tools.yaml`.
+
+**Claude Code version assumptions:** spawn routing keys on tool names `Agent` /
+`Task` and the `agent_type` hook field (empirically claude 2.1.x). `doctor --live`
+checks PreToolUse exit-code semantics (exit 2 blocks). If Anthropic renames spawn
+tools, spawns fail closed unless the new name is only audit-listed.
 
 ## Files
 

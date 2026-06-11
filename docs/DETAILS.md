@@ -142,6 +142,12 @@ runs under the session warrant.
 Roles must match a real `subagent_type` (`.claude/agents/<name>.md` frontmatter
 `name:` or a built-in). `doctor` and `status` validate this.
 
+**Workflow:** bundled as audit-allow in `harness_tools.yaml`. With `subagents:`
+declared, inner tool calls from Workflow agents carry an `agent_type` that is
+not a declared role — layer 2 denies them (fail-closed). Workflow is effectively
+unusable in subagent mode unless you remove it from the audit list or omit
+`subagents:` for flat session coverage.
+
 Changing `subagents:` is a policy change: re-run `tenuo-admin setup` (Cloud) or
 `init` (local). Subagents may drop parent approval gates for tools they no longer
 hold (e.g. a read-only `researcher` without `WebFetch`).

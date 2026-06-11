@@ -58,6 +58,7 @@ STATE_JSON = STATE / "state.json"
 GATEWAY = STATE / "gateway.yaml"
 SRL = STATE / "srl.cbor"
 RECEIPTS = STATE / "receipts.jsonl"
+_receipt_write_warned = False  # one-time stderr if .state/receipts.jsonl can't be written
 CLOUD_ENV = STATE / "cloud.env"
 CLOUD_STATE = STATE / "cloud_state.json"  # agent_id / trigger_id / sa, from cloud-setup
 
@@ -589,6 +590,8 @@ def resolve_tool(cfg: dict, tool_name: str, tool_input: dict):
 
     bare = mcp_tool_name(tool_name)
     if bare is not None and bare in (cfg.get("mcp", {}).get("enforce") or {}):
+        # mcp.enforce keys on bare tool name + path arg only (demo assumes one
+        # downstream server; a second server with the same tool name would share policy).
         # Mirror cmd_mcp_proxy: realpath the path arg (so symlinks/relatives
         # can't smuggle out) and authorize against /verify/<tool>. Same cap and
         # body field the proxy and gateway use, so the warrant check is identical.
@@ -602,7 +605,9 @@ def resolve_tool(cfg: dict, tool_name: str, tool_input: dict):
 
 
 # Claude Code's subagent-spawn tool(s). Empirically "Agent" on claude 2.1.x;
-# "Task" is accepted too for forward/back-compat.
+# "Task" is accepted too for forward/back-compat. If Anthropic renames the spawn
+# tool, spawns default-deny (safe) unless the new name lands in the audit list
+# (allow+log). doctor --live checks hook exit-code contract, not spawn-tool names.
 SPAWN_TOOLS = ("Agent", "Task")
 # Synthetic capability: spawning a subagent. Constrained to a oneof of declared
 # roles, minted locally AND issuable via a Cloud trigger, so the spawn decision
@@ -701,13 +706,17 @@ def authorize_call(cfg: dict, tool: str, tin: dict, agent_type, roles: dict,
 
 
 def write_receipt(entry: dict) -> None:
+    global _receipt_write_warned
     try:
         STATE.mkdir(parents=True, exist_ok=True)
         entry["ts"] = datetime.now(timezone.utc).isoformat()
         with RECEIPTS.open("a") as fh:
             fh.write(json.dumps(entry) + "\n")
-    except Exception:
-        pass
+    except Exception as exc:
+        if not _receipt_write_warned:
+            _receipt_write_warned = True
+            print(f"warning: could not write receipt to {RECEIPTS}: {exc}",
+                  file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -818,6 +827,7 @@ def cmd_mcp_proxy(_args) -> None:
 
                 @proxy.call_tool()
                 async def _ct(name: str, arguments: dict):
+                    # enforced keys are bare downstream tool names; path-only (see resolve_tool).
                     fwd = dict(arguments)
                     if name in enforced:
                         val = arguments.get("path")
@@ -921,10 +931,14 @@ def mint_local_warrant(cfg: dict, issuer, holder):
     from tenuo import Warrant
 
     builder = Warrant.mint_builder()
-    for cap, cons in enforced_capabilities(cfg).items():
+    enforced = enforced_capabilities(cfg)
+    for cap, cons in enforced.items():
         builder = builder.capability(cap, cons)
+    # Mirror write_gateway: audit caps must not overwrite enforced constraints
+    # (mint builder is last-wins on duplicate tool names).
     for cap in audit_map(cfg).values():
-        builder = builder.capability(cap, {})
+        if cap not in enforced:
+            builder = builder.capability(cap, {})
     # Catch-all: grant "audit" only when default: audit. Under default: deny the
     # catch-all capability is intentionally absent so unlisted tools are denied.
     if default_mode(cfg) == "audit":
@@ -1398,6 +1412,8 @@ def cmd_audit(args) -> None:
 
 def cmd_revoke(_args) -> None:
     cfg = load_config()
+    if not STATE_JSON.exists():
+        raise SystemExit("Run `tenuo-claude init` first.")
     st = json.loads(STATE_JSON.read_text())
     wid = st["warrant_id"]
     env = runtime_env()
@@ -1457,7 +1473,7 @@ def check_claude_hook_exit_contract() -> bool:
                     "PreToolUse": [{
                         "matcher": "Read",
                         "hooks": [{"type": "command",
-                                   "command": f"{sys.executable} {hook}"}],
+                                   "command": f'"{sys.executable}" "{hook}"'}],
                     }]
                 }
             }

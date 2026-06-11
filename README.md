@@ -1,6 +1,6 @@
 # Tenuo for Claude Code
 
-[Tenuo](https://tenuo.ai) governance for [Claude Code](https://docs.claude.com/en/docs/claude-code):
+[Tenuo](https://tenuo.ai) governance for [Claude Code](https://code.claude.com/docs):
 every tool call is checked against a warrant (hook → authorizer), with a signed
 receipt on each decision — including under `--dangerously-skip-permissions`.
 Policy is `tenuo.yaml`; `init` generates the warrant, authorizer config, Claude
@@ -52,25 +52,51 @@ git diff --cached | rg -i 'tc_[a-zA-Z0-9]{20,}|sk_live_[a-zA-Z0-9]|/Users/' || t
 
 - **Python ≥ 3.10**
 - **Docker** (the verifier runs as a container; nothing to compile)
-- **[Claude Code](https://docs.claude.com/en/docs/claude-code)** installed (only
+- **[Claude Code](https://code.claude.com/docs)** installed (only
   needed to run the live demos; `doctor` and `tenuo_demo.py` work without it)
 - **(Optional) a Tenuo Cloud API key** — for root-signed warrants and a central
   audit trail. Without it, everything runs locally with a local key.
 
 ## How it works
 
-![Tenuo + Claude Code — every tool call is checked against policy before it runs](tenuo-claude-architecture.svg)
+![Tenuo + Claude Code — every tool call is checked against policy before it runs](tenuo_claude_code_architecture.svg)
 
 ```
-                                  tenuo.yaml  (your policy)
-                                       │  init / up generate:
-                                       ▼
-                          warrant + authorizer config + hooks
-Claude Code ──PreToolUse hook──▶ tenuo_claude.py ──HTTP+PoP──▶ authorizer ──▶ allow / deny
-   │  (native tools: Read, Bash, …)        │                  (container)        │
-   └──MCP tools──▶ tenuo_claude MCP proxy ─┘                                      ▼
-                                                                    signed receipt ──▶ Tenuo Cloud
+                         tenuo.yaml
+                   (policy — single source of truth)
+                               │
+                    init / up generates
+                               ▼
+         ┌─────────────────────────────────────────────┐
+         │  warrant · authorizer config · Claude hooks │
+         │              · MCP proxy wiring               │
+         └─────────────────────────────────────────────┘
+                               │
+              ┌────────────────┴────────────────┐
+              │                                 │
+        native tools                      MCP tools
+  (Read, Bash, WebFetch, …)     (read_file, delete_deployment, …)
+              │                                 │
+      PreToolUse hook                    MCP proxy (.mcp.json)
+              │                                 │
+              └────────────┬────────────────────┘
+                           ▼
+                  tenuo_claude.py
+           (authorize each call + write receipts)
+                           │
+                    HTTP + PoP + warrant
+                           ▼
+               Tenuo Authorizer (container)
+                           │
+                     allow / deny
+                           │
+                           ▼
+           signed receipt → Tenuo Cloud (optional)
 ```
+
+**Setup flow:** `init` reads policy and generates the artifacts above.
+**Runtime flow:** every tool call — native or MCP — hits the same authorizer
+before it runs; the hook and proxy differ only in *where* they intercept.
 
 1. **`init`** reads `tenuo.yaml`, mints a warrant, generates the authorizer
    config, and wires the Claude hooks + MCP proxy into `.claude/` and `.mcp.json`.
@@ -534,7 +560,7 @@ authorizer or the config denies everything rather than bypassing governance.
 |------|---------|
 | `tenuo.yaml` | Policy — the single source of truth (local-first; no secrets) |
 | `tenuo.yaml.cloud.example` | Optional Cloud + approver overlay to merge into `tenuo.yaml` |
-| `tenuo-claude-architecture.svg` | Architecture diagram for consultants |
+| `tenuo_claude_code_architecture.svg` | Architecture diagram for consultants |
 | `requirements.txt` | Python deps (`tenuo`, `mcp`, `PyYAML`); the authorizer is a container, not a dep |
 | `tenuo_claude.py` | The CLI (and the internal hook + MCP proxy entrypoints) |
 | `tenuo_admin.py` | Admin-plane CLI: register the holder agent + create the Cloud trigger |
@@ -557,7 +583,7 @@ cd demo/claude-governance   # or your export copy
 git init
 git add .gitignore README.md requirements.txt cloud.env.example \
   tenuo.yaml tenuo.yaml.cloud.example tenuo_claude.py tenuo_admin.py \
-  tenuo_demo.py ops_server.py tenuo-claude-architecture.svg \
+  tenuo_demo.py ops_server.py tenuo_claude_code_architecture.svg \
   sandbox/ prod-credentials.env
 git status    # confirm .state/ and .mcp.json are NOT listed
 git commit -m "Initial commit: Tenuo governance demo for Claude Code"

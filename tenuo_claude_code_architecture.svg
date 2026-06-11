@@ -1,0 +1,209 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg width="100%" height="100%" viewBox="0 0 1280 720" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xml:space="preserve" xmlns:serif="http://www.serif.com/" style="fill-rule:evenodd;clip-rule:evenodd;">
+    <rect x="0" y="0" width="1280" height="720" style="fill:white;"/>
+    <g transform="matrix(1,0,0,1,3,4)">
+        <g transform="matrix(8.2,0,0,8.2,559.493704,458.010076)">
+        </g>
+        <text x="518.386px" y="458.01px" style="font-family:'Helvetica-Bold', 'Helvetica';font-weight:700;font-size:8.2px;fill:rgb(102,112,133);">PoP<tspan x="534.189px 536.467px " y="458.01px 458.01px ">  </tspan>+ ask</text>
+    </g>
+    <g transform="matrix(1,0,0,1,41,40)">
+        <text x="0px" y="0px" style="font-family:'Helvetica-Bold', 'Helvetica';font-weight:700;font-size:23px;fill:rgb(11,18,32);">tenuo</text>
+    </g>
+    <g transform="matrix(1,0,0,1,1169.94,51)">
+        <text x="-47.992px" y="0px" style="font-family:'Helvetica-Bold', 'Helvetica';font-weight:700;font-size:12px;fill:white;">A<tspan x="-39.206px -30.42px -21.634px -12.848px -9.394px -1.944px 6.18px 14.966px 22.416px 31.202px 39.988px " y="0px 0px 0px 0px 0px 0px 0px 0px 0px 0px 0px ">RCHITECTURE</tspan></text>
+    </g>
+    <g transform="matrix(1,0,0,1,40,118)">
+        <text x="0px" y="0px" style="font-family:'Helvetica-Bold', 'Helvetica';font-weight:700;font-size:11px;fill:rgb(122,138,163);">H<tspan x="8.164px 16.94px 27.542px 30.818px 34.095px 41.034px 44.31px 54.912px 63.688px 71.852px 80.016px " y="0px 0px 0px 0px 0px 0px 0px 0px 0px 0px 0px ">OW IT WORKS</tspan></text>
+    </g>
+    <g transform="matrix(1,0,0,1,40,152)">
+        <text x="0px" y="0px" style="font-family:'Helvetica-Bold', 'Helvetica';font-weight:700;font-size:36px;fill:rgb(11,18,32);">T<tspan x="19.336px 39.357px " y="0px 0px ">en</tspan>uo + Claude Code</text>
+    </g>
+    <g transform="matrix(1,0,0,1,40,182)">
+        <text x="0px" y="0px" style="font-family:'Helvetica-Bold', 'Helvetica';font-weight:700;font-size:16px;fill:rgb(26,110,255);">The warrant is checked before any tool call runs</text>
+    </g>
+    <path d="M1214,216L1214,236C1214,241.519 1209.519,246 1204,246L50,246C44.481,246 40,241.519 40,236L40,216C40,210.481 44.481,206 50,206L1204,206C1209.519,206 1214,210.481 1214,216Z" style="fill:rgb(248,250,254);stroke:rgb(228,233,242);stroke-width:1.2px;"/>
+    <g transform="matrix(1,0,0,1,58,231)">
+        <text x="0px" y="0px" style="font-family:'Menlo-Bold', 'Menlo', monospace;font-weight:700;font-size:12px;fill:rgb(21,80,200);">tenuo.yaml</text>
+        <text x="75.58px" y="0px" style="font-family:'LucidaGrande-Bold', 'Lucida Grande', sans-serif;font-weight:600;font-size:12px;fill:rgb(52,64,84);">→</text>
+        <text x="90.914px" y="0px" style="font-family:'Helvetica-Bold', 'Helvetica';font-weight:700;font-size:12px;fill:rgb(52,64,84);">init / up generates</text>
+        <text x="200.268px" y="0px" style="font-family:'LucidaGrande-Bold', 'Lucida Grande', sans-serif;font-weight:600;font-size:12px;fill:rgb(52,64,84);">→</text>
+        <g transform="matrix(12,0,0,12,354.960938,0)">
+        </g>
+        <g transform="matrix(12,0,0,12,358.957031,0)">
+        </g>
+        <text x="218.936px" y="0px" style="font-family:'Helvetica-Bold', 'Helvetica';font-weight:700;font-size:12px;fill:rgb(52,64,84);">warrant · authorizer conﬁg · Claude hooks · MCP<tspan x="494.76px 498.094px " y="0px 0px "> w</tspan>iring</text>
+    </g>
+    <path d="M627,246L627,268" style="fill:none;fill-rule:nonzero;stroke:rgb(152,162,179);stroke-width:1.5px;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:4,4;"/>
+    <path d="M240,314L240,482C240,489.727 233.727,496 226,496L54,496C46.273,496 40,489.727 40,482L40,314C40,306.273 46.273,300 54,300L226,300C233.727,300 240,306.273 240,314Z" style="fill:white;stroke:rgb(228,233,242);stroke-width:1.4px;"/>
+    <g transform="matrix(1,0,0,1,104,322)">
+        <path d="M34,3L34,23C34,24.656 32.656,26 31,26L3,26C1.344,26 0,24.656 0,23L0,3C0,1.344 1.344,0 3,0L31,0C32.656,0 34,1.344 34,3Z" style="fill:none;stroke:rgb(26,110,255);stroke-width:1.9px;stroke-linecap:round;stroke-linejoin:round;"/>
+        <path d="M0,8L34,8" style="fill:none;fill-rule:nonzero;stroke:rgb(26,110,255);stroke-width:1.9px;stroke-linecap:round;stroke-linejoin:round;"/>
+        <path d="M9,14L5,18L9,22M19,14L23,18L19,22" style="fill:none;fill-rule:nonzero;stroke:rgb(26,110,255);stroke-width:1.5px;stroke-linecap:round;stroke-linejoin:round;"/>
+    </g>
+    <g transform="matrix(1,0,0,1,140,372)">
+        <text x="-45.839px" y="0px" style="font-family:'Helvetica-Bold', 'Helvetica';font-weight:700;font-size:15px;fill:rgb(11,18,32);">Claude Code</text>
+    </g>
+    <g transform="matrix(1,0,0,1,140,391)">
+        <text x="-42.521px" y="0px" style="font-family:'Helvetica';font-size:11.5px;fill:rgb(102,112,133);">the coding agent</text>
+    </g>
+    <path d="M220,412L220,422C220,425.311 217.311,428 214,428L66,428C62.689,428 60,425.311 60,422L60,412C60,408.689 62.689,406 66,406L214,406C217.311,406 220,408.689 220,412Z" style="fill:rgb(239,244,255);"/>
+    <g transform="matrix(1,0,0,1,140,421)">
+        <text x="-58.486px" y="0px" style="font-family:'Helvetica-Bold', 'Helvetica';font-weight:700;font-size:10px;fill:rgb(26,110,255);">native tools + subagents</text>
+    </g>
+    <path d="M220,438L220,448C220,451.311 217.311,454 214,454L66,454C62.689,454 60,451.311 60,448L60,438C60,434.689 62.689,432 66,432L214,432C217.311,432 220,434.689 220,438Z" style="fill:rgb(239,244,255);"/>
+    <g transform="matrix(1,0,0,1,140,447)">
+        <text x="-24.355px" y="0px" style="font-family:'Helvetica-Bold', 'Helvetica';font-weight:700;font-size:10px;fill:rgb(26,110,255);">MCP<tspan x="-2.31px 0.469px " y="0px 0px "> t</tspan>ools</text>
+    </g>
+    <g transform="matrix(1,0,0,1,140,478)">
+        <text x="-71.987px" y="0px" style="font-family:'Helvetica';font-size:10px;fill:rgb(122,138,163);">holds even under --dangerously-</text>
+    </g>
+    <g transform="matrix(1,0,0,1,140,490)">
+        <text x="-37.231px" y="0px" style="font-family:'Helvetica';font-size:10px;fill:rgb(122,138,163);">skip-permissions</text>
+    </g>
+    <path d="M516,313L516,375C516,382.175 510.175,388 503,388L305,388C297.825,388 292,382.175 292,375L292,313C292,305.825 297.825,300 305,300L503,300C510.175,300 516,305.825 516,313Z" style="fill:white;stroke:rgb(26,110,255);stroke-width:1.5px;"/>
+    <g transform="matrix(1,0,0,1,308,328)">
+        <text x="0px" y="0px" style="font-family:'Helvetica-Bold', 'Helvetica';font-weight:700;font-size:14px;fill:rgb(11,18,32);">PreT<tspan x="30.092px 38.644px " y="0px 0px ">oo</tspan>lUse hook</text>
+    </g>
+    <g transform="matrix(1,0,0,1,308,348)">
+        <text x="0px" y="0px" style="font-family:'Helvetica';font-size:11.5px;fill:rgb(102,112,133);">native tools, runs inside Claude Code</text>
+    </g>
+    <path d="M516,421L516,483C516,490.175 510.175,496 503,496L305,496C297.825,496 292,490.175 292,483L292,421C292,413.825 297.825,408 305,408L503,408C510.175,408 516,413.825 516,421Z" style="fill:white;stroke:rgb(26,110,255);stroke-width:1.5px;"/>
+    <g transform="matrix(1,0,0,1,308,436)">
+        <text x="0px" y="0px" style="font-family:'Helvetica-Bold', 'Helvetica';font-weight:700;font-size:14px;fill:rgb(11,18,32);">T<tspan x="7.52px 15.306px " y="0px 0px ">en</tspan>uo MCP<tspan x="75.715px 79.604px " y="0px 0px "> p</tspan>roxy</text>
+    </g>
+    <g transform="matrix(1,0,0,1,308,456)">
+        <text x="0px" y="0px" style="font-family:'Helvetica';font-size:11.5px;fill:rgb(102,112,133);">separate process, between Claude</text>
+    </g>
+    <g transform="matrix(1,0,0,1,308,471)">
+        <text x="0px" y="0px" style="font-family:'Helvetica';font-size:11.5px;fill:rgb(102,112,133);">and the downstream server</text>
+    </g>
+    <path d="M790,333L790,475C790,483.279 783.279,490 775,490L581,490C572.721,490 566,483.279 566,475L566,333C566,324.721 572.721,318 581,318L775,318C783.279,318 790,324.721 790,333Z" style="fill:white;stroke:rgb(26,110,255);stroke-width:2.3px;"/>
+    <g transform="matrix(1,0,0,1,752,330)">
+        <path d="M14,0L27,5L27,15C27,21.667 22.667,26.667 14,30C5.333,26.667 1,21.667 1,15L1,5L14,0Z" style="fill:none;fill-rule:nonzero;stroke:rgb(26,110,255);stroke-width:1.8px;stroke-linecap:round;stroke-linejoin:round;"/>
+        <path d="M8,15L12,19L21,9" style="fill:none;fill-rule:nonzero;stroke:rgb(26,110,255);stroke-width:1.8px;stroke-linecap:round;stroke-linejoin:round;"/>
+    </g>
+    <g transform="matrix(1,0,0,1,584,352)">
+        <text x="0px" y="0px" style="font-family:'Helvetica-Bold', 'Helvetica';font-weight:700;font-size:15px;fill:rgb(11,18,32);">T<tspan x="8.057px 16.399px " y="0px 0px ">en</tspan>uo <tspan x="47.505px 58.337px " y="0px 0px ">Au</tspan>thorizer</text>
+    </g>
+    <g transform="matrix(1,0,0,1,584,371)">
+        <text x="0px" y="0px" style="font-family:'Helvetica';font-size:11.5px;fill:rgb(102,112,133);">Docker container<tspan x="86.301px 89.496px " y="0px 0px ">, </tspan>shared by both paths</text>
+    </g>
+    <path d="M584,382L772,382" style="fill:none;fill-rule:nonzero;stroke:rgb(228,233,242);stroke-width:1.1px;"/>
+    <g transform="matrix(1,0,0,1,584,402)">
+        <g transform="matrix(12,0,0,12,22.025391,0)">
+        </g>
+        <g transform="matrix(12,0,0,12,26.021484,0)">
+        </g>
+        <text x="0px" y="0px" style="font-family:'Helvetica-Bold', 'Helvetica';font-weight:700;font-size:12px;fill:rgb(52,64,84);">V<tspan x="7.348px 14.021px " y="0px 0px ">er</tspan>iﬁes warrant + PoP</text>
+    </g>
+    <g transform="matrix(1,0,0,1,584,421)">
+        <text x="0px" y="0px" style="font-family:'Helvetica-Bold', 'Helvetica';font-weight:700;font-size:12px;fill:rgb(52,64,84);">Checks tool + argument constraints</text>
+    </g>
+    <path d="M772,439L772,451C772,454.863 768.863,458 765,458L591,458C587.137,458 584,454.863 584,451L584,439C584,435.137 587.137,432 591,432L765,432C768.863,432 772,435.137 772,439Z" style="fill:rgb(239,244,255);stroke:rgb(26,110,255);stroke-width:1.1px;"/>
+    <g transform="matrix(1,0,0,1,678,450)">
+        <g transform="matrix(10,0,0,10,-65.400391,0)">
+        </g>
+        <g transform="matrix(10,0,0,10,-62.070312,0)">
+        </g>
+        <text x="-74.839px" y="0px" style="font-family:'Helvetica-Bold', 'Helvetica';font-weight:700;font-size:10px;fill:rgb(26,110,255);">ofﬂine · sub-50 µs · one warrant</text>
+    </g>
+    <g transform="matrix(1,0,0,1,584,478)">
+        <text x="0px" y="0px" style="font-family:'Helvetica';font-size:10px;fill:rgb(122,138,163);">the decision is outside of the model</text>
+    </g>
+    <path d="M240,346L288,346" style="fill:none;fill-rule:nonzero;stroke:rgb(26,110,255);stroke-width:2.2px;stroke-linecap:round;stroke-linejoin:round;"/>
+    <g transform="matrix(1,0,0,1,266,338)">
+        <text x="-14.451px" y="0px" style="font-family:'Helvetica-Bold', 'Helvetica';font-weight:700;font-size:10px;fill:rgb(102,112,133);">native</text>
+    </g>
+    <path d="M240,450L288,450" style="fill:none;fill-rule:nonzero;stroke:rgb(26,110,255);stroke-width:2.2px;stroke-linecap:round;stroke-linejoin:round;"/>
+    <g transform="matrix(1,0,0,1,266,442)">
+        <text x="-11.111px" y="0px" style="font-family:'Helvetica-Bold', 'Helvetica';font-weight:700;font-size:10px;fill:rgb(102,112,133);">MCP</text>
+    </g>
+    <path d="M516,344C540,344 542,372 564,374" style="fill:none;fill-rule:nonzero;stroke:rgb(26,110,255);stroke-width:2px;stroke-linecap:round;stroke-linejoin:round;"/>
+    <g transform="matrix(1,0,0,1,542,339)">
+        <text x="-21.055px" y="0px" style="font-family:'Helvetica-Bold', 'Helvetica';font-weight:700;font-size:8.4px;fill:rgb(102,112,133);">PoP<tspan x="-4.867px -2.533px " y="0px 0px ">  </tspan>+ ask</text>
+    </g>
+    <path d="M516,452C540,452 542,438 564,436" style="fill:none;fill-rule:nonzero;stroke:rgb(26,110,255);stroke-width:2px;stroke-linecap:round;stroke-linejoin:round;"/>
+    <path d="M1214,313L1214,365C1214,372.175 1208.175,378 1201,378L853,378C845.825,378 840,372.175 840,365L840,313C840,305.825 845.825,300 853,300L1201,300C1208.175,300 1214,305.825 1214,313Z" style="fill:rgb(231,247,240);stroke:rgb(14,159,110);stroke-width:1.5px;"/>
+    <circle cx="868" cy="328" r="11" style="fill:none;stroke:rgb(14,159,110);stroke-width:2px;"/>
+    <path d="M863,328L867,332L874,324" style="fill:none;fill-rule:nonzero;stroke:rgb(14,159,110);stroke-width:2.2px;stroke-linecap:round;stroke-linejoin:round;"/>
+    <g transform="matrix(1,0,0,1,890,326)">
+        <text x="0px" y="0px" style="font-family:'Helvetica-Bold', 'Helvetica';font-weight:700;font-size:14px;fill:rgb(11,122,85);">ALLOW · in scope</text>
+    </g>
+    <g transform="matrix(1,0,0,1,890,350)">
+        <text x="0px" y="0px" style="font-family:'Helvetica';font-size:11.5px;fill:rgb(63,111,94);">Native tool runs. MCP<tspan x="111.642px 114.837px " y="0px 0px "> p</tspan>roxy forwards the call</text>
+    </g>
+    <g transform="matrix(1,0,0,1,890,366)">
+        <text x="0px" y="0px" style="font-family:'Helvetica';font-size:11.5px;fill:rgb(63,111,94);">to the downstream server<tspan x="129.122px " y="0px ">.</tspan></text>
+    </g>
+    <path d="M1214,405L1214,471C1214,478.175 1208.175,484 1201,484L853,484C845.825,484 840,478.175 840,471L840,405C840,397.825 845.825,392 853,392L1201,392C1208.175,392 1214,397.825 1214,405Z" style="fill:rgb(254,243,226);stroke:rgb(220,138,4);stroke-width:1.5px;"/>
+    <circle cx="868" cy="420" r="11" style="fill:none;stroke:rgb(220,138,4);stroke-width:2px;"/>
+    <path d="M865,416L865,424M871,416L871,424" style="fill-rule:nonzero;stroke:rgb(220,138,4);stroke-width:2.2px;stroke-linecap:round;"/>
+    <g transform="matrix(1,0,0,1,890,418)">
+        <text x="0px" y="0px" style="font-family:'Helvetica-Bold', 'Helvetica';font-weight:700;font-size:14px;fill:rgb(154,103,0);">P<tspan x="8.306px 18.416px " y="0px 0px ">AU</tspan>SE · human approval</text>
+    </g>
+    <g transform="matrix(1,0,0,1,892,444)">
+        <text x="0px" y="0px" style="font-family:'Helvetica';font-size:9.7px;fill:rgb(122,90,20);">1-of-N approval in Slack, <tspan x="108.732px 113.582px 118.977px " y="0px 0px 0px ">Tel</tspan>egram, etc. for sensitive actions</text>
+        <g transform="matrix(9.7,0,0,9.7,132.100928,19.4)">
+        </g>
+        <g transform="matrix(9.7,0,0,9.7,134.795898,19.4)">
+        </g>
+        <g transform="matrix(9.7,0,0,9.7,224.852441,19.4)">
+        </g>
+        <text x="0px" y="19.4px" style="font-family:'Helvetica';font-size:9.7px;fill:rgb(122,90,20);">Signed by Cloud KMS and veriﬁed by the authorizer<tspan x="222.157px " y="19.4px ">.</tspan></text>
+    </g>
+    <path d="M1214,511L1214,555C1214,562.175 1208.175,568 1201,568L853,568C845.825,568 840,562.175 840,555L840,511C840,503.825 845.825,498 853,498L1201,498C1208.175,498 1214,503.825 1214,511Z" style="fill:rgb(253,236,234);stroke:rgb(217,45,32);stroke-width:1.6px;"/>
+    <circle cx="868" cy="524" r="11" style="fill:none;stroke:rgb(217,45,32);stroke-width:2px;"/>
+    <path d="M864,520L872,528M872,520L864,528" style="fill-rule:nonzero;stroke:rgb(217,45,32);stroke-width:2.2px;stroke-linecap:round;"/>
+    <g transform="matrix(1,0,0,1,890,522)">
+        <text x="0px" y="0px" style="font-family:'Helvetica-Bold', 'Helvetica';font-weight:700;font-size:14px;fill:rgb(181,39,27);">DENY<tspan x="38.65px 42.54px " y="0px 0px "> ·</tspan> out of scope</text>
+    </g>
+    <g transform="matrix(1,0,0,1,891,541)">
+        <text x="0px" y="0px" style="font-family:'Helvetica';font-size:11.5px;fill:rgb(138,75,71);">Injected, of<tspan x="56.057px 59.252px " y="0px 0px ">f-</tspan>policy<tspan x="91.635px 94.83px " y="0px 0px ">, </tspan>or unknown calls (e.g.</text>
+    </g>
+    <g transform="matrix(1,0,0,1,890,557)">
+        <text x="0px" y="0px" style="font-family:'Menlo-Regular', 'Menlo', monospace;font-size:11.5px;fill:rgb(138,75,71);">delete_deployment</text>
+        <text x="117.701px" y="0px" style="font-family:'Helvetica';font-size:11.5px;fill:rgb(138,75,71);">) blocked before execution.</text>
+    </g>
+    <path d="M790,392C816,392 818,338 838,338" style="fill:none;fill-rule:nonzero;stroke:rgb(14,159,110);stroke-width:2.1px;stroke-linecap:round;stroke-linejoin:round;"/>
+    <path d="M790,418L838,418" style="fill:none;fill-rule:nonzero;stroke:rgb(220,138,4);stroke-width:2.1px;stroke-linecap:round;stroke-linejoin:round;"/>
+    <path d="M790,440C816,440 818,528 838,528" style="fill:none;fill-rule:nonzero;stroke:rgb(217,45,32);stroke-width:2.1px;stroke-linecap:round;stroke-linejoin:round;"/>
+    <path d="M1214,600L1214,656C1214,663.727 1207.727,670 1200,670L54,670C46.273,670 40,663.727 40,656L40,600C40,592.273 46.273,586 54,586L1200,586C1207.727,586 1214,592.273 1214,600Z" style="fill:rgb(248,250,254);stroke:rgb(26,110,255);stroke-width:1.4px;stroke-dasharray:6,4;"/>
+    <g transform="matrix(1,0,0,1,62,612)">
+        <path d="M5,18C2.612,17.153 1.007,14.879 1.007,12.346C1.007,9.357 3.239,6.802 6.2,6.4C7.172,3.585 9.839,1.684 12.817,1.684C16.474,1.684 19.547,4.551 19.8,8.2C21.933,8.816 23.412,10.783 23.412,13.004C23.412,15.676 21.27,17.9 18.6,18L5,18Z" style="fill:none;fill-rule:nonzero;stroke:rgb(26,110,255);stroke-width:1.7px;stroke-linecap:round;stroke-linejoin:round;"/>
+    </g>
+    <g transform="matrix(1,0,0,1,98,612)">
+        <text x="0px" y="0px" style="font-family:'Helvetica-Bold', 'Helvetica';font-weight:700;font-size:14px;fill:rgb(11,18,32);">T<tspan x="7.52px 15.306px " y="0px 0px ">en</tspan>uo Cloud</text>
+    </g>
+    <g transform="matrix(1,0,0,1,98,630)">
+        <text x="0px" y="0px" style="font-family:'Helvetica';font-size:10px;fill:rgb(122,138,163);">optional</text>
+    </g>
+    <g transform="matrix(1,0,0,1,210,612)">
+        <text x="0px" y="0px" style="font-family:'Helvetica-Bold', 'Helvetica';font-weight:700;font-size:12px;fill:rgb(52,64,84);">Root-signed warrants</text>
+    </g>
+    <g transform="matrix(1,0,0,1,210,630)">
+        <text x="0px" y="0px" style="font-family:'Helvetica';font-size:11.5px;fill:rgb(102,112,133);">tenant root issues the session warrant</text>
+    </g>
+    <g transform="matrix(1,0,0,1,470,612)">
+        <text x="0px" y="0px" style="font-family:'Helvetica-Bold', 'Helvetica';font-weight:700;font-size:12px;fill:rgb(52,64,84);">Central audit</text>
+    </g>
+    <g transform="matrix(1,0,0,1,470,630)">
+        <text x="0px" y="0px" style="font-family:'Helvetica';font-size:11.5px;fill:rgb(102,112,133);">every decision streams a signed receipt</text>
+    </g>
+    <g transform="matrix(1,0,0,1,720,612)">
+        <text x="0px" y="0px" style="font-family:'Helvetica-Bold', 'Helvetica';font-weight:700;font-size:12px;fill:rgb(52,64,84);">Human approval + KMS</text>
+    </g>
+    <g transform="matrix(1,0,0,1,720,630)">
+        <g transform="matrix(11.5,0,0,11.5,248.030518,0)">
+        </g>
+        <text x="0px" y="0px" style="font-family:'Helvetica';font-size:11.5px;fill:rgb(102,112,133);">provides transport channels for signed approvals</text>
+    </g>
+    <path d="M660,490L660,580" style="fill:none;fill-rule:nonzero;stroke:rgb(152,162,179);stroke-width:1.5px;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:4,4;"/>
+    <g transform="matrix(1,0,0,1,640,540)">
+        <text x="-30.015px" y="0px" style="font-family:'Helvetica';font-size:10px;fill:rgb(122,138,163);">receipt</text>
+    </g>
+    <path d="M700,580L700,492" style="fill:none;fill-rule:nonzero;stroke:rgb(152,162,179);stroke-width:1.5px;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:4,4;"/>
+    <g transform="matrix(1,0,0,1,716,540)">
+        <text x="0px" y="0px" style="font-family:'Helvetica';font-size:10px;fill:rgb(122,138,163);">warrant / SRL</text>
+    </g>
+</svg>

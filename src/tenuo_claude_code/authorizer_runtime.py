@@ -4,18 +4,35 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import re
 import shutil
 import signal
 import socket
+import stat
 import subprocess
+import tarfile
+import tempfile
 import time
+import urllib.error
 import urllib.request
+import zipfile
 from pathlib import Path
 from typing import Callable
 
 DEFAULT_IMAGE = "tenuo/authorizer:0.1.0-beta.24"
+RELEASE_REPO = "tenuo-ai/tenuo"
 _INFO_VERSION_RE = re.compile(r"^Tenuo Authorizer v(\S+)", re.MULTILINE)
+
+
+def managed_install_root() -> Path:
+    """User-local install root (``~/.tenuo``). Binaries live in ``bin/``."""
+    return Path(os.environ.get("TENUO_INSTALL_ROOT", Path.home() / ".tenuo")).expanduser()
+
+
+def managed_binary_path() -> Path:
+    name = "tenuo-authorizer.exe" if platform.system().lower() == "windows" else "tenuo-authorizer"
+    return managed_install_root() / "bin" / name
 
 
 def authorizer_crate_version(image: str = DEFAULT_IMAGE) -> str:
@@ -23,12 +40,13 @@ def authorizer_crate_version(image: str = DEFAULT_IMAGE) -> str:
     return image.rsplit(":", 1)[-1].lstrip("v")
 
 
-def install_hint(image: str = DEFAULT_IMAGE) -> str:
+def release_tag(image: str = DEFAULT_IMAGE) -> str:
     version = authorizer_crate_version(image)
-    return (
-        f"cargo install tenuo --version {version} "
-        f"--features data-plane,server --bin tenuo-authorizer --locked"
-    )
+    return version if version.startswith("v") else f"v{version}"
+
+
+def install_hint(image: str = DEFAULT_IMAGE) -> str:
+    return "run: tenuo-claude install-authorizer"
 
 
 def crate_version_from_authorizer_version(version: str) -> str:
@@ -113,31 +131,156 @@ def clear_runtime_meta(mount: Path) -> None:
     runtime_meta_path(mount).unlink(missing_ok=True)
 
 
+def platform_triple() -> str:
+    machine = platform.machine().lower()
+    arch = {"arm64": "aarch64", "amd64": "x86_64"}.get(machine, machine)
+    system = platform.system().lower()
+    if system == "darwin":
+        return f"{arch}-apple-darwin"
+    if system == "linux":
+        return f"{arch}-unknown-linux-gnu"
+    if system == "windows":
+        return f"{arch}-pc-windows-msvc"
+    raise RuntimeError(f"unsupported platform: {system}/{machine}")
+
+
+def _github_release_assets(tag: str) -> list[dict]:
+    url = f"https://api.github.com/repos/{RELEASE_REPO}/releases/tags/{tag}"
+    req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read().decode())
+    return data.get("assets") or []
+
+
+def _pick_release_asset(assets: list[dict], triple: str) -> dict | None:
+    for asset in assets:
+        name = asset.get("name") or ""
+        if "tenuo-authorizer" not in name:
+            continue
+        if triple in name:
+            return asset
+    return None
+
+
+def _extract_executable(archive: Path, dest: Path) -> None:
+    name = archive.name.lower()
+    if name.endswith(".zip"):
+        with zipfile.ZipFile(archive) as zf:
+            members = [m for m in zf.namelist() if "tenuo-authorizer" in m and not m.endswith("/")]
+            if not members:
+                raise RuntimeError(f"no tenuo-authorizer binary in {archive.name}")
+            dest.write_bytes(zf.read(members[0]))
+    elif name.endswith((".tar.gz", ".tgz")):
+        with tarfile.open(archive, "r:gz") as tf:
+            members = [m for m in tf.getmembers() if "tenuo-authorizer" in m.name and m.isfile()]
+            if not members:
+                raise RuntimeError(f"no tenuo-authorizer binary in {archive.name}")
+            extracted = tf.extractfile(members[0])
+            if extracted is None:
+                raise RuntimeError(f"could not extract {members[0].name}")
+            dest.write_bytes(extracted.read())
+    else:
+        shutil.copy2(archive, dest)
+
+
+def download_release_binary(image: str = DEFAULT_IMAGE) -> Path:
+    """Download a prebuilt ``tenuo-authorizer`` from the tenuo core GitHub release."""
+    dest = managed_binary_path()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tag = release_tag(image)
+    triple = platform_triple()
+    asset = _pick_release_asset(_github_release_assets(tag), triple)
+    if asset is None:
+        raise FileNotFoundError(
+            f"no prebuilt tenuo-authorizer for {triple} in {RELEASE_REPO} release {tag}"
+        )
+    with tempfile.TemporaryDirectory() as tmp:
+        archive = Path(tmp) / asset["name"]
+        urllib.request.urlretrieve(asset["browser_download_url"], archive)
+        if archive.name == dest.name or not archive.name.endswith((".tar.gz", ".tgz", ".zip")):
+            shutil.copy2(archive, dest)
+        else:
+            _extract_executable(archive, dest)
+    dest.chmod(dest.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return dest
+
+
+def cargo_available() -> bool:
+    return shutil.which("cargo") is not None
+
+
+def install_via_cargo(image: str = DEFAULT_IMAGE) -> Path:
+    """Build and install ``tenuo-authorizer`` into ``~/.tenuo/bin`` via ``cargo install --root``."""
+    if not cargo_available():
+        raise RuntimeError("Rust toolchain not found (install from https://rustup.rs)")
+    root = managed_install_root()
+    root.mkdir(parents=True, exist_ok=True)
+    version = authorizer_crate_version(image)
+    cmd = [
+        "cargo", "install", "tenuo", "--version", version,
+        "--features", "data-plane,server", "--bin", "tenuo-authorizer", "--locked",
+        "--root", str(root),
+    ]
+    print(f"Building tenuo-authorizer {version} (first install may take several minutes)…")
+    result = subprocess.run(cmd)
+    if result.returncode != 0:
+        raise RuntimeError("cargo install failed")
+    dest = managed_binary_path()
+    if not dest.is_file():
+        raise RuntimeError(f"cargo install finished but {dest} is missing")
+    return dest
+
+
+def install_authorizer(image: str = DEFAULT_IMAGE, *, force: bool = False) -> Path:
+    """Install ``tenuo-authorizer`` to ``~/.tenuo/bin``: prebuilt release, else ``cargo install --root``."""
+    dest = managed_binary_path()
+    pinned = authorizer_crate_version(image)
+    if not force and dest.is_file():
+        installed = query_binary_version(dest)
+        if installed and version_compatible(installed, pinned):
+            return dest
+    try:
+        print(f"Downloading tenuo-authorizer {pinned}…")
+        return download_release_binary(image)
+    except (urllib.error.URLError, FileNotFoundError, RuntimeError) as exc:
+        print(f"Prebuilt download unavailable ({exc}).")
+    return install_via_cargo(image)
+
+
 def find_authorizer_binary(image: str = DEFAULT_IMAGE) -> Path | None:
-    """Best-effort lookup: ``TENUO_AUTHORIZER_BIN`` or ``tenuo-authorizer`` on PATH."""
+    """Best-effort lookup: override → ``~/.tenuo/bin`` → PATH."""
     override = os.environ.get("TENUO_AUTHORIZER_BIN", "").strip()
     if override:
         path = Path(override).expanduser()
         return path if path.is_file() else None
+    managed = managed_binary_path()
+    if managed.is_file():
+        return managed
     found = shutil.which("tenuo-authorizer")
     return Path(found) if found else None
 
 
-def resolve_authorizer_binary(image: str = DEFAULT_IMAGE) -> Path:
-    """Locate the published ``tenuo-authorizer`` binary (override → PATH)."""
+def resolve_authorizer_binary(image: str = DEFAULT_IMAGE, *, install: bool = False) -> Path:
+    """Locate ``tenuo-authorizer`` (override → managed → PATH), optionally installing first."""
+    if install:
+        install_authorizer(image)
     override = os.environ.get("TENUO_AUTHORIZER_BIN", "").strip()
     if override:
         path = Path(override).expanduser()
         if not path.is_file():
             raise SystemExit(f"TENUO_AUTHORIZER_BIN={override!r} not found")
         return path
+    managed = managed_binary_path()
+    if managed.is_file():
+        return managed
     found = shutil.which("tenuo-authorizer")
     if found:
         return Path(found)
     raise SystemExit(
-        "Could not find tenuo-authorizer on PATH.\n"
+        "Could not find tenuo-authorizer.\n"
         f"  • {install_hint(image)}\n"
-        "  • Or set TENUO_AUTHORIZER_BIN to the binary path"
+        "  • Or install Docker and run `tenuo-claude up --docker`\n"
+        "  • Or set TENUO_AUTHORIZER_BIN to an existing binary"
     )
 
 

@@ -44,23 +44,21 @@ More: [docs/DETAILS.md](docs/DETAILS.md)
 ## Prerequisites
 
 - Python ≥ 3.10
-- **Authorizer runtime** — one of:
-  - **Native (recommended when Docker is unavailable):** install the published
-    [`tenuo-authorizer`](https://crates.io/crates/tenuo) binary (same version as the
-    pinned Docker image, currently `0.1.0-beta.24`):
+- **Authorizer runtime** — pick one:
+  - **Docker (simplest for most users):** install [Docker Desktop](https://www.docker.com/products/docker-desktop/)
+    or your engine, then `tenuo-claude up` (pulls the pinned `tenuo/authorizer` image).
+  - **Native (no Docker):** one command installs the matching binary to `~/.tenuo/bin`
+    (downloads a prebuilt release when available, otherwise builds via Rust in the background):
 
     ```bash
-    cargo install tenuo --version 0.1.0-beta.24 \
-      --features data-plane,server --bin tenuo-authorizer --locked
+    pip install tenuo-claude-code
+    tenuo-claude install-authorizer
+    tenuo-claude up --native
     ```
 
-    Ensure `~/.cargo/bin` is on your `PATH`, then `tenuo-claude up --native` (or rely
-    on auto-fallback when Docker is not running). Override with `TENUO_AUTHORIZER_BIN`
-    if needed. The CLI checks that the binary matches the package pin; set
-    `TENUO_AUTHORIZER_SKIP_VERSION=1` only for local dev against a different build.
-  - **Docker:** the pinned `tenuo/authorizer` container (`tenuo-claude up --docker`, or
-    default when Docker is available). Holder keys and PoP signing stay on the host; only
-    `gateway.yaml` is mounted into the container.
+    Or combine install + start: `tenuo-claude up --native --install`. Override with
+    `TENUO_AUTHORIZER_BIN` if needed. The CLI verifies the binary matches the package pin;
+    set `TENUO_AUTHORIZER_SKIP_VERSION=1` only for local dev builds.
 - [Claude Code](https://code.claude.com/docs) — for live agent use, not for a first eval
   (see [Quick eval](#quick-eval-no-claude) below)
 
@@ -87,6 +85,8 @@ Five steps. All commands run in **one project directory** that contains `tenuo.y
 
 ```bash
 pip install tenuo-claude-code
+# If you are not using Docker:
+tenuo-claude install-authorizer
 ```
 
 **2. Create a project folder**
@@ -117,10 +117,15 @@ curl -fsSL https://raw.githubusercontent.com/tenuo-ai/claude-governance/main/ten
 **4. Initialize and start**: pick one:
 
 ```bash
-# Manual
-tenuo-claude init      # warrant + Claude hooks + MCP wiring
-tenuo-claude up        # authorizer in Docker: expect "Local mode (no Cloud)"
-tenuo-claude verify    # confirm policy matches authorizer
+# Manual (Docker — default when Docker is running)
+tenuo-claude init
+tenuo-claude up
+tenuo-claude verify
+
+# Manual (native — no Docker)
+tenuo-claude init
+tenuo-claude up --native --install   # installs to ~/.tenuo/bin on first run
+tenuo-claude verify
 ```
 
 ```bash
@@ -138,8 +143,9 @@ To prove policy enforcement without installing Claude Code:
 
 ```bash
 pip install tenuo-claude-code
+tenuo-claude install-authorizer   # skip if using Docker
 # … create my-project/ with tenuo.yaml (steps 2–3 above)
-tenuo-claude onboard --local    # needs Docker; runs check → init → up → verify
+tenuo-claude onboard --local      # or: init && up --native && verify
 ```
 
 `verify` exercises allow/deny against the live authorizer (out-of-scope reads, shell
@@ -163,6 +169,7 @@ Generated files (do not commit): `.state/` (keys, warrant), `.claude/settings.js
 |---------|------|
 | `init` | Mint warrant, wire hooks and `.mcp.json` |
 | `up` / `down` | Start / stop authorizer |
+| `install-authorizer` | Install `tenuo-authorizer` to `~/.tenuo/bin` (no manual `cargo`) |
 | `refresh` | Re-apply `tenuo.yaml` (restarts authorizer if up) |
 | `check` | Preflight: deps, credentials, wiring drift |
 | `verify [--deep]` | Policy self-test against the authorizer |

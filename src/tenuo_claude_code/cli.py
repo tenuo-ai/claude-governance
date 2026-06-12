@@ -1510,10 +1510,10 @@ def _start_authorizer_docker(cfg: dict, denv: dict, *, cloud: bool) -> None:
     print(f"Authorizer up (container {name}).")
 
 
-def _start_authorizer_native(cfg: dict, denv: dict, *, image: str) -> None:
+def _start_authorizer_native(cfg: dict, denv: dict, *, image: str, install: bool = False) -> None:
     sync_authorizer_mount()
     mount = authorizer_mount_dir()
-    binary = art.resolve_authorizer_binary(image)
+    binary = art.resolve_authorizer_binary(image, install=install)
     print(f"Starting native authorizer ({binary})…")
     art.start_native(
         binary=binary,
@@ -1653,7 +1653,7 @@ def cmd_check(_args) -> None:
             )
     elif not d_ok:
         _check_line(
-            False, "authorizer binary", "not on PATH",
+            False, "authorizer binary", "not installed",
             art.install_hint(DEFAULT_AUTHZ_IMAGE),
         )
         ok = False
@@ -2006,6 +2006,22 @@ def _record_fired_warrant(warrant_b64: str) -> None:
         pass
 
 
+def cmd_install_authorizer(args) -> None:
+    """Install the pinned ``tenuo-authorizer`` binary to ``~/.tenuo/bin``."""
+    image = DEFAULT_AUTHZ_IMAGE
+    if CONFIG_FILE.exists():
+        try:
+            image = authorizer_image(load_config())
+        except SystemExit:
+            pass
+    path = art.install_authorizer(image, force=getattr(args, "force", False))
+    installed = art.query_binary_version(path)
+    print(f"Installed: {path}")
+    if installed:
+        print(f"Version:   {installed}")
+    print("Next: `tenuo-claude up --native`")
+
+
 def cmd_up(_args) -> None:
     cfg = load_config()
     creds = cloud_creds(cfg)
@@ -2075,7 +2091,7 @@ def cmd_up(_args) -> None:
     image = authorizer_image(cfg)
     backend = art.choose_backend(_args)
     if backend == "native":
-        _start_authorizer_native(cfg, denv, image=image)
+        _start_authorizer_native(cfg, denv, image=image, install=getattr(_args, "install", False))
     else:
         _start_authorizer_docker(cfg, denv, cloud=cloud)
     cmd_status(_args)
@@ -2597,6 +2613,7 @@ def cmd_refresh(args) -> None:
 COMMANDS = {
     "init": cmd_init, "refresh": cmd_refresh, "up": cmd_up, "down": cmd_down, "status": cmd_status,
     "check": cmd_check, "onboard": cmd_onboard, "bootstrap": cmd_bootstrap,
+    "install-authorizer": cmd_install_authorizer,
     "audit": cmd_audit, "revoke": cmd_revoke,
     "verify": cmd_verify, "doctor": cmd_doctor, "demo": cmd_demo, "bench": cmd_bench,
     "_hook": cmd_hook, "_post": cmd_post, "_mcp-proxy": cmd_mcp_proxy,
@@ -2615,6 +2632,13 @@ def main() -> None:
                     help="run tenuo-authorizer as a host process (no Docker)")
     pu.add_argument("--docker", action="store_true",
                     help="force Docker container (default when Docker is available)")
+    pu.add_argument("--install", action="store_true",
+                    help="with --native: install tenuo-authorizer to ~/.tenuo/bin if missing")
+    pi_auth = sub.add_parser(
+        "install-authorizer",
+        help="install the pinned tenuo-authorizer binary to ~/.tenuo/bin",
+    )
+    pi_auth.add_argument("--force", action="store_true", help="reinstall even if version matches")
     pr = sub.add_parser("refresh",
                         help="re-apply tenuo.yaml (warrant, gateway, hooks) after policy edits")
     pr.add_argument("--no-restart", action="store_true",

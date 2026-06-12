@@ -16,8 +16,7 @@ def test_authorizer_crate_version():
 
 
 def test_install_hint():
-    assert "cargo install tenuo" in art.install_hint()
-    assert "0.1.0-beta.24" in art.install_hint()
+    assert art.install_hint() == "run: tenuo-claude install-authorizer"
 
 
 def test_parse_binary_version():
@@ -72,8 +71,32 @@ def test_resolve_binary_on_path(tmp_path, monkeypatch):
 def test_resolve_binary_missing(monkeypatch):
     monkeypatch.delenv("TENUO_AUTHORIZER_BIN", raising=False)
     with mock.patch("shutil.which", return_value=None):
-        with pytest.raises(SystemExit, match="cargo install tenuo"):
-            art.resolve_authorizer_binary()
+        with mock.patch.object(art, "managed_binary_path") as mp:
+            mp.return_value = Path("/nonexistent/tenuo-authorizer")
+            with pytest.raises(SystemExit, match="install-authorizer"):
+                art.resolve_authorizer_binary()
+
+
+def test_find_authorizer_binary_managed(tmp_path, monkeypatch):
+    monkeypatch.delenv("TENUO_AUTHORIZER_BIN", raising=False)
+    managed = tmp_path / "bin" / "tenuo-authorizer"
+    managed.parent.mkdir()
+    managed.write_bytes(b"fake")
+    with mock.patch.object(art, "managed_binary_path", return_value=managed):
+        with mock.patch("shutil.which", return_value=None):
+            assert art.find_authorizer_binary() == managed
+
+
+def test_install_authorizer_skips_when_current(tmp_path, monkeypatch):
+    managed = tmp_path / "bin" / "tenuo-authorizer"
+    managed.parent.mkdir()
+    managed.write_bytes(b"fake")
+    with mock.patch.object(art, "managed_binary_path", return_value=managed):
+        with mock.patch.object(art, "query_binary_version", return_value="0.1.0-beta.24+authz.1"):
+            with mock.patch.object(art, "download_release_binary") as dl:
+                result = art.install_authorizer(force=False)
+                assert result == managed
+                dl.assert_not_called()
 
 
 def test_runtime_meta_roundtrip(tmp_path):

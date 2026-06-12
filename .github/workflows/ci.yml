@@ -94,7 +94,7 @@ jobs:
           proj="$RUNNER_TEMP/governed"
           mkdir -p "$proj"
           cd "$proj"
-          uv run tenuo-claude bootstrap
+          uv run --directory "$GITHUB_WORKSPACE" tenuo-claude bootstrap
           test -f tenuo.yaml
           test -f .state/warrant.b64
           test -f .claude/settings.json

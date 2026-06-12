@@ -1,6 +1,6 @@
 # Contributing
 
-Apache-2.0 — see [LICENSE](LICENSE). Bug reports and PRs welcome.
+Apache-2.0. See [LICENSE](LICENSE). Bug reports and PRs welcome.
 
 ## Getting started
 
@@ -21,7 +21,7 @@ Re-run `init` or `refresh` after switching Python venvs (hooks pin `sys.executab
 3. Run `cd demo && tenuo-claude verify` if you touch enforcement or policy wiring.
 4. Do not commit `.state/`, real API keys, or home-directory paths.
 
-Security issues: see [SECURITY.md](SECURITY.md) — no public issues for vulnerabilities.
+Security issues: see [SECURITY.md](SECURITY.md). No public issues for vulnerabilities.
 
 ## Never commit secrets
 
@@ -31,7 +31,7 @@ Security issues: see [SECURITY.md](SECURITY.md) — no public issues for vulnera
 | `.claude/settings.json` | Generated hook wiring |
 | `~/.tenuo/admin.env` | Admin key for `tenuo-admin setup` only |
 
-Safe to commit: source, `demo/` (sample policy and fake `prod-credentials.env` decoy),
+Safe to commit: source, `demo/` (sample policy and fake `prod-credentials.env`),
 examples, and templates (`*.example`).
 
 Before pushing, scan staged diffs for bearer tokens (`tc_…`, `tenuo_ct_…`) and paths
@@ -59,6 +59,15 @@ or `PYPI_TOKEN` secret).
 
 Bump `version` in `pyproject.toml` and `src/tenuo_claude_code/__init__.py`, then tag.
 
+## Policy templates
+
+Illustrative `tenuo.yaml` patterns for tool users live in
+[examples/policies/](examples/policies/). PRs welcome for new **use-case** templates
+(generic names, no org hostnames or secrets). See that README for contribution rules.
+
+Users install `tenuo-claude-code`, save an adapted template as `tenuo.yaml` in their
+project directory, and run `tenuo-claude init` from there.
+
 ## Reference demo
 
-Presentation runbook and sample fixtures: [demo/](demo/).
+Sample policy, sandbox, and scripted tour: [demo/](demo/).

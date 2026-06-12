@@ -156,6 +156,19 @@ def build_probes(cfg: dict, *, deep: bool) -> tuple[list[Probe], list[Callable[[
         probes.append(Probe("audit", f"{tool} audit-allowed", tool, tin, True))
         break
 
+    mcp_cfg = cfg.get("mcp") or {}
+    mcp_enforce = mcp_cfg.get("enforce") or {}
+    if mcp_cfg.get("downstream") and mcp_enforce:
+        mtool = next(iter(mcp_enforce))
+        probes.extend([
+            Probe("mcp", f"{mtool} in sandbox", mtool,
+                  {"path": str(probe_file)}, True),
+            Probe("mcp", f"{mtool} outside sandbox", mtool,
+                  {"path": "/etc/passwd"}, False),
+            Probe("mcp", "unlisted MCP tool denied", "delete_deployment",
+                  {"target": "production"}, False),
+        ])
+
     if cfg.get("default", "deny") == "deny":
         probes.append(Probe("default", "unknown tool denied",
                             "TenuoVerifyUnknownTool", {"x": 1}, False))

@@ -1,10 +1,10 @@
-# Tenuo for Claude Code — demo policy.
+# Tenuo for Claude Code demo policy. policy.
 #
 # `tenuo-claude init` generates warrant, gateway, hooks, and MCP wiring from this file.
 
 name: claude-code-demo
 
-# Enforcement posture. `enforce` (default) blocks out-of-scope calls — this is
+# Enforcement posture. `enforce` (default) blocks out-of-scope calls. This is
 # what the README quickstart demonstrates. Set `mode: audit` for OBSERVE-ONLY
 # rollout: every call's real allow/deny is still computed and written to the
 # signed receipt (so you see what WOULD be denied), but nothing is blocked. The
@@ -17,8 +17,8 @@ sandbox: ./sandbox
 
 # Optional Tenuo Cloud (root-signed warrants, signed audit stream). Not required
 # for local mode. Tool overlay: `tenuo-claude init --cloud` → tenuo.cloud.yaml.
-# Demo overlay (WebFetch human approval): tenuo.advanced.yaml — optional; see tenuo.yaml.advanced.example
-# and demo/docs/PRESENTATION.md. Then `tenuo-admin setup` once before `tenuo-claude up`.
+# Optional human-approval overlay: tenuo.advanced.yaml. See tenuo.yaml.advanced.example.
+# Shipped example gates off-allowlist WebFetch; requires Cloud identity + `tenuo-admin setup`.
 
 # ENFORCED tools: explicitly allowed AND argument-checked. These may mutate, but
 # only within scope. Constraint DSL:
@@ -31,37 +31,36 @@ enforce:
   Edit:  "subpath:{sandbox}"
   # Shlex is structure-aware: it rejects pipes, chaining (&&/;), subshells, and
   # variable/glob expansion that a regex ".*" would let through. NOTE: a command
-  # allowlist authorizes the *verb*, not file paths — `cat /etc/passwd` would
+  # allowlist authorizes the *verb*, not file paths. `cat /etc/passwd` would
   # still pass. So keep this to INERT commands and rely on Read/Write/Edit above
   # for filesystem scope. For a hard sandbox, remove Bash entirely.
   Bash:  "shlex:ls,pwd,echo,date"
   # Glob/Grep return file contents/paths, so their search root is scoped like
   # Read. A call without an explicit path is checked against the hook's cwd
-  # (and denied unless that's inside the sandbox) — agents must search the
+  # (and denied unless that's inside the sandbox). Agents must search the
   # sandbox explicitly. All subpath args are realpath()-resolved first, so a
   # symlink planted inside the sandbox can't point reads outside it.
   Glob:  "subpath:{sandbox}"
   Grep:  "subpath:{sandbox}"
-  # Org egress policy: WebFetch may reach allowlisted domains over https —
-  # nothing else. Every URL also passes UrlSafe SSRF hygiene: cloud metadata
+  # Egress policy: WebFetch may reach allowlisted domains over https only.
+  # Nothing else. Every URL also passes UrlSafe SSRF hygiene: cloud metadata
   # IPs, loopback, decimal/hex/octal-encoded IPs, suffix-spoofed hosts
   # (api.github.com.evil.com), and ambiguous hostnames are blocked even if
   # they'd slip past a naive allowlist. Wildcards (*) match one label.
   # This is Map-level (Layer 1.5) validation: it checks the URL string, not
   # what DNS resolves to at connect time. Pair with url_jail for Layer 2.
   #
-  # Identical enforcement locally and via a Tenuo Cloud trigger. (Internal-CIDR
-  # egress + custom schemes/ports are supported by the local minting path and
-  # are on the Cloud roadmap; the domain allowlist below is the v1 cloud lane.)
+  # Identical enforcement locally and via a Tenuo Cloud trigger. Internal-CIDR
+  # egress and custom schemes/ports work in local minting; Cloud triggers
+  # currently use the domain allowlist below.
   #
-  # The optional `approval` block adds a THIRD outcome between allow and deny:
-  #   * allowlisted domain        -> allowed directly (exempt from approval)
-  #   * off-allowlist but SSRF-safe-> paused for human approval (Cloud)
-  #   * SSRF / metadata / loopback -> still hard-denied by url_safe (no gate)
-  # Approval is a Cloud-only feature: the gate carries the approver's KMS public
-  # key from a Cloud approval policy, and the approval is signed by Cloud's KMS.
-  # In local (no-Cloud) mode the host allowlist stays strict and off-allowlist
-  # URLs are simply denied. `cloud.approver_identity` selects the approver.
+  # Optional `approval:` under WebFetch (Cloud), example of human approval on a
+  # governed tool call. Adds a third outcome between allow and deny:
+  #   * allowlisted domain         -> allowed directly (exempt from gate)
+  #   * off-allowlist, SSRF-safe   -> paused for approver sign-off
+  #   * SSRF / metadata / loopback -> hard-denied (gate not reached)
+  # Same approval mechanism applies to other capabilities when gated in the warrant.
+  # Cloud-only; `cloud.approver_identity` selects the approver. See README § Human approval.
   WebFetch:
     domains: ["api.github.com", "*.githubusercontent.com", "*.tenuo.ai"]
 #    approval:
@@ -73,26 +72,26 @@ enforce:
 #   - MyCustomHarnessTool
 # audit_bundled: false   # disable bundled list (not recommended)
 
-# DEFAULT for everything else — any unknown/future tool: deny, with a signed
+# DEFAULT for everything else. Any unknown/future tool: deny, with a signed
 # receipt. Only the enforced + audit lists above are permitted. Set to "audit"
 # to log-and-allow unknown tools instead (less safe).
 default: deny
 
 # Subagents (Claude Code's `Agent` tool). Two layers of control:
-#   1. SPAWN GATE — spawning is a signed capability (`spawn_agent`) whose
+#   1. SPAWN GATE. Spawning is a signed capability (`spawn_agent`) whose
 #      subagent_type is constrained to a oneof of these role names. The hook
 #      routes the Agent/Task call through the authorizer, so only declared roles
-#      can be summoned — root-signed via the Cloud trigger, minted locally
+#      can be summoned. Root-signed via the Cloud trigger, minted locally
 #      otherwise (re-run `tenuo-admin setup` / `init` after changing roles).
-#   2. PER-SUBAGENT WARRANT — each role runs under its OWN warrant: the session
-#      warrant attenuated to `tools` below. The session is the CEILING — a
+#   2. PER-SUBAGENT WARRANT. Each role runs under its OWN warrant: the session
+#      warrant attenuated to `tools` below. The session is the CEILING. A
 #      subagent can only ever do LESS than it, never more. Claude tags every
 #      in-subagent tool call with the role (agent_type), so the hook enforces
 #      the right child warrant, and the parent->child delegation shows in audit.
 # A role's `tools` must be a subset of what `enforce` grants above. Omit this
 # block entirely to fall back to flat coverage (one session warrant for all).
-# WebFetch approval and subagents can be combined when subagent roles omit the
-# gated tool (e.g. researcher with Read/Grep/Glob only). See tenuo.yaml.cloud.example.
+# WebFetch approval and subagents can be combined when subagent roles omit tools
+# the parent session allows (e.g. a read-only subagent without WebFetch).
 subagents:
   researcher:                 # read-only research drone: no Bash, no egress
     tools: [Read, Grep, Glob]

@@ -1,0 +1,21 @@
+# Read-only research: sandbox Read/Grep/Glob only, no Bash, WebFetch, or writes.
+# Subagent role for delegated research under a tighter child warrant.
+#
+# Copy to tenuo.yaml in your project, then: tenuo-claude init && tenuo-claude up
+
+name: read-only-research
+
+sandbox: ./workspace
+
+mode: enforce
+
+enforce:
+  Read: "subpath:{sandbox}"
+  Grep: "subpath:{sandbox}"
+  Glob: "subpath:{sandbox}"
+
+default: deny
+
+subagents:
+  analyst:
+    tools: [Read, Grep, Glob]

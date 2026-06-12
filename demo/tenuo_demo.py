@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""tenuo-demo — scripted allow -> deny tour for showing customers.
+"""tenuo-demo — scripted allow/deny tour for the reference demo.
 
-Default tour: scope, default-deny, SSRF, subagents — no human approval.
-Advanced add-on (--advanced): WebFetch approval gate + optional --live-approval.
+Default tour: scope, default-deny, SSRF, subagents, MCP — no WebFetch approval.
+Optional `--advanced`: WebFetch approval example when configured in policy.
+Optional `--live-approval`: blocks until a Cloud approver responds.
 
-    python3 tenuo_demo.py              # from demo/ (or: tenuo-claude demo)
-    python3 tenuo_demo.py --advanced   # + approval PAUSE cases (needs tenuo.advanced.yaml)
-    python3 tenuo_demo.py --advanced --live-approval   # blocks for real approver
+    python3 tenuo_demo.py
+    python3 tenuo_demo.py --advanced
+    python3 tenuo_demo.py --advanced --live-approval
 """
 
 from __future__ import annotations
@@ -35,8 +36,7 @@ def run_default_tour(cfg) -> None:
     print("Tenuo + Claude Code — enforcement demo\n" + "=" * 40)
     cases = [
         ("Read", {"file_path": f"{sb}/incident-report.md"}, "summarize an in-scope file"),
-        ("Read", {"file_path": f"{sb}/../prod-credentials.env"}, "exfil out-of-scope secret (injection bait)"),
-        ("delete_deployment", {"target": "production"}, "destroy prod via MCP (default-deny)"),
+        ("Read", {"file_path": f"{sb}/../prod-credentials.env"}, "read out-of-scope credentials file"),
         ("Bash", {"command": "ls -la"}, "inert command"),
         ("Bash", {"command": "ls && rm -rf /"}, "command chaining (Shlex blocks)"),
         ("Grep", {"pattern": "TODO", "path": sb}, "in-scope search"),
@@ -54,8 +54,24 @@ def run_default_tour(cfg) -> None:
         extra = "" if allowed else f"({reason})"
         scope = "enforced" if gov else ("audit" if tool in tc.audit_map(cfg) else "default")
         print(f"  {tag} {tool:17} [{scope:8}] {label} {extra}")
-    print("\nPoisoned-file scenario: the warrant denies prod delete and secret read "
-          "whether or not the model catches the injection.")
+    print("\nScope test: secret reads and destructive MCP calls stay denied "
+          "whether or not the model follows instructions in file content.")
+
+    mcp_enforce = (cfg.get("mcp") or {}).get("enforce") or {}
+    if (cfg.get("mcp") or {}).get("downstream") and mcp_enforce:
+        print("\nMCP (proxy + mcp.enforce; unlisted tools default-deny)")
+        print("-" * 40)
+        mcp_cases = [
+            ("read_file", {"path": f"{sb}/notes.txt"}, "read in sandbox via MCP"),
+            ("read_file", {"path": "/etc/passwd"}, "read outside sandbox via MCP"),
+            ("delete_deployment", {"target": "production"}, "unlisted tool (default-deny)"),
+        ]
+        for tool, tin, label in mcp_cases:
+            allowed, reason, gov, _ = _authz(cfg, tool, tin, skip_approval=True)
+            tag = _tag(allowed, reason)
+            extra = "" if allowed else f"({reason})"
+            scope = "enforced" if gov else "default"
+            print(f"  {tag} {tool:17} [{scope:8}] {label} {extra}")
 
     if tc.subagent_roles(cfg):
         print("\nSubagents (Claude Code `Agent` tool) — spawn gate + per-subagent warrant")
@@ -80,14 +96,11 @@ def run_default_tour(cfg) -> None:
 
 def run_advanced_tour(cfg, live: bool) -> None:
     if not tc.webfetch_approval(cfg):
-        print("\nAdvanced (human approval) — skipped.")
-        print("  Apply the advanced overlay first:")
-        print("    tenuo-claude init --advanced --approver \"Your Approver Display Name\"")
-        print("    tenuo-admin setup")
-        print("  See docs/PRESENTATION.md and tenuo.yaml.advanced.example.")
+        print("\nHuman approval — not configured.")
+        print("  See README § Human approval and tenuo.yaml.advanced.example.")
         return
 
-    print("\nAdvanced — human approval on off-allowlist WebFetch")
+    print("\nHuman approval (WebFetch example — off-allowlist URL)")
     print("-" * 40)
     url = "https://example.com/data"
     allowed, reason, _, _ = _authz(cfg, "WebFetch", {"url": url}, skip_approval=False)
@@ -95,12 +108,12 @@ def run_advanced_tour(cfg, live: bool) -> None:
     extra = "" if allowed else f"({reason})"
     print(f"  {tag} WebFetch          [enforced] off-allowlist SSRF-safe URL {extra}")
     print("\nAllowlisted domains still pass; SSRF URLs still hard-denied.")
-    print("Off-allowlist safe URLs pause for approver sign-off in Cloud.")
+    print("Off-allowlist SSRF-safe URLs pause for approver sign-off when approval is enabled.")
 
     if live:
-        live_url = "https://example.com/off-allowlist-demo"
+        live_url = "https://example.com/off-allowlist-test"
         print(f"\n  LIVE WebFetch {live_url}")
-        print("  waiting for approver on their configured channel…")
+        print("  waiting for approver on configured notification channel…")
         allowed, reason, _, _ = _authz(cfg, "WebFetch", {"url": live_url}, live=True, skip_approval=False)
         print(f"  -> {'ALLOWED' if allowed else 'BLOCKED'}: {reason}")
     else:
@@ -116,8 +129,8 @@ def run_demo(*, advanced: bool, live_approval: bool) -> None:
     if advanced:
         run_advanced_tour(cfg, live=live_approval)
     elif tc.webfetch_approval(cfg):
-        print("\n(Human approval overlay is configured but not shown in the default tour.)")
-        print("  Run: python3 tenuo_demo.py --advanced")
+        print("\n(Human approval is configured; run with --advanced to include the WebFetch example.)")
+        print("  Run: tenuo-claude demo --advanced")
     print("\nEvery line above is a signed receipt on the authorizer. "
           "Run `tenuo-claude audit` to see the trail, `tenuo-claude revoke` to kill the warrant.")
 
@@ -127,7 +140,7 @@ def main() -> None:
         prog="tenuo-demo", description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--advanced", action="store_true",
-                        help="include WebFetch human-approval beat (needs tenuo.advanced.yaml)")
+                        help="include human approval scenarios (WebFetch example; requires overlay in policy)")
     parser.add_argument("--live-approval", action="store_true",
                         help="with --advanced: block until approver responds (Cloud)")
     args = parser.parse_args()

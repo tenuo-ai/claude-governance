@@ -4,8 +4,7 @@ Demo "ops" MCP server for the Tenuo + Claude Code governance demo.
 
 Self-contained on purpose: this server belongs to the demo, not to the SDK
 examples, so the whole demo lives under one directory. It exposes two inert
-filesystem tools plus one deliberately destructive ops tool
-(`delete_deployment`) used to give a denied tool call real stakes:
+filesystem tools plus one destructive ops tool (`delete_deployment`) used as a default-deny example:
 
     "The agent tried to delete prod and the warrant said no."
 

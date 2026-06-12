@@ -3,7 +3,7 @@
 
 Separation of duties: this is the ONLY place that holds a tenant-admin Cloud
 key and the ONLY code that performs admin actions (create agent, create/patch
-trigger). It is meant to be run by platform-sec / CI — not by the developer or
+trigger). Run by tenant administrators or CI — not by the developer or
 the agent. The runtime CLI (``tenuo-claude``) has no path to these endpoints
 and refuses to run if an admin key is reachable from its environment.
 
@@ -244,8 +244,8 @@ def resolve_approver_identity(url: str, admin: str, display_name: str) -> tuple[
     """Find an EXISTING Cloud identity binding by display name -> (id, public_key_hex).
 
     The identity carries the approver's KMS public key and notification routing on
-    their configured channel. We never create or mutate it here — platform-sec owns
-    identities; setup only references one. Fails loudly if absent or keyless.
+    their configured channel. Setup only references an existing identity; it does
+    not create or mutate identities in Cloud. Fails loudly if absent or keyless.
     """
     status, body = tc.cloud_api("GET", url, admin, "/v1/identities")
     if status != 200 or not isinstance(body, dict):
@@ -559,7 +559,7 @@ def cmd_show(_args) -> None:
         who = st.get("web_fetch_approver") or (cfg.get("cloud") or {}).get("approver_identity") or "?"
         pid = st.get("web_fetch_approval_policy_id")
         wired = pid or "NOT set up (run `tenuo-admin setup`)"
-        print(f"  {'web-approval':16}: off-allowlist WebFetch -> {who} | policy {wired}")
+        print(f"  {'approval':16}: gated tool calls -> {who} | policy {wired}")
 
 
 COMMANDS = {"setup": cmd_setup, "show": cmd_show}

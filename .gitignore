@@ -24,5 +24,8 @@ tenuo.advanced.yaml
 demo/sandbox/out.txt
 demo/sandbox/_probe.txt
 
+# Local-only presentation notes (optional; not part of the public repo)
+demo/docs/PRESENTATION.md
+
 # OS / editor
 .DS_Store

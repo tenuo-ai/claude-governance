@@ -13,13 +13,13 @@ Install: ``pip install tenuo-claude-code``  (command: ``tenuo-claude``)
     tenuo-claude status    # warrant / authorizer / Cloud / policy summary
     tenuo-claude check     # preflight: deps, credentials, wiring drift
     tenuo-claude verify    # policy self-test against the authorizer
-    tenuo-claude demo      # customer tour (tenuo_demo.py in project, if present)
+    tenuo-claude demo      # scripted tour (tenuo_demo.py in project, if present)
     tenuo-claude bench     # per-tool-call overhead (authorizer + hooks)
 
 Internal entrypoints (wired into Claude, not called by hand):
     _hook  _post  _mcp-proxy
 
-The scripted customer tour lives in its own showcase tool: ``tenuo_demo.py``.
+Optional scripted tour: ``tenuo_demo.py`` in your project directory (see repo ``demo/``).
 """
 
 from __future__ import annotations
@@ -650,8 +650,8 @@ def resolve_tool(cfg: dict, tool_name: str, tool_input: dict):
     """Map a Claude tool call to (tenuo_tool, route, sign_args, body, governed).
 
     - enforced native tools: real constraints (may mutate within scope).
-    - enforced MCP tools (`mcp__<server>__<tool>`): same policy/route the proxy
-      uses, so the hook and proxy agree (defense in depth, not a shadowing deny).
+    - enforced MCP tools (bare downstream name or `mcp__<server>__<tool>` from the
+      hook): same policy/route the proxy uses, so hook and proxy agree.
     - audit-listed tools: allowed + logged (no constraints).
     - everything else: catch-all. With default: deny it routes to a capability
       the warrant does NOT grant, so the authorizer returns a signed DENY.
@@ -685,8 +685,11 @@ def resolve_tool(cfg: dict, tool_name: str, tool_input: dict):
         cap = audit[tool_name]
         return cap, f"/verify/{cap}", {}, dict(tool_input or {}), False
 
+    mcp_enforce = cfg.get("mcp", {}).get("enforce") or {}
     bare = mcp_tool_name(tool_name)
-    if bare is not None and bare in (cfg.get("mcp", {}).get("enforce") or {}):
+    if bare is None and tool_name in mcp_enforce:
+        bare = tool_name
+    if bare is not None and bare in mcp_enforce:
         # mcp.enforce keys on bare tool name + path arg only (demo assumes one
         # downstream server; a second server with the same tool name would share policy).
         # Mirror cmd_mcp_proxy: realpath the path arg (so symlinks/relatives
@@ -791,10 +794,10 @@ def authorize_call(cfg: dict, tool: str, tin: dict, agent_type, roles: dict,
         if agent_type not in roles or not sw.exists():
             return False, f"undeclared subagent '{agent_type}'", governed, tenuo_tool
         warrant_b64 = sw.read_text()
-    # WebFetch with an approval gate: off-allowlist URLs come back as
-    # `approval-required`, which we resolve via Cloud + the human approver
-    # (live) or merely report (verify / demo / audit mode).
-    if tool == "WebFetch" and webfetch_approval(cfg) and not skip_approval_gate:
+    # Any governed tool call can return approval-required (1707) when the warrant
+    # includes an approval gate for that capability. The hook resolves it via
+    # Cloud (live) or reports PAUSE (verify / demo / audit mode).
+    if not skip_approval_gate:
         allowed, reason = authorize_with_approval(
             cfg, tool, tenuo_tool, route, sign_args, body, warrant_b64, live=live)
     else:
@@ -1107,7 +1110,7 @@ def write_claude_wiring(cfg: dict) -> None:
 
     Uses ``bin/tenuo-claude`` (or ``TENUO_CLAUDE_BIN``) so wiring stays portable —
     no machine-specific Python paths. Re-run ``init`` / ``refresh`` after moving
-    the repo or changing the fleet install path.
+    the repo or changing the install path.
     """
     claude_dir = DEMO_DIR / ".claude"
     claude_dir.mkdir(exist_ok=True)
@@ -1740,7 +1743,7 @@ def cmd_onboard(args) -> None:
         if r.returncode != 0:
             raise SystemExit("tenuo-admin setup failed — fix errors above and re-run setup")
     else:
-        print("\nSkipped tenuo-admin setup (no admin key). Platform team must run setup once.")
+        print("\nSkipped tenuo-admin setup (no admin key). Run setup with a tenant-admin key.")
 
     for var in ADMIN_KEY_VARS:
         os.environ.pop(var, None)
@@ -1984,7 +1987,7 @@ def cmd_status(_args) -> None:
         who = cs.get("web_fetch_approver") or (cfg.get("cloud") or {}).get("approver_identity") or "?"
         pid = cs.get("web_fetch_approval_policy_id")
         wired = f"policy {pid}" if pid else "NOT set up (run `tenuo-admin setup`)"
-        print(f"web-approval: off-allowlist WebFetch -> human approval ({who}) | {wired}")
+        print(f"approval: gated tool calls -> approver sign-off ({who}) | {wired}")
     roles = subagent_roles(cfg)
     if roles:
         defs = agent_definitions()
@@ -2180,7 +2183,7 @@ def cmd_verify(args) -> None:
 
     appr = webfetch_approval(cfg)
     if appr:
-        extra.append("  [web approval]")
+        extra.append("  [approval]")
         st = load_cloud_state()
         pid = st.get("web_fetch_approval_policy_id")
         approver = st.get("web_fetch_approver")
@@ -2464,7 +2467,7 @@ def main() -> None:
     pi.add_argument("--cloud", action="store_true", help="write tenuo.cloud.yaml (Cloud URL)")
     pi.add_argument("--local", action="store_true", help="move Cloud files aside for local mode")
     pi.add_argument("--advanced", action="store_true",
-                    help="write tenuo.advanced.yaml (WebFetch human approval — optional demo add-on)")
+                    help="write tenuo.advanced.yaml (human approval overlay; WebFetch example)")
     pi.add_argument("--demo", action="store_true", help=argparse.SUPPRESS)  # deprecated alias
     pi.add_argument("--approver", help="approver identity display name (requires --advanced)")
     pi.add_argument("--cloud-url", help="control plane URL (with --cloud; default from connect token or api.tenuo.ai)")
@@ -2472,7 +2475,7 @@ def main() -> None:
     po.add_argument("--local", action="store_true", help="local mode (default when neither flag set)")
     po.add_argument("--cloud", action="store_true", help="Cloud mode")
     po.add_argument("--advanced", action="store_true",
-                    help="also write advanced overlay (WebFetch approval; with --cloud)")
+                    help="also write advanced overlay (human approval; with --cloud)")
     po.add_argument("--demo", action="store_true", help=argparse.SUPPRESS)
     po.add_argument("--yes", "-y", action="store_true", help="non-interactive where possible")
     po.add_argument("--connect-token", help="Quick Connect token (Cloud)")
@@ -2493,9 +2496,9 @@ def main() -> None:
                     help="with --deep: skip live Claude Code PreToolUse exit-code harness")
     pd = sub.add_parser("doctor", help=argparse.SUPPRESS)
     pd.add_argument("--no-live", action="store_true")
-    pdemo = sub.add_parser("demo", help="scripted customer tour (tenuo_demo.py in project, if present)")
+    pdemo = sub.add_parser("demo", help="scripted policy tour (tenuo_demo.py in project, if present)")
     pdemo.add_argument("--advanced", action="store_true",
-                       help="include WebFetch human-approval beat (needs tenuo.advanced.yaml)")
+                       help="include human approval scenarios (WebFetch example; requires overlay in policy)")
     pdemo.add_argument("--live-approval", action="store_true",
                        help="with --advanced: block until approver responds (Cloud)")
     pbench = sub.add_parser("bench", help="measure per-tool-call overhead (authorizer RTT, hook path)")

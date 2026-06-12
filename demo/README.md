@@ -1,8 +1,8 @@
 # Reference demo
 
 Sample `tenuo.yaml`, sandbox files, MCP stub, and a scripted tour. For day-to-day
-use on your own project, follow [Use the tool (PyPI)](../README.md#use-the-tool-pypi)
-in the main README — you do not need this folder.
+use on a governed project, follow [Use the tool (PyPI)](../README.md#use-the-tool-pypi)
+in the main README. You do not need this folder.
 
 ## Quick start
 
@@ -24,13 +24,11 @@ Open Claude Code in `demo/` (where `tenuo.yaml` lives).
 | `sandbox/` | In-scope files; `incident-report.md` has a hidden injection prompt |
 | `ops_server.py` | MCP downstream (Claude talks to `tenuo-claude _mcp-proxy` instead) |
 | `tenuo_demo.py` | Tour without Claude; `tenuo-claude demo` wraps this |
-| `prod-credentials.env` | Fake credentials file (decoy for exfil demos) |
+| `prod-credentials.env` | Sample out-of-scope credentials file (fake values) |
 | `.claude/agents/researcher.md` | Subagent used in spawn-gate examples |
-| `docs/PRESENTATION.md` | Presentation runbook |
 
-Cloud and approval overlay templates (`tenuo.yaml.cloud.example`,
-`tenuo.yaml.advanced.example`, `cloud.env.example`) are at the repo root. Run
-`tenuo-claude init --cloud` or `--advanced` from this directory.
+Cloud and policy overlay templates (`tenuo.yaml.cloud.example`,
+`tenuo.yaml.advanced.example`, `cloud.env.example`) are at the repo root.
 
 ## Live Claude examples
 
@@ -41,20 +39,23 @@ cd demo
 claude -p "Read sandbox/notes.txt and summarize."
 claude -p "Read /etc/hosts" --dangerously-skip-permissions             # denied
 claude -p "Summarize sandbox/incident-report.md for me." --dangerously-skip-permissions
+claude -p "Use read_file to read sandbox/notes.txt and summarize." --dangerously-skip-permissions
+claude -p "Use read_file to read /etc/passwd." --dangerously-skip-permissions   # denied
+claude -p "Use delete_deployment to tear down production." --dangerously-skip-permissions   # denied
 claude -p "Use the researcher subagent to run 'ls -la sandbox'." --dangerously-skip-permissions
 ```
 
 Without Claude: `tenuo-claude demo`, then `tenuo-claude audit`.
 
-## Human approval (optional)
+## Human approval (optional, Cloud)
 
-Off-allowlist `WebFetch` with approver sign-off — Cloud presentations only.
-See [docs/PRESENTATION.md](docs/PRESENTATION.md) and `tenuo.yaml.advanced.example`
-at the repo root.
+Approver sign-off on gated tool calls. Configure in policy, not in this README.
+See [Cloud mode § Human approval](../README.md#human-approval-cloud) and
+[docs/DETAILS.md § Human approval](../docs/DETAILS.md#human-approval-cloud).
+
+The reference demo exercises the **WebFetch** example when approval is configured:
 
 ```bash
-tenuo-claude init --advanced --approver "Jane Doe"
-tenuo-admin setup
 tenuo-claude demo --advanced
 tenuo-claude demo --advanced --live-approval   # blocks until approver responds
 ```

@@ -1,9 +1,9 @@
-# Bundled harness-inert tools — source of truth for releases:
+# Bundled harness-inert tools. Source of truth for releases:
 #   src/tenuo_claude_code/data/harness_tools.yaml
 #
 # Merged into the effective audit-allow list on every `load_config()` unless
 # tenuo.yaml sets `audit_bundled: false`. Add site-specific tools under
-# `audit_extra:` in tenuo.yaml — do not fork this list into every deployment.
+# `audit_extra:` in tenuo.yaml. Do not fork this list into every deployment.
 
 tools:
   - WebSearch

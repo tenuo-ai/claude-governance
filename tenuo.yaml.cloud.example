@@ -1,12 +1,12 @@
-# Tool Cloud overlay — merged when `tenuo.cloud.yaml` exists.
+# Tool Cloud overlay, merged when `tenuo.cloud.yaml` exists.
 # Written by `tenuo-claude init --cloud` or `tenuo-claude onboard --cloud`.
 #
 # 1. Quick Connect: cloud.tenuo.ai → Agents → Quick Connect → Authorizer Only.
 #    Copy tenuo_ct_… into .state/cloud.env (see cloud.env.example).
 # 2. Run: tenuo-admin setup && tenuo-claude up
 #
-# For customer presentations (WebFetch human approval), add the separate advanced
-# overlay from tenuo.yaml.advanced.example — see docs/PRESENTATION.md.
+# For human approval, add the advanced overlay from tenuo.yaml.advanced.example
+# (see README § Human approval).
 
 cloud:
   url: https://api.tenuo.ai

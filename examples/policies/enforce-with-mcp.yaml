@@ -1,0 +1,26 @@
+# Enforce sandbox scope for native tools and MCP downstream tools.
+# Replace ./your_mcp_server.py with your MCP server entrypoint.
+#
+# Copy to tenuo.yaml in your project, then: tenuo-claude init && tenuo-claude up
+
+name: project-with-mcp
+
+sandbox: ./workspace
+
+mode: enforce
+
+enforce:
+  Read: "subpath:{sandbox}"
+  Write: "subpath:{sandbox}"
+  Edit: "subpath:{sandbox}"
+  Bash: "shlex:ls,pwd,echo,date"
+  Grep: "subpath:{sandbox}"
+  Glob: "subpath:{sandbox}"
+
+default: deny
+
+mcp:
+  downstream: ./your_mcp_server.py
+  enforce:
+    read_file: "subpath:{sandbox}"
+    list_directory: "subpath:{sandbox}"

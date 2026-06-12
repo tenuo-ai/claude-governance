@@ -1,19 +1,16 @@
-# Advanced demo overlay — merged when `tenuo.advanced.yaml` exists.
-# Optional add-on for customer presentations with human WebFetch approval.
-# NOT part of the default demo (`tenuo_demo.py`); use `tenuo_demo.py --advanced`.
-# See docs/PRESENTATION.md (Advanced — human approval beat).
+# Optional policy overlay for human approval on governed tool calls (Cloud).
+# Shipped example: off-allowlist WebFetch (see README § Human approval).
 #
-# PREREQUISITE (Tenuo Cloud — platform prep, not this repo):
+# PREREQUISITE (Tenuo Cloud):
 #   1. Notification channel: https://docs.tenuo.ai/guides/adding-channels
 #   2. Identity binding: https://docs.tenuo.ai/integrations/identity-bindings
-#      Dashboard → Channels → Identity Bindings
 #
-# Then:
-#   tenuo-claude init --advanced --approver "Jane Doe"
+# Apply:
+#   tenuo-claude init --advanced --approver "<Cloud identity display name>"
 # or copy to tenuo.advanced.yaml and re-run `tenuo-admin setup`.
 
 cloud:
-  approver_identity: "Your Approver Display Name"
+  approver_identity: "<Cloud identity display name>"
 
 enforce:
   WebFetch:

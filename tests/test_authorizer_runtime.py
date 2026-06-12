@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import ssl
 from pathlib import Path
 from unittest import mock
 
+import certifi
 import pytest
 
 from tenuo_claude_code import authorizer_runtime as art
@@ -174,3 +176,15 @@ def test_install_authorizer_cmd_without_project(tmp_path, monkeypatch):
     monkeypatch.setattr(art, "install_authorizer", lambda *a, **kw: fake)
     monkeypatch.setattr(art, "query_binary_version", lambda p: "0.1.0-beta.24+authz.1")
     cli.main()
+
+
+def test_ssl_context_uses_certifi(monkeypatch):
+    seen: dict = {}
+
+    def fake_create_default_context(**kwargs):
+        seen.update(kwargs)
+        return ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+
+    monkeypatch.setattr(art.ssl, "create_default_context", fake_create_default_context)
+    art._ssl_context()
+    assert seen.get("cafile") == certifi.where()

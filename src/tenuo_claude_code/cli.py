@@ -1755,7 +1755,7 @@ def cmd_check(_args) -> None:
         backend = meta.get("backend") or "unknown"
         st = _status_json()
         running_ver = (st or {}).get("version")
-        ver_detail = f"up ({AUTHZ_URL}) | {backend}"
+        ver_detail = f"up ({resolve_authz_url()}) | {backend}"
         if running_ver:
             ver_detail += f" | v{running_ver}"
             if running_ver != pinned_ver:

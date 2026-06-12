@@ -931,9 +931,10 @@ wheels = [
 
 [[package]]
 name = "tenuo-claude-code"
-version = "0.1.7"
+version = "0.1.8"
 source = { editable = "." }
 dependencies = [
+    { name = "certifi" },
     { name = "mcp" },
     { name = "pyyaml" },
     { name = "tenuo" },
@@ -941,6 +942,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "certifi", specifier = ">=2024.0" },
     { name = "mcp", specifier = ">=1.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "tenuo", specifier = "==0.1.0b24" },

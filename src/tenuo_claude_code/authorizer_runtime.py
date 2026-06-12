@@ -9,6 +9,7 @@ import re
 import shutil
 import signal
 import socket
+import ssl
 import stat
 import subprocess
 import tarfile
@@ -19,6 +20,8 @@ import urllib.request
 import zipfile
 from pathlib import Path
 from typing import Callable
+
+import certifi
 
 DEFAULT_IMAGE = "tenuo/authorizer:0.1.0-beta.24"
 DEFAULT_AUTHORIZER_PORT = 9090
@@ -147,6 +150,20 @@ def clear_runtime_meta(mount: Path) -> None:
     runtime_meta_path(mount).unlink(missing_ok=True)
 
 
+def _ssl_context() -> ssl.SSLContext:
+    """TLS trust store — uses certifi so macOS/python.org venvs verify GitHub HTTPS."""
+    return ssl.create_default_context(cafile=certifi.where())
+
+
+def _urlopen(req: urllib.request.Request, *, timeout: float = 30):
+    return urllib.request.urlopen(req, timeout=timeout, context=_ssl_context())
+
+
+def _download_url(url: str, dest: Path) -> None:
+    with _urlopen(urllib.request.Request(url)) as resp:
+        dest.write_bytes(resp.read())
+
+
 def platform_triple() -> str:
     machine = platform.machine().lower()
     arch = {"arm64": "aarch64", "amd64": "x86_64"}.get(machine, machine)
@@ -163,7 +180,7 @@ def platform_triple() -> str:
 def _github_release_assets(tag: str) -> list[dict]:
     url = f"https://api.github.com/repos/{RELEASE_REPO}/releases/tags/{tag}"
     req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with _urlopen(req) as resp:
         data = json.loads(resp.read().decode())
     return data.get("assets") or []
 
@@ -212,7 +229,7 @@ def download_release_binary(image: str = DEFAULT_IMAGE) -> Path:
         )
     with tempfile.TemporaryDirectory() as tmp:
         archive = Path(tmp) / asset["name"]
-        urllib.request.urlretrieve(asset["browser_download_url"], archive)
+        _download_url(asset["browser_download_url"], archive)
         if archive.name == dest.name or not archive.name.endswith((".tar.gz", ".tgz", ".zip")):
             shutil.copy2(archive, dest)
         else:

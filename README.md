@@ -9,11 +9,13 @@ PyPI package: [`tenuo-claude-code`](https://pypi.org/project/tenuo-claude-code/)
 
 **Keep your AI coding agent inside the lines.** Tenuo governs every path Claude Code uses to act on your machine.
 
-**Native tools** (Read, Bash, WebFetch, and the rest) go through a PreToolUse hook. **MCP tools** go through a proxy you wire in place of the downstream server. Both paths hit the same signed warrant and authorizer before anything runs.
+**Native tools** (Read, Bash, WebFetch, and the rest) go through a PreToolUse hook. **MCP tools** go through a proxy you wire in place of the downstream server. Both paths hit the same authorizer before anything runs.
 
-File reads stay in the sandbox. Shell commands match an allowlist. MCP tool arguments get the same checks. URLs match policy. That holds even when Claude runs with `--dangerously-skip-permissions`. Each authorization uses a PoP-signed request.
+At `init`, Tenuo mints a **session warrant**: a signed credential that says what this session may do and how long it lasts. On every call, the hook or proxy must **prove it holds that warrant** before the authorizer allows the action. Policy is one file (`tenuo.yaml`), but the limits are cryptographic. Editing Claude's permission settings or running `--dangerously-skip-permissions` does not widen what the warrant permits.
 
-Connect [Tenuo Cloud](https://cloud.tenuo.ai) for signed audit receipts and fleet revocation.
+File reads stay in the sandbox. Shell commands match an allowlist. MCP tool arguments get the same checks. URLs match policy.
+
+Connect [Tenuo Cloud](https://cloud.tenuo.ai) for **verifiable audit receipts** (signed allow/deny/spawn events) and fleet-wide warrant revocation.
 
 Install: `pip install tenuo-claude-code` (commands: `tenuo-claude`, `tenuo-admin`).
 
@@ -365,7 +367,7 @@ For teams that need a **global configuration engineers cannot bypass**:
 
 ### Receipts
 
-Every governed tool call is **cryptographically authorized** (PoP-signed request to the authorizer).
+Every governed tool call must prove possession of the session key (proof-of-possession) when asking the authorizer for allow/deny.
 
 What you can **read back** depends on mode:
 
@@ -414,7 +416,7 @@ Missing or broken `tenuo.yaml` denies every call until restored.
 
 Keys and credentials in `.state/` must be owner-only (`0600` in a `0700` directory).
 
-The authorizer reads gateway config from `.state/authorizer/` (Docker mount or native process). Holder keys and `cloud.env` stay on the host. PoP signing runs in the hook.
+The authorizer reads gateway config from `.state/authorizer/` (Docker mount or native process). Holder keys and `cloud.env` stay on the host. Session-key signing runs in the hook.
 
 Report vulnerabilities: [SECURITY.md](SECURITY.md).
 

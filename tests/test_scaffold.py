@@ -70,6 +70,17 @@ def test_find_project_root_fallback_cwd(tmp_path, monkeypatch):
     assert find_project_root(fallback_cwd=True) == tmp_path.resolve()
 
 
+def test_find_project_root_tenuo_project_dir_without_yaml(tmp_path, monkeypatch):
+    monkeypatch.setenv("TENUO_PROJECT_DIR", str(tmp_path))
+    assert find_project_root(fallback_cwd=True) == tmp_path.resolve()
+
+
+def test_find_project_dir_env_requires_yaml_by_default(tmp_path, monkeypatch):
+    monkeypatch.setenv("TENUO_PROJECT_DIR", str(tmp_path))
+    with pytest.raises(SystemExit, match="has no tenuo.yaml"):
+        find_project_root(fallback_cwd=False)
+
+
 def test_find_project_root_walks_up(tmp_path, monkeypatch):
     monkeypatch.delenv("TENUO_PROJECT_DIR", raising=False)
     project = tmp_path / "proj"

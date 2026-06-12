@@ -40,9 +40,9 @@ def find_project_root(start: Path | None = None, *, fallback_cwd: bool = False) 
     env = os.environ.get("TENUO_PROJECT_DIR", "").strip()
     if env:
         root = Path(env).expanduser().resolve()
-        if not (root / "tenuo.yaml").is_file():
-            raise SystemExit(f"TENUO_PROJECT_DIR={env!r} has no tenuo.yaml")
-        return root
+        if (root / "tenuo.yaml").is_file() or fallback_cwd:
+            return root
+        raise SystemExit(f"TENUO_PROJECT_DIR={env!r} has no tenuo.yaml")
     cur = (start or Path.cwd()).resolve()
     for directory in (cur, *cur.parents):
         if (directory / "tenuo.yaml").is_file():

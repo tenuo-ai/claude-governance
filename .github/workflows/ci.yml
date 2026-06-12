@@ -93,11 +93,10 @@ jobs:
         run: |
           proj="$RUNNER_TEMP/governed"
           mkdir -p "$proj"
-          cd "$proj"
-          uv run --directory "$GITHUB_WORKSPACE" tenuo-claude bootstrap
-          test -f tenuo.yaml
-          test -f .state/warrant.b64
-          test -f .claude/settings.json
+          TENUO_PROJECT_DIR="$proj" uv run tenuo-claude bootstrap
+          test -f "$proj/tenuo.yaml"
+          test -f "$proj/.state/warrant.b64"
+          test -f "$proj/.claude/settings.json"
           echo "TENUO_PROJECT_DIR=$proj" >> "$GITHUB_ENV"
 
       - name: verify (policy self-test against the live authorizer)

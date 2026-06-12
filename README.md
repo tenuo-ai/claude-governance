@@ -166,6 +166,18 @@ Or run the [reference demo](demo/) tour: `tenuo-claude demo`.
 
 If you always use native without Docker, set `TENUO_AUTHORIZER_BACKEND=native` in your shell so plain `up` picks the host binary.
 
+### Port conflicts
+
+The authorizer listens on `127.0.0.1:9090` by default. If that port is taken, set `PORT` **before** `init` and `up`:
+
+```bash
+export PORT=9091
+tenuo-claude init
+tenuo-claude up --native
+```
+
+The chosen URL is saved in `.state/state.json`. Hooks and `verify` read that file, so they stay aligned even if `PORT` is unset later.
+
 Generated files (do not commit): `.state/` (keys, warrant), `.claude/settings.json` (hooks).
 
 ### All commands

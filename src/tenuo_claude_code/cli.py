@@ -83,6 +83,20 @@ _receipt_write_warned = False  # one-time stderr if .state/receipts.jsonl can't 
 
 PORT = int(os.environ.get("PORT", "9090"))
 AUTHZ_URL = f"http://127.0.0.1:{PORT}"
+
+
+def resolve_authz_url() -> str:
+    """URL for authorizer client calls. ``state.json`` overrides ``PORT`` env."""
+    try:
+        if STATE_JSON.is_file():
+            url = json.loads(STATE_JSON.read_text()).get("authorizer_url")
+            if isinstance(url, str) and url.startswith("http"):
+                return url
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        pass
+    return AUTHZ_URL
+
+
 WARRANT_HEADER = "X-Tenuo-Warrant"
 POP_HEADER = "X-Tenuo-PoP"
 # The authorizer ships as a published container image (Docker Hub), pinned in
@@ -450,7 +464,7 @@ def _authorize_attempt(tenuo_tool: str, route: str, sign_args: dict, body,
         if approvals_b64:
             headers[APPROVALS_HEADER] = approvals_b64
         req = urllib.request.Request(
-            AUTHZ_URL + route, data=json.dumps(body).encode(), headers=headers, method="POST"
+            resolve_authz_url() + route, data=json.dumps(body).encode(), headers=headers, method="POST"
         )
     except Exception as exc:
         return False, f"enforcement error ({exc})", {}
@@ -1945,7 +1959,7 @@ def authorizer_running(cfg: dict) -> bool:
     mount = authorizer_mount_dir()
     backend = art.read_runtime_backend(mount)
     if backend == "native" or art.native_pid_path(mount).is_file():
-        return art.native_running(mount, AUTHZ_URL)
+        return art.native_running(mount, resolve_authz_url())
     r = docker("inspect", "-f", "{{.State.Running}}", container_name(cfg))
     return r.returncode == 0 and r.stdout.strip() == "true"
 
@@ -2120,7 +2134,7 @@ def cmd_down(_args) -> None:
 
 def _status_json():
     try:
-        with urllib.request.urlopen(AUTHZ_URL + "/status", timeout=3) as resp:
+        with urllib.request.urlopen(resolve_authz_url() + "/status", timeout=3) as resp:
             return json.loads(resp.read().decode())
     except Exception:
         return None
@@ -2171,7 +2185,7 @@ def cmd_status(_args) -> None:
         runtime = _authorizer_status_line(cfg)
         ver = s.get("version")
         ver_bit = f" v{ver}" if ver else ""
-        print(f"authorizer  : up ({AUTHZ_URL}) | {runtime}{ver_bit} | "
+        print(f"authorizer  : up ({resolve_authz_url()}) | {runtime}{ver_bit} | "
               f"cloud: {cp.get('status')} {cp.get('authorizer_id') or ''}")
     else:
         print(f"authorizer  : down (run `tenuo-claude up`)")
@@ -2520,7 +2534,7 @@ def cmd_bench(args) -> None:
     payload = {
         "iterations": iterations,
         "warmup": warmup,
-        "authorizer": AUTHZ_URL,
+        "authorizer": resolve_authz_url(),
         "mode": cfg.get("mode", "enforce"),
         "subagents": bool(roles),
         "results": results,
@@ -2531,7 +2545,7 @@ def cmd_bench(args) -> None:
         return
 
     print(f"Tenuo overhead bench  (iterations={iterations}, warmup={warmup})")
-    print(f"  authorizer : {AUTHZ_URL}")
+    print(f"  authorizer : {resolve_authz_url()}")
     print(f"  mode       : {cfg.get('mode', 'enforce')}"
           f"{'  subagents: yes' if roles else ''}")
     print()

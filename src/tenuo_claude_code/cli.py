@@ -41,6 +41,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+from tenuo_claude_code import authorizer_runtime as art
 from tenuo_claude_code.paths import (
     ADMIN_COMMAND,
     ADMIN_COMMAND_LEGACY,
@@ -1468,16 +1469,74 @@ def disable_cloud_artifacts() -> list[str]:
 
 
 def _docker_ok() -> tuple[bool, str]:
-    try:
-        r = subprocess.run(["docker", "info"], capture_output=True, text=True, timeout=15)
-    except FileNotFoundError:
-        return False, "Docker not installed"
-    except subprocess.TimeoutExpired:
-        return False, "Docker not responding"
-    if r.returncode != 0:
-        tail = (r.stderr or r.stdout or "").strip().splitlines()
-        return False, tail[-1] if tail else "docker info failed"
-    return True, "Docker daemon running"
+    return art.docker_ok()
+
+
+def _native_logs(state: Path) -> None:
+    log = art.native_log_path(state)
+    if log.is_file():
+        print(log.read_text()[-1500:])
+
+
+def _start_authorizer_docker(cfg: dict, denv: dict, *, cloud: bool) -> None:
+    image, name = authorizer_image(cfg), container_name(cfg)
+    docker("rm", "-f", name)
+    sync_authorizer_mount()
+    mount = authorizer_mount_dir()
+    art.assert_port_available(PORT, AUTHZ_URL, mount)
+    if SRL.exists() and not cloud:
+        denv["TENUO_REVOCATION_LIST"] = f"/state/{SRL.name}"
+    run = ["run", "-d", "--name", name, "-p", f"127.0.0.1:{PORT}:9090",
+           "-v", f"{mount.resolve()}:/state:ro"]
+    for k, v in denv.items():
+        run += ["-e", f"{k}={v}"]
+    serve = ["serve", "--config", f"/state/{GATEWAY.name}", "--port", "9090", "--bind", "0.0.0.0"]
+    print(f"Starting authorizer container {name} ({image}; pulling if needed)…")
+    started = docker(*run, image, *serve)
+    if started.returncode != 0:
+        raise SystemExit(f"Failed to start authorizer container ({image}):\n{started.stderr.strip()}")
+    art.write_runtime_meta(mount, backend="docker", image=image)
+
+    def _on_exit() -> None:
+        logs = docker("logs", name)
+        raise SystemExit("Authorizer container exited during startup:\n"
+                         + (logs.stdout or logs.stderr)[-1500:])
+
+    art.wait_healthy(
+        AUTHZ_URL,
+        is_running=lambda: authorizer_running(cfg),
+        on_exited=_on_exit,
+    )
+    print(f"Authorizer up (container {name}).")
+
+
+def _start_authorizer_native(cfg: dict, denv: dict, *, image: str) -> None:
+    sync_authorizer_mount()
+    mount = authorizer_mount_dir()
+    binary = art.resolve_authorizer_binary(image)
+    print(f"Starting native authorizer ({binary})…")
+    art.start_native(
+        binary=binary,
+        mount=mount,
+        gateway_name=GATEWAY.name,
+        port=PORT,
+        authz_url=AUTHZ_URL,
+        denv=denv,
+        srl_name=SRL.name if SRL.exists() else None,
+        state=STATE,
+        image=image,
+    )
+
+    def _on_exit() -> None:
+        _native_logs(STATE)
+        raise SystemExit("Native authorizer exited during startup (see .state/authorizer.log)")
+
+    art.wait_healthy(
+        AUTHZ_URL,
+        is_running=lambda: art.native_process_alive(mount),
+        on_exited=_on_exit,
+    )
+    print(f"Authorizer up (native, {AUTHZ_URL}).")
 
 
 def _check_line(ok: bool | None, label: str, detail: str = "", hint: str = "") -> bool:
@@ -1575,8 +1634,29 @@ def cmd_check(_args) -> None:
                          "run: uv sync  (or pip install -r requirements.txt)") and ok
 
     d_ok, d_msg = _docker_ok()
-    ok = _check_line(d_ok, "docker", d_msg,
-                     "install Docker Desktop / engine — authorizer runs in a container") and ok
+    if d_ok:
+        _check_line(True, "docker", d_msg)
+    else:
+        _check_line(None, "docker", d_msg, "optional — `tenuo-claude up --native` uses a host binary")
+    native_bin = art.find_authorizer_binary(DEFAULT_AUTHZ_IMAGE)
+    pinned_ver = art.authorizer_crate_version(DEFAULT_AUTHZ_IMAGE)
+    if native_bin:
+        _check_line(True, "authorizer binary", str(native_bin))
+        installed = art.query_binary_version(native_bin)
+        if installed and art.version_compatible(installed, pinned_ver):
+            _check_line(True, "authorizer version", art.crate_version_from_authorizer_version(installed))
+        elif installed:
+            _check_line(
+                None, "authorizer version",
+                f"{art.crate_version_from_authorizer_version(installed)} (want {pinned_ver})",
+                art.install_hint(DEFAULT_AUTHZ_IMAGE),
+            )
+    elif not d_ok:
+        _check_line(
+            False, "authorizer binary", "not on PATH",
+            art.install_hint(DEFAULT_AUTHZ_IMAGE),
+        )
+        ok = False
 
     claude = shutil.which("claude")
     _check_line(bool(claude), "claude CLI", claude or "not on PATH",
@@ -1643,14 +1723,40 @@ def cmd_check(_args) -> None:
     run_cfg = cfg or {"name": "tenuo-claude"}
     if WARRANT.exists():
         exp = warrant_expired()
-        _check_line(None if exp else True, "warrant",
-                    "present" + (" (expired — run up)" if exp else ""))
+        soon, exp_at = warrant_expires_within(24)
+        detail = "present"
+        if exp:
+            detail += " (expired — run up)"
+        elif soon:
+            detail += f" (expires soon: {exp_at} — run up to refresh)"
+        _check_line(None if exp or soon else True, "warrant", detail)
     elif mode == "local":
         _check_line(None, "warrant", "missing", "run: tenuo-claude init")
 
     if authorizer_running(run_cfg):
-        _check_line(True, "authorizer", f"up ({AUTHZ_URL})")
+        mount = authorizer_mount_dir()
+        meta = art.read_runtime_meta(mount)
+        backend = meta.get("backend") or "unknown"
+        st = _status_json()
+        running_ver = (st or {}).get("version")
+        ver_detail = f"up ({AUTHZ_URL}) | {backend}"
+        if running_ver:
+            ver_detail += f" | v{running_ver}"
+            if running_ver != pinned_ver:
+                _check_line(
+                    None, "running authorizer",
+                    ver_detail,
+                    f"want v{pinned_ver} — restart after upgrade",
+                )
+            else:
+                _check_line(True, "running authorizer", ver_detail)
+        else:
+            _check_line(True, "running authorizer", ver_detail)
     else:
+        img = authorizer_image(run_cfg)
+        img_ver = art.authorizer_crate_version(img)
+        if img_ver != pinned_ver:
+            _check_line(None, "authorizer image", img_ver, f"pinned package expects {pinned_ver}")
         _check_line(None, "authorizer", "down", "run: tenuo-claude up")
 
     print("\nSuggested next steps:")
@@ -1836,6 +1942,10 @@ def docker(*args: str) -> subprocess.CompletedProcess:
 
 
 def authorizer_running(cfg: dict) -> bool:
+    mount = authorizer_mount_dir()
+    backend = art.read_runtime_backend(mount)
+    if backend == "native" or art.native_pid_path(mount).is_file():
+        return art.native_running(mount, AUTHZ_URL)
     r = docker("inspect", "-f", "{{.State.Running}}", container_name(cfg))
     return r.returncode == 0 and r.stdout.strip() == "true"
 
@@ -1846,6 +1956,45 @@ def warrant_expired() -> bool:
         return Warrant.from_base64(WARRANT.read_text()).is_expired()
     except Exception:
         return False  # missing/unreadable warrant still fails closed at the authorizer
+
+
+def warrant_expires_within(hours: float = 24) -> tuple[bool, str]:
+    """True when the session warrant expires within ``hours`` (and is not already expired)."""
+    try:
+        from tenuo import Warrant
+        w = Warrant.from_base64(WARRANT.read_text())
+        if w.is_expired():
+            return False, ""
+        exp_raw = w.expires_at()
+        exp = datetime.fromisoformat(exp_raw.replace("Z", "+00:00"))
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        remaining = (exp - datetime.now(timezone.utc)).total_seconds()
+        if 0 < remaining <= hours * 3600:
+            return True, exp_raw
+    except Exception:
+        pass
+    return False, ""
+
+
+def _authorizer_status_line(cfg: dict) -> str:
+    mount = authorizer_mount_dir()
+    meta = art.read_runtime_meta(mount)
+    backend = meta.get("backend")
+    if backend == "native":
+        binary = meta.get("binary")
+        return f"native ({binary})" if binary else "native"
+    if backend == "docker":
+        image = meta.get("image") or authorizer_image(cfg)
+        return f"docker ({image})"
+    try:
+        if docker("inspect", "-f", "{{.State.Running}}", container_name(cfg)).stdout.strip() == "true":
+            return f"docker ({authorizer_image(cfg)})"
+    except SystemExit:
+        pass
+    if art.native_pid_path(mount).is_file():
+        return "native"
+    return "unknown backend"
 
 
 def _record_fired_warrant(warrant_b64: str) -> None:
@@ -1922,47 +2071,32 @@ def cmd_up(_args) -> None:
     if roles:
         print(f"Subagent warrants: {', '.join(roles)} (attenuated from the session).")
 
-    # Launch the authorizer container. Mount only gateway (+ optional SRL), not
-    # holder/issuer keys or cloud credentials. Only loopback is published.
-    image, name = authorizer_image(cfg), container_name(cfg)
-    docker("rm", "-f", name)  # clear any stale container of the same name
-    sync_authorizer_mount()
-    mount = authorizer_mount_dir()
-    if SRL.exists() and not cloud:
-        denv["TENUO_REVOCATION_LIST"] = f"/state/{SRL.name}"
-    run = ["run", "-d", "--name", name, "-p", f"127.0.0.1:{PORT}:9090",
-           "-v", f"{mount.resolve()}:/state:ro"]
-    for k, v in denv.items():
-        run += ["-e", f"{k}={v}"]
-    serve = ["serve", "--config", f"/state/{GATEWAY.name}", "--port", "9090", "--bind", "0.0.0.0"]
-    print(f"Starting authorizer container {name} ({image}; pulling if needed)…")
-    started = docker(*run, image, *serve)
-    if started.returncode != 0:
-        raise SystemExit(f"Failed to start authorizer container ({image}):\n{started.stderr.strip()}")
-
-    for _ in range(40):
-        time.sleep(0.5)
-        try:
-            with urllib.request.urlopen(AUTHZ_URL + "/health", timeout=2):
-                break
-        except Exception:
-            if not authorizer_running(cfg):
-                logs = docker("logs", name)
-                raise SystemExit("Authorizer container exited during startup:\n"
-                                 + (logs.stdout or logs.stderr)[-1500:])
-            continue
+    # Launch the authorizer (Docker container or native binary).
+    image = authorizer_image(cfg)
+    backend = art.choose_backend(_args)
+    if backend == "native":
+        _start_authorizer_native(cfg, denv, image=image)
     else:
-        raise SystemExit(f"Authorizer didn't become healthy in time — check `docker logs {name}`.")
-    print(f"Authorizer up (container {name}).")
+        _start_authorizer_docker(cfg, denv, cloud=cloud)
     cmd_status(_args)
 
 
 def cmd_down(_args) -> None:
     cfg = load_config()
-    name = container_name(cfg)
+    mount = authorizer_mount_dir()
     running = authorizer_running(cfg)
-    docker("rm", "-f", name)  # removes a running or stopped container
-    print(f"Stopped authorizer container ({name})." if running else "Authorizer not running.")
+    stopped = False
+    if art.read_runtime_backend(mount) == "native" or art.native_pid_path(mount).is_file():
+        stopped = art.stop_native(mount)
+    name = container_name(cfg)
+    if docker("inspect", "-f", "{{.State.Running}}", name).returncode == 0:
+        docker("rm", "-f", name)
+        art.clear_runtime_meta(mount)
+        stopped = True
+    if stopped:
+        print("Stopped authorizer.")
+    else:
+        print("Authorizer not running.")
 
 
 def _status_json():
@@ -1984,6 +2118,9 @@ def cmd_status(_args) -> None:
             w = Warrant.from_base64(WARRANT.read_text())
             flag = ("  !! EXPIRED — run `tenuo-claude up` to refresh"
                     if w.is_expired() else "")
+            soon, _ = warrant_expires_within(24)
+            if soon and not flag:
+                flag = "  !! expires within 24h — run `tenuo-claude up` to refresh"
             print(f"  expires   : {w.expires_at()}{flag}")
         except Exception:
             print("  expires   : <unreadable warrant>")
@@ -2012,8 +2149,11 @@ def cmd_status(_args) -> None:
     s = _status_json()
     if s:
         cp = s.get("cp", {})
-        print(f"authorizer  : up ({AUTHZ_URL}) | cloud: {cp.get('status')} "
-              f"{cp.get('authorizer_id') or ''}")
+        runtime = _authorizer_status_line(cfg)
+        ver = s.get("version")
+        ver_bit = f" v{ver}" if ver else ""
+        print(f"authorizer  : up ({AUTHZ_URL}) | {runtime}{ver_bit} | "
+              f"cloud: {cp.get('status')} {cp.get('authorizer_id') or ''}")
     else:
         print(f"authorizer  : down (run `tenuo-claude up`)")
     files = cloud_mode_files()
@@ -2468,8 +2608,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog=CLI_COMMAND, description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd")
-    for name in ["up", "down", "status", "check", "revoke", "_hook", "_post", "_mcp-proxy"]:
+    for name in ["down", "status", "check", "revoke", "_hook", "_post", "_mcp-proxy"]:
         sub.add_parser(name)
+    pu = sub.add_parser("up", help="start the authorizer (Docker or native binary)")
+    pu.add_argument("--native", action="store_true",
+                    help="run tenuo-authorizer as a host process (no Docker)")
+    pu.add_argument("--docker", action="store_true",
+                    help="force Docker container (default when Docker is available)")
     pr = sub.add_parser("refresh",
                         help="re-apply tenuo.yaml (warrant, gateway, hooks) after policy edits")
     pr.add_argument("--no-restart", action="store_true",

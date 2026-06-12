@@ -1,0 +1,119 @@
+"""Unit tests for authorizer backend selection and binary discovery."""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+from unittest import mock
+
+import pytest
+
+from tenuo_claude_code import authorizer_runtime as art
+
+
+def test_authorizer_crate_version():
+    assert art.authorizer_crate_version("tenuo/authorizer:0.1.0-beta.24") == "0.1.0-beta.24"
+
+
+def test_install_hint():
+    assert "cargo install tenuo" in art.install_hint()
+    assert "0.1.0-beta.24" in art.install_hint()
+
+
+def test_parse_binary_version():
+    assert art.parse_binary_version("Tenuo Authorizer v0.1.0-beta.24+authz.1\n") == "0.1.0-beta.24+authz.1"
+    assert art.crate_version_from_authorizer_version("0.1.0-beta.24+authz.1") == "0.1.0-beta.24"
+
+
+def test_version_compatible():
+    assert art.version_compatible("0.1.0-beta.24+authz.1", "0.1.0-beta.24")
+    assert not art.version_compatible("0.1.0-beta.23+authz.1", "0.1.0-beta.24")
+
+
+def test_choose_backend_flags():
+    args = argparse.Namespace(native=True, docker=False)
+    assert art.choose_backend(args) == "native"
+    args = argparse.Namespace(native=False, docker=True)
+    assert art.choose_backend(args) == "docker"
+
+
+def test_choose_backend_env_native(monkeypatch):
+    monkeypatch.setenv("TENUO_AUTHORIZER_NATIVE", "1")
+    args = argparse.Namespace(native=False, docker=False)
+    with mock.patch.object(art, "docker_ok", return_value=(True, "ok")):
+        assert art.choose_backend(args) == "native"
+
+
+def test_choose_backend_auto_fallback(monkeypatch):
+    monkeypatch.delenv("TENUO_AUTHORIZER_NATIVE", raising=False)
+    monkeypatch.delenv("TENUO_AUTHORIZER_BACKEND", raising=False)
+    args = argparse.Namespace(native=False, docker=False)
+    with mock.patch.object(art, "docker_ok", return_value=(False, "not installed")):
+        assert art.choose_backend(args) == "native"
+    with mock.patch.object(art, "docker_ok", return_value=(True, "ok")):
+        assert art.choose_backend(args) == "docker"
+
+
+def test_resolve_binary_env_override(tmp_path, monkeypatch):
+    binary = tmp_path / "tenuo-authorizer"
+    binary.write_bytes(b"fake")
+    monkeypatch.setenv("TENUO_AUTHORIZER_BIN", str(binary))
+    assert art.resolve_authorizer_binary() == binary
+
+
+def test_resolve_binary_on_path(tmp_path, monkeypatch):
+    monkeypatch.delenv("TENUO_AUTHORIZER_BIN", raising=False)
+    binary = tmp_path / "tenuo-authorizer"
+    binary.write_bytes(b"fake")
+    with mock.patch("shutil.which", return_value=str(binary)):
+        assert art.resolve_authorizer_binary() == binary
+
+
+def test_resolve_binary_missing(monkeypatch):
+    monkeypatch.delenv("TENUO_AUTHORIZER_BIN", raising=False)
+    with mock.patch("shutil.which", return_value=None):
+        with pytest.raises(SystemExit, match="cargo install tenuo"):
+            art.resolve_authorizer_binary()
+
+
+def test_runtime_meta_roundtrip(tmp_path):
+    art.write_runtime_meta(tmp_path, backend="native", binary="/usr/bin/tenuo-authorizer")
+    assert art.read_runtime_backend(tmp_path) == "native"
+    assert art.read_runtime_meta(tmp_path)["binary"] == "/usr/bin/tenuo-authorizer"
+    art.clear_runtime_meta(tmp_path)
+    assert art.read_runtime_backend(tmp_path) is None
+
+
+def test_find_authorizer_binary_none(monkeypatch):
+    monkeypatch.delenv("TENUO_AUTHORIZER_BIN", raising=False)
+    with mock.patch("shutil.which", return_value=None):
+        assert art.find_authorizer_binary() is None
+
+
+def test_assert_port_available_free(monkeypatch, tmp_path):
+    with mock.patch.object(art, "port_listening", return_value=False):
+        art.assert_port_available(9090, "http://127.0.0.1:9090", tmp_path)
+
+
+def test_assert_port_available_foreign(monkeypatch, tmp_path):
+    with mock.patch.object(art, "port_listening", return_value=True):
+        with mock.patch.object(art, "is_tenuo_authorizer_health", return_value=False):
+            with pytest.raises(SystemExit, match="already in use"):
+                art.assert_port_available(9090, "http://127.0.0.1:9090", tmp_path)
+
+
+def test_ensure_binary_version_mismatch(tmp_path, monkeypatch):
+    binary = tmp_path / "tenuo-authorizer"
+    binary.write_bytes(b"fake")
+    monkeypatch.delenv("TENUO_AUTHORIZER_SKIP_VERSION", raising=False)
+    with mock.patch.object(art, "query_binary_version", return_value="0.1.0-beta.23+authz.1"):
+        with pytest.raises(SystemExit, match="does not match pinned"):
+            art.ensure_binary_version(binary)
+
+
+def test_ensure_binary_version_skip_env(tmp_path, monkeypatch):
+    binary = tmp_path / "tenuo-authorizer"
+    binary.write_bytes(b"fake")
+    monkeypatch.setenv("TENUO_AUTHORIZER_SKIP_VERSION", "1")
+    with mock.patch.object(art, "query_binary_version", return_value="0.1.0-beta.23+authz.1"):
+        assert art.ensure_binary_version(binary) == "0.1.0-beta.23+authz.1"

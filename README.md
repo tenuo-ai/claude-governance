@@ -44,9 +44,23 @@ More: [docs/DETAILS.md](docs/DETAILS.md)
 ## Prerequisites
 
 - Python ≥ 3.10
-- **Docker** — required today. The authorizer runs as the pinned `tenuo/authorizer`
-  container (`tenuo-claude up`). Holder keys and PoP signing stay on the host; only
-  `gateway.yaml` is mounted into the container.
+- **Authorizer runtime** — one of:
+  - **Native (recommended when Docker is unavailable):** install the published
+    [`tenuo-authorizer`](https://crates.io/crates/tenuo) binary (same version as the
+    pinned Docker image, currently `0.1.0-beta.24`):
+
+    ```bash
+    cargo install tenuo --version 0.1.0-beta.24 \
+      --features data-plane,server --bin tenuo-authorizer --locked
+    ```
+
+    Ensure `~/.cargo/bin` is on your `PATH`, then `tenuo-claude up --native` (or rely
+    on auto-fallback when Docker is not running). Override with `TENUO_AUTHORIZER_BIN`
+    if needed. The CLI checks that the binary matches the package pin; set
+    `TENUO_AUTHORIZER_SKIP_VERSION=1` only for local dev against a different build.
+  - **Docker:** the pinned `tenuo/authorizer` container (`tenuo-claude up --docker`, or
+    default when Docker is available). Holder keys and PoP signing stay on the host; only
+    `gateway.yaml` is mounted into the container.
 - [Claude Code](https://code.claude.com/docs) — for live agent use, not for a first eval
   (see [Quick eval](#quick-eval-no-claude) below)
 

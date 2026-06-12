@@ -7,15 +7,11 @@ PyPI package: [`tenuo-claude-code`](https://pypi.org/project/tenuo-claude-code/)
 [![CI](https://github.com/tenuo-ai/claude-governance/actions/workflows/ci.yml/badge.svg)](https://github.com/tenuo-ai/claude-governance/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-**Keep your AI coding agent inside the lines.** Tenuo governs every tool call Claude Code makes: native tools, MCP, and subagent spawns, on one laptop or across a Cloud-connected fleet.
+**Keep your AI coding agent inside the lines.** Claude Code can read files, run shell, fetch URLs, and call MCP tools. Tenuo puts a signed policy in front of all of it so the agent only does what you allowed, on one laptop or across a Cloud-connected fleet.
 
-**Native tools** (Read, Bash, WebFetch, and the rest) go through a PreToolUse hook. **MCP tools** go through a proxy you wire in place of the downstream server. Both paths hit the same authorizer before anything runs.
+**Why:** Claude's permission prompts are easy to bypass (`--dangerously-skip-permissions`, local settings edits). Hook-only guardrails trust the process. Tenuo adds limits you can **prove were enforced**: sandbox-scoped reads, shell allowlists, MCP argument checks, URL policy, and an audit trail per call.
 
-At `init`, Tenuo mints a **session warrant**: a signed credential that says what this session may do and how long it lasts. On every call, the hook or proxy must **prove it holds that warrant** before the authorizer allows the action. Policy is one file (`tenuo.yaml`), but the limits are cryptographic. Editing Claude's permission settings or running `--dangerously-skip-permissions` does not widen what the warrant permits.
-
-File reads stay in the sandbox. Shell commands match an allowlist. MCP tool arguments get the same checks. URLs match policy.
-
-Connect [Tenuo Cloud](https://cloud.tenuo.ai) for **verifiable audit receipts** (signed allow/deny/spawn events) and fleet-wide warrant revocation.
+**What you get:** one policy file (`tenuo.yaml`), a local authorizer that says allow/deny on every call, and optional [Tenuo Cloud](https://cloud.tenuo.ai) for verifiable receipts, **human approval gates** on high-risk calls, and fleet-wide revocation.
 
 Install: `pip install tenuo-claude-code` (commands: `tenuo-claude`, `tenuo-admin`).
 
@@ -35,7 +31,7 @@ tenuo.yaml  →  init/up  →  warrant + authorizer + hooks + MCP proxy
                          authorizer → allow / deny → log / receipt
 ```
 
-Claude hits the MCP proxy (not your downstream server) and the PreToolUse hook for native tools.
+**Native tools** (Read, Bash, WebFetch, and the rest) go through a PreToolUse hook. **MCP tools** go through a proxy in place of the downstream server. At `init`, Tenuo mints a **session warrant**; each call must prove it holds that warrant before the authorizer allows the action.
 
 Both paths use the same warrant and authorizer.
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 __all__ = [
@@ -13,8 +14,11 @@ __all__ = [
     "CLI_COMMAND_LEGACY",
     "PACKAGE_DIR",
     "bind_project_paths",
+    "bundled_template",
+    "default_policy_name",
     "find_project_root",
     "harness_tools_file",
+    "scaffold_example_policy",
 ]
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -26,10 +30,12 @@ ADMIN_COMMAND_LEGACY = "tenuo-claude-admin"
 BIN_LAUNCHER = "tenuo-claude"
 
 
-def find_project_root(start: Path | None = None) -> Path:
+def find_project_root(start: Path | None = None, *, fallback_cwd: bool = False) -> Path:
     """Locate the directory containing ``tenuo.yaml`` (the governed project).
 
     Search order: ``TENUO_PROJECT_DIR`` env → walk up from *start* or cwd.
+    When *fallback_cwd* is set and no policy is found, return the starting cwd
+    (used by ``bootstrap`` / ``init`` in a fresh project directory).
     """
     env = os.environ.get("TENUO_PROJECT_DIR", "").strip()
     if env:
@@ -41,10 +47,69 @@ def find_project_root(start: Path | None = None) -> Path:
     for directory in (cur, *cur.parents):
         if (directory / "tenuo.yaml").is_file():
             return directory
+    if fallback_cwd:
+        return cur
     raise SystemExit(
         "No tenuo.yaml in this directory or any parent — "
-        "cd to your governed project or set TENUO_PROJECT_DIR."
+        "cd to your governed project, run `tenuo-claude bootstrap`, or set TENUO_PROJECT_DIR."
     )
+
+
+def bundled_template(name: str) -> Path:
+    """Shipped template bundled with the package (PyPI install)."""
+    path = PACKAGE_DIR / "templates" / name
+    if not path.is_file():
+        raise SystemExit(f"Missing bundled template {name!r} — reinstall tenuo-claude-code")
+    return path
+
+
+_EXAMPLE_POLICY_HEADER = """\
+# Example policy — written by `tenuo-claude bootstrap` (or `init` / `onboard`).
+# Starter rules: sandbox-scoped Read, small Bash allowlist, default deny.
+# Edit enforce, sandbox, and mode before production use.
+#
+"""
+
+_DEFAULT_POLICY_NAME = "tenuo-claude"
+
+
+def default_policy_name(project_root: Path) -> str:
+    """Derive ``tenuo.yaml`` ``name:`` from the project directory basename."""
+    raw = project_root.resolve().name.strip()
+    if not raw or raw in {".", ".."}:
+        return _DEFAULT_POLICY_NAME
+    name = raw.lower().replace("_", "-").replace(" ", "-")
+    name = re.sub(r"[^a-z0-9-]+", "-", name)
+    name = re.sub(r"-+", "-", name).strip("-")
+    return name[:64] if name else _DEFAULT_POLICY_NAME
+
+
+def scaffold_example_policy(project_root: Path, *, no_scaffold: bool = False) -> bool:
+    """Write ``tenuo.yaml`` and sandbox dir from the bundled example when missing.
+
+    Returns True when a new example policy was created.
+    """
+    dest = project_root / "tenuo.yaml"
+    if dest.is_file():
+        return False
+    if no_scaffold:
+        raise SystemExit(
+            f"Missing {dest.name} — add a policy file or run without --no-scaffold "
+            "(bootstrap writes an example policy automatically)."
+        )
+    import yaml
+
+    template = bundled_template("tenuo.yaml.example")
+    cfg = yaml.safe_load(template.read_text(encoding="utf-8")) or {}
+    cfg["name"] = default_policy_name(project_root)
+    dest.write_text(_EXAMPLE_POLICY_HEADER + yaml.dump(cfg, default_flow_style=False, sort_keys=False),
+                    encoding="utf-8")
+    sandbox = cfg.get("sandbox", "./workspace")
+    (project_root / sandbox).mkdir(parents=True, exist_ok=True)
+    print(f"Wrote example policy: {dest.name} (name: {cfg['name']})")
+    print("  Starter rules only — edit enforce, sandbox, and mode before production use.")
+    print(f"  Sandbox directory: {sandbox}")
+    return True
 
 
 def harness_tools_file() -> Path:
@@ -53,7 +118,10 @@ def harness_tools_file() -> Path:
 
 
 def template_file(name: str, project_root: Path | None = None) -> Path:
-    """Locate a shipped template (project dir, ``templates/``, or repo parent)."""
+    """Locate a shipped template (bundled, project dir, or repo ``templates/``)."""
+    bundled = PACKAGE_DIR / "templates" / name
+    if bundled.is_file():
+        return bundled
     root = project_root or find_project_root()
     for directory in (root, root.parent):
         for sub in ("", "templates"):
@@ -63,9 +131,9 @@ def template_file(name: str, project_root: Path | None = None) -> Path:
     return root / "templates" / name
 
 
-def bind_project_paths(module) -> None:
+def bind_project_paths(module, *, fallback_cwd: bool = False) -> None:
     """Bind project-scoped path globals on *module* (typically ``cli``)."""
-    root = find_project_root()
+    root = find_project_root(fallback_cwd=fallback_cwd)
     module.DEMO_DIR = root
     module.STATE = root / ".state"
     module.CONFIG_FILE = root / "tenuo.yaml"

@@ -8,6 +8,7 @@ nothing drifts, and manages the Cloud-connected authorizer lifecycle.
 Install: ``pip install tenuo-claude-code``  (command: ``tenuo-claude``)
 
     tenuo-claude init      # generate keys, warrant, gateway, Claude hooks
+    tenuo-claude bootstrap # example policy + init + up + verify (fresh folder)
     tenuo-claude refresh   # re-apply tenuo.yaml after policy edits
     tenuo-claude up        # start the authorizer (+ connect Cloud if configured)
     tenuo-claude status    # warrant / authorizer / Cloud / policy summary
@@ -49,6 +50,7 @@ from tenuo_claude_code.paths import (
     CLI_COMMAND,
     CLI_COMMAND_LEGACY,
     bind_project_paths,
+    scaffold_example_policy,
 )
 from tenuo_claude_code.verify import ProbeResult, build_probes, format_text, run_probes
 
@@ -1808,6 +1810,8 @@ def cmd_onboard(args) -> None:
         cloud = choice.startswith("c")
         local = not cloud
 
+    scaffold_example_policy(DEMO_DIR, no_scaffold=getattr(args, "no_scaffold", False))
+
     print("\nRunning preflight…")
     try:
         cmd_check(argparse.Namespace())
@@ -1889,14 +1893,19 @@ def cmd_onboard(args) -> None:
 def cmd_bootstrap(args) -> None:
     """check → init → up → verify (--local default)."""
     local = getattr(args, "local", True) and not getattr(args, "cloud", False)
+    ns = dict(local=True, cloud=False, yes=True,
+              no_scaffold=getattr(args, "no_scaffold", False))
     if local:
-        cmd_onboard(argparse.Namespace(local=True, cloud=False, yes=True))
+        cmd_onboard(argparse.Namespace(**ns))
     else:
-        cmd_onboard(argparse.Namespace(local=False, cloud=True, yes=getattr(args, "yes", False),
-                                        advanced=getattr(args, "advanced", False) or getattr(args, "demo", False),
-                                        connect_token=getattr(args, "connect_token", None),
-                                        approver=getattr(args, "approver", None),
-                                        admin_key=getattr(args, "admin_key", None)))
+        cmd_onboard(argparse.Namespace(
+            local=False, cloud=True, yes=getattr(args, "yes", False),
+            no_scaffold=getattr(args, "no_scaffold", False),
+            advanced=getattr(args, "advanced", False) or getattr(args, "demo", False),
+            connect_token=getattr(args, "connect_token", None),
+            approver=getattr(args, "approver", None),
+            admin_key=getattr(args, "admin_key", None),
+        ))
 
 
 def load_cloud_state() -> dict:
@@ -2565,6 +2574,7 @@ def cmd_bench(args) -> None:
 
 
 def cmd_init(args) -> None:
+    scaffold_example_policy(DEMO_DIR, no_scaffold=getattr(args, "no_scaffold", False))
     if getattr(args, "local", False):
         moved = disable_cloud_artifacts()
         if moved:
@@ -2662,6 +2672,8 @@ def main() -> None:
     pi = sub.add_parser("init")
     pi.add_argument("--cloud", action="store_true", help="write tenuo.cloud.yaml (Cloud URL)")
     pi.add_argument("--local", action="store_true", help="move Cloud files aside for local mode")
+    pi.add_argument("--no-scaffold", action="store_true",
+                    help="fail if tenuo.yaml is missing (default: write an example policy)")
     pi.add_argument("--advanced", action="store_true",
                     help="write tenuo.advanced.yaml (human approval overlay; WebFetch example)")
     pi.add_argument("--demo", action="store_true", help=argparse.SUPPRESS)  # deprecated alias
@@ -2677,11 +2689,15 @@ def main() -> None:
     po.add_argument("--connect-token", help="Quick Connect token (Cloud)")
     po.add_argument("--admin-key", help="tenant-admin key for one-time setup (Cloud)")
     po.add_argument("--approver", help="approver display name (requires --advanced)")
+    po.add_argument("--no-scaffold", action="store_true",
+                    help="fail if tenuo.yaml is missing (default: write an example policy)")
     pb = sub.add_parser("bootstrap", help="check + init + up + verify")
     pb.add_argument("--cloud", action="store_true", help="Cloud quickstart (default: local)")
     pb.add_argument("--advanced", action="store_true", help="include advanced overlay (with --cloud)")
     pb.add_argument("--demo", action="store_true", help=argparse.SUPPRESS)
     pb.add_argument("--yes", "-y", action="store_true")
+    pb.add_argument("--no-scaffold", action="store_true",
+                    help="fail if tenuo.yaml is missing (default: write an example policy)")
     pb.add_argument("--connect-token")
     pb.add_argument("--admin-key")
     pb.add_argument("--approver")
@@ -2712,7 +2728,10 @@ def main() -> None:
         return
     # Global install — no governed project directory required.
     if args.cmd != "install-authorizer":
-        bind_project_paths(sys.modules[__name__])
+        bind_project_paths(
+            sys.modules[__name__],
+            fallback_cwd=args.cmd in ("init", "onboard", "bootstrap"),
+        )
     # Separation of duties: the runtime/agent plane must never carry an admin
     # credential. Admin actions live in `tenuo-admin`. Skip the internal hook
     # handlers — they have their own fail-closed contract and must emit a deny

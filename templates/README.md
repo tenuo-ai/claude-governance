@@ -4,7 +4,7 @@ Copy these into a governed project directory (or `~/.tenuo/` for the admin env f
 
 | File | Destination |
 |------|-------------|
-| `tenuo.yaml.example` | `./tenuo.yaml` |
+| `tenuo.yaml.example` | `./tenuo.yaml` (or run `tenuo-claude bootstrap` in an empty project folder) |
 | `tenuo.yaml.cloud.example` | merge via `tenuo-claude init --cloud` |
 | `tenuo.yaml.advanced.example` | merge via `tenuo-claude init --advanced` |
 | `cloud.env.example` | `.state/cloud.env` |

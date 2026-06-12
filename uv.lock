@@ -931,7 +931,7 @@ wheels = [
 
 [[package]]
 name = "tenuo-claude-code"
-version = "0.1.2"
+version = "0.1.4"
 source = { editable = "." }
 dependencies = [
     { name = "mcp" },

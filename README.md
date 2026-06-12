@@ -13,7 +13,29 @@ PyPI package: [`tenuo-claude-code`](https://pypi.org/project/tenuo-claude-code/)
 
 **What you get:** one policy file (`tenuo.yaml`), a local authorizer that says allow/deny on every call, and optional [Tenuo Cloud](https://cloud.tenuo.ai) for verifiable receipts, **human approval gates** on high-risk calls, and fleet-wide revocation.
 
-Install: `pip install tenuo-claude-code` (commands: `tenuo-claude`, `tenuo-admin`).
+## Try it
+
+Requires Python 3.10+ and Docker or a [native authorizer](#prerequisites).
+
+```bash
+pip install tenuo-claude-code
+mkdir my-project && cd my-project
+tenuo-claude bootstrap
+```
+
+Open Claude Code here when `verify` passes. No Claude? `bootstrap` + `verify` is enough to prove enforcement.
+
+### Where to go next
+
+| If you want to… | Start here |
+|-----------------|------------|
+| Day-to-day commands, ports, CLI reference | [Use the tool](#use-the-tool-pypi) |
+| Edit or replace the example policy | [Policy](#policy-tenuoyaml) |
+| Clone, hack, or run the sample project | [Build from source](#build-from-source) |
+| Connect to Tenuo Cloud | [Cloud mode](#cloud-mode) |
+| Review security posture | [Security](#security) |
+| Plan org-wide rollout | [Talk to us](https://tenuo.ai/early-access.html) |
+| Implementation depth | [docs/DETAILS.md](docs/DETAILS.md) |
 
 ## How it works
 
@@ -42,113 +64,18 @@ More: [docs/DETAILS.md](docs/DETAILS.md)
 - Python ≥ 3.10
 - **Authorizer runtime** (pick one):
   - **Docker:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) or your engine, then `tenuo-claude up` (pulls the pinned `tenuo/authorizer` image). This is the default when Docker is running.
-  - **Native (no Docker):** install the matching binary to `~/.tenuo/bin` (prebuilt download when available, otherwise `cargo install --root`):
-
-    ```bash
-    pip install tenuo-claude-code
-    tenuo-claude install-authorizer
-    tenuo-claude up --native
-    ```
-
-    One step on first start: `tenuo-claude up --native --install`. Override the binary with `TENUO_AUTHORIZER_BIN`. The CLI checks the binary matches the package pin; set `TENUO_AUTHORIZER_SKIP_VERSION=1` only for local dev builds.
-- [Claude Code](https://code.claude.com/docs) for live agent use. For a first eval without Claude, see [Quick eval](#quick-eval-no-claude).
+  - **Native (no Docker):** `tenuo-claude install-authorizer`, then `tenuo-claude up --native` (or `up --native --install` on first run). Override the binary with `TENUO_AUTHORIZER_BIN`. The CLI checks the binary matches the package pin; set `TENUO_AUTHORIZER_SKIP_VERSION=1` only for local dev builds.
+- [Claude Code](https://code.claude.com/docs) for live agent use (optional for first eval — `verify` is enough).
 
 **Local mode:** no Tenuo Cloud account. Good for one project or evaluation.
 
 **Cloud mode:** [cloud.tenuo.ai](https://cloud.tenuo.ai) tenant for tenant-root warrants, central audit, fleet revocation, and org-wide rollout ([Cloud mode](#cloud-mode)).
 
-| If you want to… | Start here |
-|-----------------|------------|
-| Install and run on your machine | [Use the tool (PyPI)](#use-the-tool-pypi) |
-| Clone, hack, or run the sample project | [Build from source](#build-from-source) |
-| Review security posture | [Security](#security) |
-| Plan org-wide rollout (managed settings, Cloud) | [Talk to us](https://tenuo.ai/early-access.html) |
-| Implementation depth | [docs/DETAILS.md](docs/DETAILS.md) |
-
 ---
 
 ## Use the tool (PyPI)
 
-Five steps. All commands run in **one project directory** that contains `tenuo.yaml`.
-
-**1. Install**
-
-```bash
-pip install tenuo-claude-code
-# If you are not using Docker:
-tenuo-claude install-authorizer
-```
-
-**2. Create a project folder**
-
-```bash
-mkdir my-project && cd my-project
-mkdir workspace    # sandbox: files Claude may read per policy
-```
-
-**3. Add policy**: save as `tenuo.yaml` in this folder:
-
-```yaml
-name: my-project
-sandbox: ./workspace
-mode: enforce
-enforce:
-  Read: "subpath:{sandbox}"
-  Bash: "shlex:ls,pwd,echo,date"
-default: deny
-```
-
-Or fetch the example policy:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/tenuo-ai/claude-governance/main/templates/tenuo.yaml.example -o tenuo.yaml
-```
-
-**4. Initialize and start**
-
-`up` uses Docker when the daemon is running. Pass `--native` to force the host binary.
-
-```bash
-# Docker (default when Docker is running)
-tenuo-claude init
-tenuo-claude up
-tenuo-claude verify
-
-# Native (no Docker)
-tenuo-claude init
-tenuo-claude up --native --install   # first run: install binary to ~/.tenuo/bin
-tenuo-claude verify
-```
-
-Wizard (same end state; local wizard prefers Docker when it is available):
-
-```bash
-tenuo-claude onboard --local
-```
-
-**5. Use Claude Code**
-
-Open Claude Code **in `my-project/`** (same directory as `tenuo.yaml`).
-
-### Quick eval (no Claude)
-
-Prove policy enforcement without Claude Code:
-
-```bash
-pip install tenuo-claude-code
-# create my-project/ with tenuo.yaml (steps 2-3 above)
-
-# Docker (when Docker is running):
-tenuo-claude onboard --local
-
-# Native (no Docker):
-tenuo-claude install-authorizer
-tenuo-claude init && tenuo-claude up --native && tenuo-claude verify
-```
-
-`verify` runs allow/deny probes against the live authorizer (out-of-scope reads, shell chaining, default-deny).
-
-Or run the [reference demo](demo/) tour: `tenuo-claude demo`.
+After [Try it](#try-it), you have an example `tenuo.yaml`, a running authorizer, and passing `verify`. Stay in that project directory for every command below.
 
 ### Day to day
 
@@ -178,11 +105,35 @@ The chosen URL is saved in `.state/state.json`. Hooks and `verify` read that fil
 
 Generated files (do not commit): `.state/` (keys, warrant), `.claude/settings.json` (hooks).
 
+### Custom policy
+
+Bring your own `tenuo.yaml` (see [Policy](#policy-tenuoyaml)), or edit the example `bootstrap` wrote, then:
+
+```bash
+tenuo-claude init
+tenuo-claude up              # Docker when the daemon is running; --native for host binary
+tenuo-claude verify
+```
+
+First native run: `tenuo-claude up --native --install`. Interactive equivalent: `tenuo-claude onboard --local`.
+
+### Reference demo
+
+Sample policy and sandbox are in [demo/](demo/):
+
+```bash
+cd demo && tenuo-claude bootstrap
+tenuo-claude demo    # optional scripted tour
+```
+
+From a git checkout, see [Build from source](#build-from-source).
+
 ### All commands
 
 | Command | Does |
 |---------|------|
 | `init` | Mint warrant, wire hooks and `.mcp.json` |
+| `bootstrap` | Example policy (if missing) + check + init + up + verify |
 | `up` / `down` | Start / stop authorizer. `up` flags: `--native`, `--docker`, `--install` (native, first run) |
 | `install-authorizer` | Install `tenuo-authorizer` to `~/.tenuo/bin` (no manual `cargo`) |
 | `refresh` | Re-apply `tenuo.yaml` (restarts authorizer if up) |
@@ -220,17 +171,17 @@ Run commands via the repo launcher or editable install:
 # or: pip install -e . && tenuo-claude --help
 ```
 
-**Reference demo** (sample policy and sandbox):
+**Reference demo** (from a git checkout):
 
 ```bash
 cd demo
-tenuo-claude bootstrap          # check → init → up → verify (Docker if available)
+tenuo-claude bootstrap
 tenuo-claude demo               # optional scripted tour
 ```
 
 Use `tenuo-claude up --native` instead of plain `up` if you are not running Docker.
 
-Open Claude Code in `demo/`. See [demo/README.md](demo/README.md).
+Open Claude Code in `demo/`. See [demo/README.md](demo/README.md) and [Reference demo](#reference-demo) above.
 
 Re-run `tenuo-claude init` or `refresh` after switching Python venvs. Hooks pin `sys.executable` in `.claude/settings.json`.
 
@@ -240,10 +191,10 @@ Contributors: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Policy (`tenuo.yaml`)
 
-One file drives the warrant, authorizer routes, hooks, and MCP proxy. The [minimal example](#use-the-tool-pypi) is enough to start; expand as needed:
+One file drives the warrant, authorizer routes, hooks, and MCP proxy. `bootstrap` writes a minimal example and sets `name:` from your **folder name** — edit before production.
 
 ```yaml
-name: my-project
+name: acme-backend          # bootstrap uses your project directory name
 sandbox: ./workspace
 mode: enforce
 enforce:
@@ -301,15 +252,19 @@ Two keys, two files (runtime never sees the admin key):
 | Runtime (Quick Connect) | `.state/cloud.env` | `tenuo-claude up`, hooks |
 | Admin | `~/.tenuo/admin.env` | `tenuo-admin setup` once |
 
-```bash
-pip install tenuo-claude-code
-cd my-project                 # your tenuo.yaml lives here
+**Wizard (recommended):**
 
+```bash
+tenuo-claude onboard --cloud
+```
+
+**Manual setup** (copy credential templates from [templates/](templates/)):
+
+```bash
+cd my-project                 # your tenuo.yaml lives here
 mkdir -p .state ~/.tenuo
-curl -fsSL https://raw.githubusercontent.com/tenuo-ai/claude-governance/main/templates/cloud.env.example -o .state/cloud.env
-curl -fsSL https://raw.githubusercontent.com/tenuo-ai/claude-governance/main/templates/admin.env.example -o ~/.tenuo/admin.env
-# Edit .state/cloud.env: set TENUO_CONNECT_TOKEN from cloud.tenuo.ai → Quick Connect → Authorizer Only
-# Edit ~/.tenuo/admin.env: paste tenant-admin API key
+# templates/cloud.env.example → .state/cloud.env (Quick Connect token)
+# templates/admin.env.example → ~/.tenuo/admin.env (tenant-admin key)
 
 tenuo-claude init --cloud
 tenuo-admin setup
@@ -411,7 +366,7 @@ Runtime refuses to start if an admin key is in the environment.
 
 ### Rollout
 
-1. Start on one project with `init`, `up`, `verify` (or the [demo/](demo/) sample).
+1. Start on one project with [Try it](#try-it) or the [demo/](demo/) sample.
 2. Set `mode: audit` to compute allow/deny in receipts without blocking. Review
    `WOULD-DENY` rows, tune policy, then set `mode: enforce`.
 3. Organization-wide rollout: managed-settings hooks, Cloud warrants, shared `tenuo.yaml`

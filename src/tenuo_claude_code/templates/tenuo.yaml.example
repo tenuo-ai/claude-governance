@@ -1,5 +1,3 @@
-# Copy to tenuo.yaml in your project directory, or run `tenuo-claude bootstrap` in an empty folder.
-
 name: your-project
 
 sandbox: ./workspace

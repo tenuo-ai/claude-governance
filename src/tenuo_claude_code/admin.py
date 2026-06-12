@@ -18,8 +18,8 @@ Credentials
 
 Usage
 -----
-  TENUO_ADMIN_KEY=tc_... ./tenuo_admin.py setup     # or put it in ~/.tenuo/admin.env
-  ./tenuo_admin.py show
+  TENUO_ADMIN_KEY=tc_... tenuo-admin setup          # or put it in ~/.tenuo/admin.env
+  tenuo-admin show
 """
 from __future__ import annotations
 
@@ -338,7 +338,7 @@ def cmd_setup(_args) -> None:
 
     url, api_key, admin = creds["url"], creds["api_key"], creds["admin_key"]
     state = tc.load_cloud_state()
-    authz_name = cfg.get("name", "claude-code-demo")   # authorizer / PEP resource name
+    authz_name = cfg.get("name", "tenuo-claude")   # authorizer / PEP resource name
     aname = agent_name(cfg)                             # distinct, per-developer holder
     # Resolve a USABLE trigger id before creating the agent (the agent binds
     # allowed_triggers=[tid]). Cloud soft-deletes triggers: a deleted id is

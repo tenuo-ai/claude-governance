@@ -20,9 +20,9 @@ tenuo.yaml.local
 tenuo.cloud.yaml
 tenuo.advanced.yaml
 
-# Scratch / agent output in the sandbox
-sandbox/out.txt
-sandbox/_probe.txt
+# Scratch / agent output in the demo sandbox
+demo/sandbox/out.txt
+demo/sandbox/_probe.txt
 
 # OS / editor
 .DS_Store

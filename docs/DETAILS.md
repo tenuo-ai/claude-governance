@@ -1,10 +1,12 @@
 # Implementation details
 
-Reference for security reviewers. The README stays short; this file holds the
-mechanics, invariants, and examples.
+How **`tenuo-claude-code`** behaves: policy → warrant → authorizer → hooks/MCP proxy.
+Install and day-to-day commands: [README.md](../README.md). Security summary:
+[README § Security](../README.md#security). Optional sample project:
+[demo/](../demo/).
 
-For the trust-boundary model (Map vs Territory), see
-[The Map is not the Territory](https://niyikiza.com/posts/map-territory/).
+Trust boundaries: [The Map is not the Territory](https://niyikiza.com/posts/map-territory/).
+Report bugs: [SECURITY.md](../SECURITY.md).
 
 ## Audit mode (`mode: audit`)
 
@@ -33,22 +35,22 @@ then `refresh`.
 
 **Live without refresh:** `mode: audit` / `mode: enforce` only (hook blocking posture).
 
-## Production wiring (`bin/tenuo-claude`, `.mcp.json`)
+## Production wiring
 
 Hooks and the MCP proxy invoke `tenuo-claude` on PATH (PyPI install) or
-`./bin/tenuo-claude` (git-clone workflow). Project files (`tenuo.yaml`, `.state/`)
-live in **your project directory** — discovered by walking up from cwd or via
-``TENUO_PROJECT_DIR``.
+`./bin/tenuo-claude` when developing from a git clone. Project files (`tenuo.yaml`,
+`.state/`) live in your governed project directory — not in the package install path.
+Discovery: `tenuo.yaml` in cwd or any parent, or set `TENUO_PROJECT_DIR`.
 
 ## Why hook and MCP proxy
 
 Both check the same warrant against the same authorizer. The interception point
 differs:
 
-| Path | Enforcement |
-|------|-------------|
-| MCP proxy | Structural — Claude is wired to the proxy, not the downstream server |
-| PreToolUse hook | Cooperative — Claude must honor the allow/deny decision |
+| Path | Role |
+|------|------|
+| MCP proxy | Claude is wired to the proxy, not the downstream server |
+| PreToolUse hook | Claude must honor the allow/deny decision |
 
 You could point `.mcp.json` at the downstream server and rely on the hook alone;
 policy would be the same. We still ship the proxy because if the hook fails or is
@@ -64,7 +66,7 @@ The structured policy compiles to two checks: `UrlSafe` SSRF hygiene on the raw
 `url` (https-only by default, metadata/loopback/encoded-IP blocks), and host
 must match the domain allowlist (`*` wildcards ok).
 
-Examples exercised by `doctor`:
+Examples exercised by `verify`:
 
 | URL | Result |
 |-----|--------|
@@ -115,18 +117,20 @@ End to end:
    hook `timeout` is extended so Claude waits for the approver.
 
 Receipts: `PENDING [appr]` while parked, then `ALLOW`/`DENY`. In audit mode the
-gate is reported only, never blocks. `python3 tenuo_demo.py --advanced --live-approval` drives
-the full flow.
+gate is reported only, never blocks.
 
-**Live demo:** the session blocks on that tool call until someone responds. Have
-an approver ready. Claude's hook timeout can expire first and look like a deny.
+**Live approval:** when Cloud and an approval gate are configured, the hook blocks
+on that tool call until an approver responds (or times out). Have an approver on
+their notification channel before testing. Claude's hook timeout can expire first
+and look like a deny. To walk through the flow interactively, use the reference
+demo: `tenuo-claude demo --advanced --live-approval` from [demo/](../demo/).
 
 ## Search tools and symlinks
 
 `Glob`/`Grep` search roots are constrained like `Read`. A bare `Grep` with no
 path is checked against the hook cwd and denied outside the sandbox. Subpath
 arguments are `realpath()`-resolved before authorization, so
-`ln -s /etc/passwd sandbox/escape.txt` does not smuggle a read out (`doctor`
+`ln -s /etc/passwd sandbox/escape.txt` does not smuggle a read out (`verify`
 plants this case). Races between check and open need execution-time guards
 (e.g. `path_jail`).
 
@@ -160,9 +164,9 @@ Omit `subagents:` for flat coverage: spawns are audited, not gated; the subagent
 runs under the session warrant.
 
 Roles must match a real `subagent_type` (`.claude/agents/<name>.md` frontmatter
-`name:` or a built-in). `doctor` and `status` validate this.
+`name:` or a built-in). `verify` and `status` validate this.
 
-**Workflow:** bundled as audit-allow in `harness_tools.yaml`. With `subagents:`
+**Workflow:** bundled as audit-allow in the package harness list (`src/tenuo_claude_code/data/harness_tools.yaml`). With `subagents:`
 declared, inner tool calls from Workflow agents carry an `agent_type` that is
 not a declared role — layer 2 denies them (fail-closed). Workflow is effectively
 unusable in subagent mode unless you remove it from the audit list or omit
@@ -170,9 +174,9 @@ unusable in subagent mode unless you remove it from the audit list or omit
 
 Changing `subagents:` is a policy change: re-run `tenuo-admin setup` (Cloud) or
 `init` (local). Subagents may drop parent approval gates for tools they no longer
-hold (e.g. a read-only `researcher` without `WebFetch`).
+hold (e.g. a read-only subagent role without `WebFetch`).
 
-Requires `tenuo` 0.1.0b24+ and authorizer `0.1.0-beta.24` (pinned in `tenuo_claude.py`).
+Requires `tenuo` 0.1.0b24+ and authorizer `0.1.0-beta.24` (pinned in `cli.py`).
 
 ## Receipts
 
@@ -185,7 +189,7 @@ proxy. Every call produces a signed receipt:
 
 Subagent calls carry `agent_type`; the hook enforces the child warrant when present.
 Spawn is cryptographically gated. In-subagent cap selection depends on Claude Code
-populating `agent_type` (see [SECURITY-TEAM.md](SECURITY-TEAM.md)). Measure overhead
+populating `agent_type` (see [README § Security](../README.md#security)). Measure overhead
 with `tenuo-claude bench`.
 
 In audit mode denials are recorded as `WOULD-DENY` without blocking.
@@ -203,8 +207,8 @@ call proceeds. Harness semantics can change between Claude Code releases.
 `_hook` wraps its body in a fail-closed guard: internal errors become explicit
 deny decisions, never bare exceptions.
 
-`doctor` runs a live canary when `claude` is on PATH (`--no-live` to skip). The
-test hook writes a marker file before exiting so doctor can distinguish "hook
+`verify --deep` runs a live canary when `claude` is on PATH (`--no-live` to skip). The
+test hook writes a marker file before exiting so verify can distinguish "hook
 never ran" from "exit 2 did not block."
 
 ## Tenuo Cloud (extended)

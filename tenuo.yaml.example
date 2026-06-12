@@ -1,0 +1,15 @@
+# Copy to tenuo.yaml in your project directory, then: tenuo-claude init && tenuo-claude up
+#
+# curl -fsSL https://raw.githubusercontent.com/tenuo-ai/claude-governance/main/tenuo.yaml.example -o tenuo.yaml
+
+name: my-project
+
+sandbox: ./workspace
+
+mode: enforce
+
+enforce:
+  Read: "subpath:{sandbox}"
+  Bash: "shlex:ls,pwd,echo,date"
+
+default: deny

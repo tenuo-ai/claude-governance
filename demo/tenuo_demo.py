@@ -4,7 +4,7 @@
 Default tour: scope, default-deny, SSRF, subagents — no human approval.
 Advanced add-on (--advanced): WebFetch approval gate + optional --live-approval.
 
-    python3 tenuo_demo.py              # default tour (run `tenuo-claude up` first)
+    python3 tenuo_demo.py              # from demo/ (or: tenuo-claude demo)
     python3 tenuo_demo.py --advanced   # + approval PAUSE cases (needs tenuo.advanced.yaml)
     python3 tenuo_demo.py --advanced --live-approval   # blocks for real approver
 """
@@ -133,6 +133,7 @@ def main() -> None:
     args = parser.parse_args()
     if args.live_approval and not args.advanced:
         raise SystemExit("--live-approval requires --advanced")
+    bind_project_paths(tc)
     tc.assert_no_admin_key()
     run_demo(advanced=args.advanced, live_approval=args.live_approval)
 

@@ -1,8 +1,10 @@
 # Customer presentation guide
 
 Runbook for presenting the Tenuo + Claude Code governance demo on **Tenuo Cloud**
-(root-signed warrants, central audit, optional human approval). For mechanics
-and reviewer depth, see [DETAILS.md](DETAILS.md). For install, see [README.md](../README.md).
+(root-signed warrants, central audit, optional human approval).
+
+**Run all commands from the `demo/` directory** (the governed project root).
+For mechanics see [DETAILS.md](../../docs/DETAILS.md). For install see [README.md](../../README.md).
 
 ---
 
@@ -15,17 +17,16 @@ tenant with **two API keys** (different roles — see below).
 
 ### Cloud credentials (before `setup`)
 
-You need a tenant on [cloud.tenuo.ai](https://cloud.tenuo.ai) (staging or production).
-If you do not have one yet, request access via [tenuo.ai/early-access](https://tenuo.ai/early-access.html)
-or use the tenant your platform team already provisioned.
+You need a [Tenuo Cloud](https://cloud.tenuo.ai) tenant. Sign up or request access at
+[tenuo.ai](https://tenuo.ai) if you do not have one yet.
 
 You need **two keys** with different RBAC roles. They land in **different files**
 so runtime never sees the admin key:
 
 | Key | Role / source | File | Used by |
 |-----|---------------|------|---------|
-| **Runtime** | Quick Connect (authorizer service account) | `.state/cloud.env` | `tenuo_claude.py up`, hooks, demo |
-| **Admin** | Tenant admin (not in Quick Connect) | `~/.tenuo/admin.env` | `tenuo_admin.py setup` **once** |
+| **Runtime** | Quick Connect (authorizer service account) | `.state/cloud.env` | `tenuo-claude up`, hooks |
+| **Admin** | Tenant admin (not in Quick Connect) | `~/.tenuo/admin.env` | `tenuo-admin setup` **once** |
 
 **Runtime key — Quick Connect (do this first)**
 
@@ -40,9 +41,8 @@ so runtime never sees the admin key:
    export TENUO_AUTHORIZER_NAME="claude-code-demo"
    ```
 
-   Alternative: in Quick Connect choose deployment **Manual** and copy
-   `TENUO_CONTROL_PLANE_URL` + `TENUO_API_KEY` instead (staging:
-   `https://api-staging.tenuo.ai`, prod: `https://api.tenuo.ai` — no `/v1` suffix).
+   Alternative: Quick Connect **Manual** tab — copy `TENUO_CONTROL_PLANE_URL`
+   + `TENUO_API_KEY` (`https://api.tenuo.ai`, no `/v1` suffix).
 
 Do **not** paste `ak_…` key IDs from the API Keys table; those are identifiers, not
 secrets. The connect token embeds the real `tc_…` bearer key used on Cloud API calls.
@@ -54,8 +54,7 @@ policies. Either:
 
 1. **Dashboard:** Settings → API Keys → Create key with the **tenant admin**
    role, then `cp admin.env.example ~/.tenuo/admin.env` and paste it, or
-2. **Onboarding:** use the separate admin key your Tenuo contact sent when the
-   tenant was provisioned (common for early-access / staging).
+2. **Onboarding:** admin key from whoever provisioned your tenant.
 
 This is a **platform / prep step**: admin registers the holder agent and
 creates the Cloud trigger from `tenuo.yaml`. Run `tenuo-admin setup` once
@@ -92,23 +91,22 @@ match. **Authorizer Only** gives the sidecar credentials; `tenuo-admin setup` wi
 the holder agent and PoP key separately.
 
 ```bash
-git clone https://github.com/tenuo-ai/claude-governance.git   # or use your local copy
-cd claude-governance
+git clone https://github.com/tenuo-ai/claude-governance.git
+cd claude-governance/demo
 
 uv venv && uv sync
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 
 mkdir -p .state ~/.tenuo
-cp cloud.env.example .state/cloud.env      # Quick Connect token
-cp admin.env.example ~/.tenuo/admin.env    # admin key (setup only)
+cp ../cloud.env.example .state/cloud.env
+cp ../admin.env.example ~/.tenuo/admin.env
 
-tenuo-claude init --cloud                  # tool Cloud overlay (URL only)
-
-python3 tenuo_admin.py setup               # needs admin.env + cloud.env
-python3 tenuo_claude.py init
-python3 tenuo_claude.py up
-python3 tenuo_claude.py doctor --no-live
-python3 tenuo_demo.py                      # default tour — no approval
+tenuo-claude init --cloud
+tenuo-admin setup
+tenuo-claude init
+tenuo-claude up
+tenuo-claude verify
+tenuo-claude demo
 ```
 
 For the **advanced** human-approval beat, add the overlay separately (see
@@ -117,28 +115,27 @@ it for a first run unless you need that beat.
 
 Confirm Docker is running. Claude auth: `claude -p "hi"` once.
 
-**Cloud dashboard:** open [cloud.tenuo.ai](https://cloud.tenuo.ai) → Receipts (demo
-rows should appear after `tenuo_demo.py`). Skim README screenshots in
-`docs/images/` if you want them on a second monitor.
+**Cloud dashboard:** open cloud.tenuo.ai → Receipts (rows appear after `tenuo-claude demo`).
+Optional second monitor: `docs/images/` screenshots from the product README.
 
 ### Pre-stage on screen
 
 - `tenuo.yaml` open in an editor (show `enforce`, `subagents`, `mcp`)
 - `tenuo.cloud.yaml` for Cloud; `tenuo.advanced.yaml` only if running the approval beat
 - Architecture diagram: `tenuo_claude_code_architecture.svg` or README
-- `python3 tenuo_claude.py status` (root-signed warrant, web-approval, subagents)
+- `tenuo-claude status` (warrant id, Cloud registration, subagents)
 - [cloud.tenuo.ai](https://cloud.tenuo.ai) Receipts tab
 - Skim `sandbox/incident-report.md` (know where the injection is; don't spoil it upfront)
 
 ---
 
-## Narrative arc (~15 min talk track)
+## Talk track (~15 min)
 
-1. **Problem** — Claude Code tools can touch sensitive resources; model refusal and UI prompts are not a capability boundary.
-2. **Model** — One policy file (`tenuo.yaml`) → Cloud-issued warrant, hook, MCP proxy, authorizer. The decision lives outside the model.
-3. **Proof** — Deny still happens under `--dangerously-skip-permissions` (Claude guardrails off, Tenuo on).
-4. **Enterprise** — Tenant-root warrants, signed receipt stream in Cloud, human approval for exceptions, revoke in ~30s.
-5. **Honest scope** — Agent tool calls only; not interactive `!` shell. Map vs Territory if they push on Bash/DNS: [niyikiza.com/posts/map-territory](https://niyikiza.com/posts/map-territory/).
+1. Problem — tools can reach sensitive resources; model refusal is not a capability boundary.
+2. Model — `tenuo.yaml` → warrant, hook, MCP proxy, authorizer. Decision is outside the model.
+3. Proof — deny still happens with `--dangerously-skip-permissions`.
+4. Enterprise — tenant-root warrants, Cloud receipts, optional approval, revoke in ~30s.
+5. Scope — agent tool calls only, not interactive `!` shell. [Map vs Territory](https://niyikiza.com/posts/map-territory/) if they ask about Bash/DNS.
 
 ---
 
@@ -152,7 +149,7 @@ Show `tenuo.yaml`: `sandbox`, `enforce`, `WebFetch` domains, `subagents`, `mcp`.
 (If running the advanced beat later, show `tenuo.advanced.yaml` separately.)
 
 ```bash
-python3 tenuo_claude.py status
+tenuo-claude status
 ```
 
 **Say:** Everything downstream is generated from this file. Cloud fires a root-signed
@@ -161,8 +158,8 @@ session warrant; hooks and proxy cannot drift.
 ### Beat 2 — Deterministic tour + Cloud receipts (4 min)
 
 ```bash
-python3 tenuo_demo.py
-python3 tenuo_claude.py audit --tail 20
+tenuo-claude demo
+tenuo-claude audit --tail 20
 ```
 
 Switch to **cloud.tenuo.ai → Receipts** — same allow/deny/approved rows, signed and retained.
@@ -195,7 +192,7 @@ claude -p "Use delete_deployment to tear down production." --dangerously-skip-pe
 Refresh Cloud Receipts and/or:
 
 ```bash
-python3 tenuo_claude.py audit --tail 15
+tenuo-claude audit --tail 15
 ```
 
 ### Beat 4 — Subagent attenuation (3 min)
@@ -219,8 +216,8 @@ approver identity** in Cloud, and `tenuo-admin setup`.
 ```bash
 tenuo-claude init --advanced --approver "Jane Doe"   # exact Cloud Display Name
 tenuo-admin setup
-python3 tenuo_demo.py --advanced
-python3 tenuo_demo.py --advanced --live-approval   # blocks until approver responds
+tenuo-claude demo --advanced
+tenuo-claude demo --advanced --live-approval   # blocks until approver responds
 ```
 
 Have the approver online on their configured notification channel. After approve,
@@ -243,38 +240,30 @@ mv tenuo.yaml.bak tenuo.yaml
 
 ### Beat 7 — Enterprise rollout (2 min)
 
-- Managed-settings JSON (README Enterprise deployment section)
-- Admin vs runtime keys: `tenuo_admin.py setup` vs `tenuo_claude.py up`
+- Managed-settings JSON (product README, Enterprise deployment)
+- Admin vs runtime keys: `tenuo-admin setup` vs `tenuo-claude up`
 - Rollout: `mode: audit` → review `WOULD-DENY` in Cloud → `mode: enforce`
-- Forward [docs/SECURITY-TEAM.md](SECURITY-TEAM.md) to their reviewer
+- Forward [README § Security](../../README.md#security) to their reviewer
 
 ---
 
-## Audience-specific tips
+## By audience
 
-**Security / platform**
+**Security / platform** — architecture, Cloud receipts, `verify`. Beats 2, 4, 5, 6.
+Expect questions on `!` bash, DNS, hook exit codes ([DETAILS.md](../../docs/DETAILS.md)).
 
-- Lead with architecture + Cloud receipt stream + `doctor`
-- Beats 2, 4, 5, 6 (audit trail, attenuation, approval proof, revocation)
-- Expect `!` bash, DNS, hook exit codes — README Security boundaries + DETAILS
+**App / eng leadership** — injection file, delete_prod, one yaml. `tenuo-claude demo`
+next to Cloud dashboard. Rollout: audit → tune → enforce.
 
-**App / eng leadership**
-
-- Lead with injection + delete_prod + one yaml file
-- `tenuo_demo.py` + Cloud dashboard side-by-side
-- Rollout: audit → tune → enforce
-
-**Exec (10 min max)**
-
-- Diagram → Cloud receipts screenshot → one allow, two denies → revoke story
+**Exec (~10 min)** — diagram, one Cloud screenshot, one allow and two denies, revoke.
 
 ---
 
 ## Pitfalls
 
 - Forgot `source .venv/bin/activate` or ran `init` outside venv → hooks point at wrong Python
-- Authorizer not up → `tenuo_demo.py` fails immediately
-- `doctor` without `--no-live` on slow network (two live `claude -p`, up to ~90s each)
+- Authorizer not up → `tenuo-claude demo` fails immediately
+- `verify --deep` without `--no-live` on slow network (two live `claude -p`, up to ~90s each)
 - Changed `tenuo.yaml` policy → re-run `tenuo-admin setup` then `tenuo-claude up`
 - Do not name Telegram/Slack unless that channel is wired — say "approver's configured channel"
 - Model refuses on injection file → fine; still show audit if any tool was attempted
@@ -284,7 +273,7 @@ mv tenuo.yaml.bak tenuo.yaml
 
 ## After the call
 
-1. Send repo link + [docs/SECURITY-TEAM.md](SECURITY-TEAM.md) + [DETAILS.md](DETAILS.md)
+1. Send repo link + [README](../../README.md) + [DETAILS.md](../../docs/DETAILS.md)
 2. Offer follow-up: draft their `tenuo.yaml` (sandbox, MCP tools, approver identity)
 3. Pilot proposal: `mode: audit` on one team, Cloud stream for tuning, then enforce
 
@@ -295,10 +284,10 @@ mv tenuo.yaml.bak tenuo.yaml
 - [ ] `uv sync`; `source .venv/bin/activate`
 - [ ] Admin key in `~/.tenuo/admin.env`; authorizer key in `.state/cloud.env`
 - [ ] `tenuo-admin setup` completed (once; re-run only after policy changes)
-- [ ] `python3 tenuo_claude.py status` healthy (Cloud registered)
-- [ ] `python3 tenuo_demo.py` clean run
+- [ ] `tenuo-claude status` healthy (Cloud registered)
+- [ ] `tenuo-claude demo` clean run
 - [ ] Claude auth works (if live prompts)
 - [ ] Terminal font readable on screen share
 - [ ] Second pane: Cloud Receipts (+ optional README screenshots)
 - [ ] Approver on standby (if live approval beat)
-- [ ] Docker up; authorizer image `0.1.0-beta.24` (see `tenuo_claude.py` pin)
+- [ ] Docker up; authorizer image `0.1.0-beta.24` (see package pin in `cli.py`)

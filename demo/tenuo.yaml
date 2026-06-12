@@ -1,7 +1,6 @@
-# Tenuo for Claude Code — single source of truth.
+# Tenuo for Claude Code — demo policy.
 #
-# `tenuo-claude init` generates the warrant, gateway config, Claude hooks, and
-# MCP proxy wiring from this file, so nothing can drift out of sync.
+# `tenuo-claude init` generates warrant, gateway, hooks, and MCP wiring from this file.
 
 name: claude-code-demo
 
@@ -19,7 +18,7 @@ sandbox: ./sandbox
 # Optional Tenuo Cloud (root-signed warrants, signed audit stream). Not required
 # for local mode. Tool overlay: `tenuo-claude init --cloud` → tenuo.cloud.yaml.
 # Demo overlay (WebFetch human approval): tenuo.advanced.yaml — optional; see tenuo.yaml.advanced.example
-# and docs/PRESENTATION.md. Then `tenuo-admin setup` once before `tenuo-claude up`.
+# and demo/docs/PRESENTATION.md. Then `tenuo-admin setup` once before `tenuo-claude up`.
 
 # ENFORCED tools: explicitly allowed AND argument-checked. These may mutate, but
 # only within scope. Constraint DSL:

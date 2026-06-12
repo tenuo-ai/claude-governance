@@ -1,133 +1,64 @@
-# Contributing / maintainer notes
+# Contributing
 
-Internal scaffolding for the standalone repo — not required for running the demo.
+Apache-2.0 — see [LICENSE](LICENSE). Bug reports and PRs welcome.
 
-## Python environment
-
-Use a project venv so the launcher resolves the same interpreter everywhere:
+## Getting started
 
 ```bash
+git clone https://github.com/tenuo-ai/claude-governance.git
+cd claude-governance
 uv venv && uv sync && chmod +x bin/tenuo-claude
-./bin/tenuo-claude init   # or: uv run tenuo-claude init
+cd demo && uv run tenuo-claude verify   # reference project with sample tenuo.yaml
 ```
 
-Re-run `init` or `refresh` after switching venvs. `.venv/` is gitignored.
-
 Project discovery: `tenuo.yaml` in cwd or any parent, or set `TENUO_PROJECT_DIR`.
+Re-run `init` or `refresh` after switching Python venvs (hooks pin `sys.executable`).
+
+## Pull requests
+
+1. Fork and branch from `main`.
+2. Keep changes focused; match existing style in `src/tenuo_claude_code/`.
+3. Run `cd demo && tenuo-claude verify` if you touch enforcement or policy wiring.
+4. Do not commit `.state/`, real API keys, or home-directory paths.
+
+Security issues: see [SECURITY.md](SECURITY.md) — no public issues for vulnerabilities.
 
 ## Never commit secrets
-
-The following stay local and are gitignored:
 
 | Path | Contains |
 |------|----------|
 | `.state/` | Holder/issuer keys, warrant, receipts, `cloud.env` |
-| `.claude/settings.json` | Generated hook wiring (timeout varies with approval overlay) |
-| `.mcp.json` | **Committed** — uses `tenuo-claude` on PATH or `./bin/tenuo-claude` |
-| `src/tenuo_claude_code/` | PyPI package (CLI, admin, bundled harness list) |
+| `.claude/settings.json` | Generated hook wiring |
 | `~/.tenuo/admin.env` | Admin key for `tenuo-admin setup` only |
 
-Safe to commit: source, `tenuo.yaml`, `harness_tools.yaml`, examples, `sandbox/`,
-and `prod-credentials.env` (fake decoy — `sk_live_FAKEFAKE…` prefix).
+Safe to commit: source, `demo/` (sample policy and fake `prod-credentials.env` decoy),
+examples, and templates (`*.example`).
 
-## Creating the private GitHub repo
-
-From `demo/claude-governance`, use a **fresh git history** so local `.state`
-never appears in the log:
-
-```bash
-cd demo/claude-governance   # or your export copy
-
-git init
-git add .gitignore README.md CONTRIBUTING.md docs/ requirements.txt pyproject.toml \
-  .python-version uv.lock cloud.env.example .mcp.json bin/tenuo-claude \
-  harness_tools.yaml tenuo.yaml tenuo.yaml.cloud.example \
-  src/tenuo_claude_code/ tenuo_claude.py tenuo_admin.py tenuo_demo.py ops_server.py \
-  tenuo_claude_code_architecture.svg \
-  sandbox/ prod-credentials.env
-git status    # confirm .state/ is NOT listed (.mcp.json should be listed)
-git commit -m "Initial commit: Tenuo governance demo for Claude Code"
-
-gh repo create tenuo-ai/claude-governance --private --source=. --remote=origin --push
-# adjust org/name as needed
-```
-
-Before pushing, verify nothing sensitive is staged:
-
-```bash
-git status --ignored
-if git diff --cached | rg -i 'tc_[a-zA-Z0-9]{20,}|/Users/'; then
-  echo "ERROR: possible API key or home path in staged diff" >&2
-  exit 1
-fi
-if git diff --cached | rg -i 'sk_live_' | rg -v FAKEFAKE; then
-  echo "ERROR: possible live Stripe key in staged diff" >&2
-  exit 1
-fi
-echo "Secret scan: clean"
-```
-
-If this folder stays inside the monorepo, use a **separate clone** of the private
-repo for day-to-day demo work so `.state/` never lands in the main tree.
-
-## PyPI releases (maintainers)
-
-Package on PyPI: **`tenuo-claude-code`**. CLI: **`tenuo-claude`**, **`tenuo-admin`**.
-
-CI builds on push/PR. **Release** (`.github/workflows/release.yml`) publishes on
-tag `v*` or manual dispatch.
-
-### Option A — Trusted publishing (recommended, no GitHub secret)
-
-1. Open [PyPI publishing settings](https://pypi.org/manage/account/publishing/) →
-   **Add a new pending publisher**:
-   - PyPI project name: `tenuo-claude-code`
-   - Owner: `tenuo-ai`
-   - Repository: `claude-governance`
-   - Workflow: `release.yml`
-   - Environment name: *(leave blank)*
-2. Push a tag (or re-run Release workflow after saving):
-
-```bash
-git tag -f v0.1.0 && git push -f origin v0.1.0
-```
-
-### Option B — API token
-
-Add `PYPI_TOKEN` to this repo (Settings → Secrets → Actions), then:
-
-```bash
-gh workflow run release.yml -R tenuo-ai/claude-governance
-```
-
-### New versions
-
-Bump `version` in `pyproject.toml` and `src/tenuo_claude_code/__init__.py`, then tag.
+Before pushing, scan staged diffs for bearer tokens (`tc_…`, `tenuo_ct_…`) and paths
+under `/Users/` or `C:\`.
 
 ## Code layout
 
-`tenuo_claude.py` is intentionally standalone for the demo, but the enforcement
-surface splits logically for review:
+| Module | Role |
+|--------|------|
+| `src/tenuo_claude_code/cli.py` | Policy, hooks, MCP proxy, lifecycle commands |
+| `src/tenuo_claude_code/admin.py` | One-time Cloud setup (`tenuo-admin`) |
+| `src/tenuo_claude_code/verify.py` | Policy-driven authorizer self-test |
+| `src/tenuo_claude_code/data/harness_tools.yaml` | Bundled audit-allow tool list |
 
-| Concern | Location (today) | Audit focus |
-|---------|------------------|-------------|
-| Policy load + `authorize()` | `tenuo_claude.py` (~config/enforcement) | Warrant/PoP/approval path |
-| PreToolUse / PostToolUse | `tenuo_claude.py` (`cmd_hook`, `cmd_post`) | Fail-closed hook contract |
-| MCP proxy | `tenuo_claude.py` (`cmd_mcp_proxy`) | Structural interposition |
-| CLI lifecycle | `tenuo_claude.py` (`init`/`up`/…) | Ops plumbing |
+Root `tenuo_claude.py` / `tenuo_admin.py` are thin shims; prefer `tenuo-claude` on PATH.
 
-A future refactor should extract hook + MCP proxy into separate modules without
-changing the public `python3 tenuo_claude.py _hook` entrypoints.
+When Claude Code adds new inert harness tools, append them to
+`src/tenuo_claude_code/data/harness_tools.yaml` and run `verify`.
 
-## Harness tool list
+## Releases (maintainers)
 
-When Claude Code ships new inert harness tools, append them to `harness_tools.yaml`
-rather than asking every customer to edit `tenuo.yaml`. Run `doctor` after upgrades
-to catch default-denies on tools not yet in the bundled list.
+PyPI package: **`tenuo-claude-code`**. Tag `v*` triggers
+[`.github/workflows/release.yml`](.github/workflows/release.yml) (trusted publishing
+or `PYPI_TOKEN` secret).
 
-## Hook exit-code contract
+Bump `version` in `pyproject.toml` and `src/tenuo_claude_code/__init__.py`, then tag.
 
-`doctor` runs a live Claude Code harness check when the `claude` binary is on
-`PATH` (see `check_claude_hook_exit_contract()`). The hook writes a marker file
-before exiting so doctor can tell "hook never ran" from "exit 2 didn't block."
-Use `doctor --no-live` in automation. Re-run after Claude Code upgrades.
+## Reference demo
+
+Presentation runbook and sample fixtures: [demo/](demo/).

@@ -30,14 +30,14 @@ jobs:
 
       - name: Verify package metadata
         run: |
-          uv run python -c "from tenuo_claude_code import __version__; assert __version__ == '0.1.1'"
+          uv run python -c "from tenuo_claude_code import __version__; assert __version__ == '0.1.2'"
 
       - name: Smoke test init in temp project
         run: |
           tmp=$(mktemp -d)
-          cp tenuo.yaml "$tmp/"
-          mkdir -p "$tmp/sandbox"
-          touch "$tmp/sandbox/notes.txt"
+          cp tenuo.yaml.example "$tmp/tenuo.yaml"
+          mkdir -p "$tmp/workspace"
+          touch "$tmp/workspace/notes.txt"
           TENUO_PROJECT_DIR="$tmp" uv run tenuo-claude init
           test -f "$tmp/.state/warrant.b64"
           test -f "$tmp/.state/gateway.yaml"

@@ -13,6 +13,7 @@ Install: ``pip install tenuo-claude-code``  (command: ``tenuo-claude``)
     tenuo-claude status    # warrant / authorizer / Cloud / policy summary
     tenuo-claude check     # preflight: deps, credentials, wiring drift
     tenuo-claude doctor    # self-test enforcement without Claude
+    tenuo-claude bench     # per-tool-call overhead (authorizer + hooks)
 
 Internal entrypoints (wired into Claude, not called by hand):
     _hook  _post  _mcp-proxy
@@ -28,6 +29,7 @@ import json
 import os
 import shlex
 import shutil
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -354,7 +356,8 @@ def refresh_subwarrants(cfg: dict) -> None:
         child = builder.delegate(holder)
         # Persist the full chain (parent..child): a delegated warrant must be
         # presented as a WarrantStack so the authorizer can verify to the root.
-        subwarrant_path(role).write_text(encode_warrant_stack([parent, child]))
+        write_secret(subwarrant_path(role),
+                     encode_warrant_stack([parent, child]))
 
 
 def _parse_env_value(raw: str) -> str:
@@ -800,7 +803,7 @@ def authorize_call(cfg: dict, tool: str, tin: dict, agent_type, roles: dict,
 def write_receipt(entry: dict) -> None:
     global _receipt_write_warned
     try:
-        STATE.mkdir(parents=True, exist_ok=True)
+        ensure_state_dir()
         entry["ts"] = datetime.now(timezone.utc).isoformat()
         with RECEIPTS.open("a") as fh:
             fh.write(json.dumps(entry) + "\n")
@@ -1016,6 +1019,7 @@ def write_gateway(cfg: dict, enforced_caps: dict) -> None:
                        "pop_header": POP_HEADER, "clock_tolerance_secs": 30},
           "tools": tools, "routes": routes}
     GATEWAY.write_text(yaml.safe_dump(gw, sort_keys=False))
+    sync_authorizer_mount()
 
 
 def mint_local_warrant(cfg: dict, issuer, holder):
@@ -1050,7 +1054,7 @@ def remint_session(cfg: dict) -> str:
     issuer = SigningKey.from_bytes(base64.b64decode(ISSUER_KEY.read_text()))
     holder = SigningKey.from_bytes(base64.b64decode(HOLDER_KEY.read_text()))
     warrant = mint_local_warrant(cfg, issuer, holder)
-    WARRANT.write_text(warrant.to_base64())
+    write_secret(WARRANT, warrant.to_base64())
     update_state_warrant_id(warrant.id)
     return warrant.id
 
@@ -1092,6 +1096,7 @@ def refresh_policy(cfg: dict | None = None) -> str:
         raise SystemExit("Run `tenuo-claude init` first.")
 
     refresh_subwarrants(cfg)
+    harden_state_permissions()
     return wid
 
 
@@ -1120,10 +1125,96 @@ def write_claude_wiring(cfg: dict) -> None:
         mcp_path.unlink()
 
 
+def ensure_state_dir() -> None:
+    """Create .state as an owner-only (0700) directory, tightening it even if it
+    already exists. It holds the holder/issuer signing keys and cloud
+    credentials, so it must not be group/world-readable."""
+    STATE.mkdir(parents=True, exist_ok=True)
+    try:
+        STATE.chmod(0o700)
+    except OSError:
+        pass
+
+
+def write_secret(path, text: str) -> None:
+    """Write a secret file (private key, cloud credential) as owner-only 0600.
+
+    Mirrors write_admin_env's handling. The holder key signs every PoP — leaving
+    it world-readable (the default 0644) lets any local user mint authorizations
+    against the warrant, so secrets are never written at the default mode."""
+    path.write_text(text)
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def _secret_paths() -> list[Path]:
+    """Paths under .state that must be owner-only (0600)."""
+    paths: list[Path] = []
+    for name in ("holder_key.b64", "issuer_key.b64", "cloud.env", "warrant.b64"):
+        p = STATE / name
+        if p.exists():
+            paths.append(p)
+    paths.extend(STATE.glob("subwarrant_*.b64"))
+    paths.extend(STATE.glob("cloud*.env"))
+    return paths
+
+
+def harden_state_permissions() -> None:
+    """Tighten .state to 0700 and secret files to 0600 (idempotent)."""
+    ensure_state_dir()
+    for path in _secret_paths():
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+
+
+def check_state_permissions() -> tuple[bool, list[str]]:
+    """Return (ok, issues) for .state and secret file modes."""
+    issues: list[str] = []
+    if not STATE.exists():
+        return True, issues
+    mode = STATE.stat().st_mode & 0o777
+    if mode != 0o700:
+        issues.append(f".state is {oct(mode)} (want 0o700)")
+    for path in _secret_paths():
+        fmode = path.stat().st_mode & 0o777
+        if fmode != 0o600:
+            issues.append(f"{path.name} is {oct(fmode)} (want 0o600)")
+    return not issues, issues
+
+
+def authorizer_mount_dir() -> Path:
+    """Host directory mounted into the authorizer container (gateway + SRL only)."""
+    return STATE / "authorizer"
+
+
+def sync_authorizer_mount() -> None:
+    """Stage gateway (+ optional SRL) for Docker. Private keys stay on the host."""
+    import shutil
+
+    ensure_state_dir()
+    mount = authorizer_mount_dir()
+    mount.mkdir(exist_ok=True)
+    try:
+        mount.chmod(0o700)
+    except OSError:
+        pass
+    if not GATEWAY.exists():
+        return
+    shutil.copy2(GATEWAY, mount / GATEWAY.name)
+    srl_dest = mount / SRL.name
+    if SRL.exists():
+        shutil.copy2(SRL, srl_dest)
+    elif srl_dest.exists():
+        srl_dest.unlink()
+
 def generate(cfg: dict) -> dict:
     from tenuo import SigningKey
 
-    STATE.mkdir(parents=True, exist_ok=True)
+    ensure_state_dir()
     sandbox = cfg["_sandbox_abs"]
     Path(sandbox).mkdir(parents=True, exist_ok=True)
 
@@ -1136,12 +1227,12 @@ def generate(cfg: dict) -> dict:
         holder = SigningKey.from_bytes(base64.b64decode(HOLDER_KEY.read_text()))
     else:
         holder = SigningKey.generate()
-        HOLDER_KEY.write_text(base64.b64encode(bytes(holder.secret_key_bytes())).decode())
+        write_secret(HOLDER_KEY, base64.b64encode(bytes(holder.secret_key_bytes())).decode())
     warrant = mint_local_warrant(cfg, issuer, holder)
 
-    ISSUER_KEY.write_text(base64.b64encode(bytes(issuer.secret_key_bytes())).decode())
+    write_secret(ISSUER_KEY, base64.b64encode(bytes(issuer.secret_key_bytes())).decode())
     ISSUER_PUB.write_text(issuer.public_key.to_bytes().hex())
-    WARRANT.write_text(warrant.to_base64())
+    write_secret(WARRANT, warrant.to_base64())
 
     write_gateway(cfg, enforced_capabilities(cfg))
 
@@ -1151,6 +1242,7 @@ def generate(cfg: dict) -> dict:
         "authorizer_url": AUTHZ_URL}, indent=2))
 
     write_claude_wiring(cfg)
+    harden_state_permissions()
     return {"warrant_id": warrant.id, "issuer_pub": issuer.public_key.to_bytes().hex(),
             "sandbox": sandbox}
 
@@ -1304,12 +1396,14 @@ def probe_runtime_creds(creds: dict) -> tuple[bool, str]:
 
 
 def write_cloud_env(connect_token: str, authorizer_name: str | None = None) -> None:
-    STATE.mkdir(parents=True, exist_ok=True)
+    ensure_state_dir()
     cfg = load_config() if CONFIG_FILE.exists() else {}
     name = authorizer_name or cfg.get("name", "claude-code-demo")
     # Validate before writing.
     _parse_connect_token(connect_token.strip())
-    CLOUD_ENV.write_text(
+    # 0600: holds the runtime connect token (authorizer bearer key).
+    write_secret(
+        CLOUD_ENV,
         "# Written by tenuo-claude onboard — edit as needed.\n"
         f'export TENUO_CONNECT_TOKEN="{connect_token.strip()}"\n'
         f'export TENUO_AUTHORIZER_NAME="{name}"\n'
@@ -1482,6 +1576,13 @@ def cmd_check(_args) -> None:
             ok = _check_line(False, "policy load", str(exc)) and ok
 
     ok = _check_wiring(cfg, ok)
+
+    if STATE.exists():
+        perm_ok, perm_issues = check_state_permissions()
+        ok = _check_line(
+            perm_ok, "secret permissions",
+            "ok" if perm_ok else "; ".join(perm_issues),
+            "" if perm_ok else "run: tenuo-claude refresh") and ok
 
     mode = intended_mode(cfg)
     files = cloud_mode_files()
@@ -1732,7 +1833,7 @@ def warrant_expired() -> bool:
 
 
 def _record_fired_warrant(warrant_b64: str) -> None:
-    WARRANT.write_text(warrant_b64)
+    write_secret(WARRANT, warrant_b64)
     try:
         from tenuo import Warrant
         update_state_warrant_id(Warrant.from_base64(warrant_b64).id)
@@ -1805,14 +1906,16 @@ def cmd_up(_args) -> None:
     if roles:
         print(f"Subagent warrants: {', '.join(roles)} (attenuated from the session).")
 
-    # Launch the authorizer container. .state is mounted read-only so it can read
-    # the gateway config (+ local SRL); only loopback is published on the host.
+    # Launch the authorizer container. Mount only gateway (+ optional SRL), not
+    # holder/issuer keys or cloud credentials. Only loopback is published.
     image, name = authorizer_image(cfg), container_name(cfg)
     docker("rm", "-f", name)  # clear any stale container of the same name
+    sync_authorizer_mount()
+    mount = authorizer_mount_dir()
     if SRL.exists() and not cloud:
         denv["TENUO_REVOCATION_LIST"] = f"/state/{SRL.name}"
     run = ["run", "-d", "--name", name, "-p", f"127.0.0.1:{PORT}:9090",
-           "-v", f"{STATE.resolve()}:/state:ro"]
+           "-v", f"{mount.resolve()}:/state:ro"]
     for k, v in denv.items():
         run += ["-e", f"{k}={v}"]
     serve = ["serve", "--config", f"/state/{GATEWAY.name}", "--port", "9090", "--bind", "0.0.0.0"]
@@ -2149,6 +2252,145 @@ def cmd_doctor(args) -> None:
     raise SystemExit(0 if ok else 1)
 
 
+def _bench_percentile(sorted_ms: list[float], pct: float) -> float:
+    if not sorted_ms:
+        return 0.0
+    idx = min(len(sorted_ms) - 1, max(0, int(len(sorted_ms) * pct / 100)))
+    return sorted_ms[idx]
+
+
+def _bench_summary(samples_ms: list[float]) -> dict:
+    if not samples_ms:
+        return {"n": 0, "min": 0.0, "p50": 0.0, "p95": 0.0, "max": 0.0}
+    ordered = sorted(samples_ms)
+    return {
+        "n": len(ordered),
+        "min": ordered[0],
+        "p50": statistics.median(ordered),
+        "p95": _bench_percentile(ordered, 95),
+        "max": ordered[-1],
+    }
+
+
+def _bench_run(label: str, fn, *, iterations: int, warmup: int) -> dict:
+    for _ in range(warmup):
+        fn()
+    samples = []
+    for _ in range(iterations):
+        t0 = time.perf_counter()
+        fn()
+        samples.append((time.perf_counter() - t0) * 1000)
+    return {"label": label, **_bench_summary(samples)}
+
+
+def _bench_pop_sign_ms(tenuo_tool: str, sign_args: dict, warrant_b64: str | None = None) -> None:
+    from tenuo import SigningKey
+    from tenuo_core import decode_warrant_stack_base64
+
+    holder = SigningKey.from_bytes(base64.b64decode(HOLDER_KEY.read_text()))
+    header_b64 = warrant_b64 if warrant_b64 is not None else WARRANT.read_text()
+    leaf = decode_warrant_stack_base64(header_b64)[-1]
+    leaf.sign(holder, tenuo_tool, sign_args, int(time.time()))
+
+
+def cmd_bench(args) -> None:
+    """Measure per-tool-call overhead (PoP sign, authorizer RTT, hook path)."""
+    if not _status_json():
+        raise SystemExit("Authorizer not running. Run `tenuo-claude up` first.")
+    cfg = load_config()
+    sb = cfg["_sandbox_abs"]
+    roles = subagent_roles(cfg)
+    iterations = max(1, int(getattr(args, "iterations", 100)))
+    warmup = max(0, int(getattr(args, "warmup", 10)))
+    include_hook = not getattr(args, "no_hook", False)
+
+    read_args = {"file_path": f"{sb}/notes.txt"}
+    read_sign = {"path": os.path.realpath(os.path.abspath(read_args["file_path"]))}
+    bash_args = {"command": "ls -la"}
+    bash_sign = {"command": "ls -la"}
+
+    scenarios: list[tuple[str, object]] = [
+        ("PoP sign (session warrant)", lambda: _bench_pop_sign_ms("read_file", read_sign)),
+        ("Authorizer /verify/read_file (allow)", lambda: authorize(
+            "read_file", "/verify/read_file", read_sign, read_sign)),
+        ("authorize_call Read (allow)", lambda: authorize_call(
+            cfg, "Read", read_args, None, roles)),
+        ("authorize_call Bash (allow)", lambda: authorize_call(
+            cfg, "Bash", bash_args, None, roles)),
+        ("authorize_call WebSearch (audit-allow)", lambda: authorize_call(
+            cfg, "WebSearch", {"query": "bench"}, None, roles)),
+    ]
+    if roles:
+        role = next(iter(roles))
+        sw = subwarrant_path(role)
+        if sw.exists():
+            scenarios.insert(1, (
+                f"PoP sign (subagent:{role})",
+                lambda r=role, s=sw.read_text(): _bench_pop_sign_ms(
+                    "read_file", read_sign, warrant_b64=s)))
+            scenarios.append((
+                f"authorize_call Read (subagent:{role})",
+                lambda r=role: authorize_call(
+                    cfg, "Read", read_args, r, roles)))
+
+    results = [_bench_run(label, fn, iterations=iterations, warmup=warmup)
+               for label, fn in scenarios]
+
+    if include_hook:
+        hook_event = json.dumps({
+            "tool_name": "Read",
+            "tool_input": read_args,
+        })
+
+        def run_hook_subprocess() -> None:
+            proc = subprocess.run(
+                [str(LAUNCHER), "_hook"],
+                input=hook_event,
+                text=True,
+                capture_output=True,
+                cwd=DEMO_DIR,
+                timeout=30,
+            )
+            if proc.returncode != 0:
+                raise RuntimeError(proc.stderr.strip() or f"hook exit {proc.returncode}")
+
+        results.append(_bench_run(
+            "Hook subprocess (_hook Read)", run_hook_subprocess,
+            iterations=max(5, iterations // 10), warmup=min(warmup, 3)))
+
+    payload = {
+        "iterations": iterations,
+        "warmup": warmup,
+        "authorizer": AUTHZ_URL,
+        "mode": cfg.get("mode", "enforce"),
+        "subagents": bool(roles),
+        "results": results,
+    }
+
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2))
+        return
+
+    print(f"Tenuo overhead bench  (iterations={iterations}, warmup={warmup})")
+    print(f"  authorizer : {AUTHZ_URL}")
+    print(f"  mode       : {cfg.get('mode', 'enforce')}"
+          f"{'  subagents: yes' if roles else ''}")
+    print()
+    print(f"{'Scenario':<42} {'p50':>8} {'p95':>8} {'max':>8}")
+    print("-" * 68)
+    for row in results:
+        print(f"{row['label']:<42} {row['p50']:7.2f}ms {row['p95']:7.2f}ms {row['max']:7.2f}ms")
+    print()
+    print("Notes:")
+    print("  • PoP sign = local Ed25519 + warrant decode (no network).")
+    print("  • Authorizer row = sign + HTTP round-trip to localhost.")
+    print("  • authorize_call = route resolution + authorizer (typical hook core).")
+    if include_hook:
+        print("  • Hook subprocess = full PreToolUse path incl. Python cold start per call.")
+    print("  • Compare p50 on a quiet machine; authorizer RTT dominates on hot paths.")
+    print("  • Core chain-verify microbenches: tenuo-core `cargo bench --bench warrant_benchmarks`.")
+
+
 def cmd_init(args) -> None:
     if getattr(args, "local", False):
         moved = disable_cloud_artifacts()
@@ -2215,7 +2457,7 @@ def cmd_refresh(args) -> None:
 COMMANDS = {
     "init": cmd_init, "refresh": cmd_refresh, "up": cmd_up, "down": cmd_down, "status": cmd_status,
     "check": cmd_check, "onboard": cmd_onboard, "bootstrap": cmd_bootstrap,
-    "audit": cmd_audit, "revoke": cmd_revoke, "doctor": cmd_doctor,
+    "audit": cmd_audit, "revoke": cmd_revoke, "doctor": cmd_doctor, "bench": cmd_bench,
     "_hook": cmd_hook, "_post": cmd_post, "_mcp-proxy": cmd_mcp_proxy,
 }
 
@@ -2260,6 +2502,13 @@ def main() -> None:
     pd = sub.add_parser("doctor")
     pd.add_argument("--no-live", action="store_true",
                     help="skip live Claude Code PreToolUse exit-code harness")
+    pbench = sub.add_parser("bench", help="measure per-tool-call overhead (authorizer RTT, hook path)")
+    pbench.add_argument("--iterations", type=int, default=100,
+                        help="timed iterations per scenario (default: 100)")
+    pbench.add_argument("--warmup", type=int, default=10, help="warmup iterations (default: 10)")
+    pbench.add_argument("--no-hook", action="store_true",
+                        help="skip subprocess _hook benchmark (faster)")
+    pbench.add_argument("--json", action="store_true", help="machine-readable output")
     pa = sub.add_parser("audit")
     pa.add_argument("--tail", type=int, default=None)
     args = parser.parse_args()

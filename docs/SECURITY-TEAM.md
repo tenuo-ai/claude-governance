@@ -58,12 +58,15 @@ authorizer and stream to Cloud when connected.
 
 ## Rollout path
 
-1. **Local eval** — `init` / `up` / `doctor` / `tenuo_demo.py` (this repo).
-2. **Observe-only** — `mode: audit` in `tenuo.yaml`: real allow/deny computed and
-   receipted; hook emits **no** decision, so Claude's stock prompts are not weakened.
+1. **Local eval:** `init` / `up` / `doctor` / `tenuo_demo.py` (this repo).
+2. **Observe-only:** `mode: audit` in `tenuo.yaml`: real allow/deny computed and
+   receipted; hook emits no decision, so Claude's stock prompts are not weakened.
    Review `WOULD-DENY` rows, tune policy, then enforce.
-3. **Fleet enforce** — managed settings (hook cannot be removed by users) + Cloud
-   root-signed warrants + MDM-deployed `tenuo.yaml` per team or golden image.
+3. **Fleet enforce:** managed settings (hook cannot be removed by users), Cloud
+   root-signed warrants, MDM-deployed `tenuo.yaml` per team or golden image.
+
+Run `tenuo-claude bench` on a sample machine to capture hook and authorizer latency.
+Full fleet MDM templates: [tenuo.ai](https://tenuo.ai).
 
 ## Honest scope
 
@@ -78,5 +81,16 @@ mv tenuo.yaml tenuo.yaml.bak
 # every tool call denied: Tenuo hook error (fail-closed): Missing …/tenuo.yaml
 mv tenuo.yaml.bak tenuo.yaml
 ```
+
+## Local secrets (`.state/`)
+
+Private keys (`holder_key.b64`, `issuer_key.b64`), Cloud runtime credentials
+(`cloud.env`), and capability tokens (`warrant.b64`, `subwarrant_*.b64`) must be
+owner-only (`0600`) inside a `0700` directory. `tenuo-claude init`, `refresh`, and
+`check` enforce this.
+
+The authorizer Docker container mounts only `.state/authorizer/` (gateway config and
+optional local SRL). It does not receive holder, issuer, or cloud credential files.
+PoP signing stays on the host in the Claude hook.
 
 Misconfiguration denies everything; it does not fail open.

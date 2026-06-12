@@ -460,14 +460,26 @@ mcp:
 | `up` / `down` | Start / stop authorizer |
 | `status` | Warrant, posture, Cloud summary |
 | `doctor [--no-live]` | Self-test allow/deny |
+| `bench [--json]` | Per-tool-call overhead (PoP sign, authorizer RTT, hook) |
 | `audit [--tail N]` | Receipt trail |
 | `revoke` | Revoke session warrant |
+
+## Performance
+
+After `tenuo-claude up`, run `tenuo-claude bench`. On a typical laptop:
+
+- PoP signing plus authorizer round-trip: about 1 to 3 ms per governed call
+- Command hooks (PreToolUse and PostToolUse): about 100 to 200 ms per invocation, mostly Python process startup
+
+Crypto is not the bottleneck. Use `bench --json` for machine-readable output. For chain verification microbenches, see `tenuo-core` in the main Tenuo repo (`cargo bench --bench warrant_benchmarks`).
+
+This repo defaults to command hooks because the wiring is portable. Lower hook latency at fleet scale (HTTP hook API, co-located with the authorizer) is available through [tenuo.ai](https://tenuo.ai) fleet packaging.
 
 ## Enterprise deployment
 
 Ship the **whole directory** (or an internal package) to a fixed path, e.g.
 `/opt/tenuo/claude-governance`. Governance wiring uses the committed launcher
-`bin/tenuo-claude` — no machine-specific Python paths in `.mcp.json`.
+`bin/tenuo-claude`. No machine-specific Python paths in `.mcp.json`.
 
 ### Install layout
 
@@ -493,6 +505,23 @@ On each machine: `uv sync` (or `pip install tenuo-claude-code`), `tenuo-claude i
 `tenuo-claude up`. After policy changes: `tenuo-claude refresh`. Preflight:
 `tenuo-claude check` (validates launcher, hook/MCP wiring drift, authorizer).
 
+### Fleet checklist
+
+Platform prep:
+
+1. Fixed install path (e.g. `/opt/tenuo/claude-governance`) or internal PyPI mirror for `tenuo-claude-code`
+2. Team `tenuo.yaml` in git
+3. One-time Cloud tenant setup: `tenuo-admin setup` for triggers and approval policies
+4. MDM or golden image: Python 3.10+, Docker, Claude Code, Tenuo CLI
+5. Managed settings: PreToolUse and PostToolUse hooks (PostToolUse records tool outcomes in the receipt trail)
+6. Managed MCP for `tenuo-files`, or `allowedMcpServers` in managed settings; never point MCP at the downstream server
+7. Per machine: Quick Connect in `.state/cloud.env`, then `tenuo-claude init` and `tenuo-claude up`
+8. Preflight: `tenuo-claude check` and `tenuo-claude doctor`
+9. Policy edits: `tenuo-claude refresh`; Cloud capability changes also need `tenuo-admin setup`
+10. Posture: `mode: audit` first, review receipts, then `mode: enforce`
+
+MDM templates, multi-team policy layout, and optimized hook deployment: [tenuo.ai](https://tenuo.ai).
+
 ### Managed settings (hooks)
 
 Hooks override project `.claude/settings.json` when deployed via managed settings
@@ -510,7 +539,7 @@ Hooks override project `.claude/settings.json` when deployed via managed setting
 
 ### MCP (structural enforcement)
 
-Project `.mcp.json` is checked into git and uses a **relative** launcher — Claude
+Project `.mcp.json` is checked into git and uses a **relative** launcher. Claude
 starts MCP from the project root:
 
 ```json
@@ -525,23 +554,23 @@ starts MCP from the project root:
 ```
 
 For fleets that block project MCP config, mirror the same server in managed MCP
-policy (same command/args, or absolute path to `bin/tenuo-claude`). **Do not** point
-`.mcp.json` at the downstream server — that bypasses the proxy if the hook fails.
+policy (same command/args, or absolute path to `bin/tenuo-claude`). Do not point
+`.mcp.json` at the downstream server; that bypasses the proxy if the hook fails.
 
 **Scope precedence:** local / managed MCP entries with the same server name override
 project `.mcp.json`. Standardize on the `tenuo-files` name or enforce via
 `allowedMcpServers` in managed settings.
 
 Deploy with MDM alongside the CLI and `tenuo.yaml`. Governance covers agent tool
-calls, not interactive `!` shell — restrict that at the workstation if needed.
+calls, not interactive `!` shell in the Claude Code TUI. Restrict that at the workstation if needed.
 
 ## Rolling out
 
-1. **Local eval** — [Setup → Local mode](#local-mode): `init`, `up`, `doctor`, `tenuo_demo.py`.
-2. **Observe-only** — `mode: audit`: compute and receipt real allow/deny without
-   blocking. The hook emits **no** permission decision, so observe-only never weakens
+1. **Local eval:** [Setup → Local mode](#local-mode): `init`, `up`, `doctor`, `tenuo_demo.py`.
+2. **Observe-only:** `mode: audit` computes and receipts real allow/deny without
+   blocking. The hook emits no permission decision, so audit mode does not weaken
    Claude's stock prompts. Tune on `WOULD-DENY` rows, then set `mode: enforce`.
-3. **Fleet enforce** — managed settings + Cloud root-signed warrants + team policy in
+3. **Fleet enforce:** managed settings, Cloud root-signed warrants, team policy in
    `tenuo.yaml`.
 
 Send security reviewers [docs/SECURITY-TEAM.md](docs/SECURITY-TEAM.md). Mechanics:

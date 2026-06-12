@@ -183,7 +183,10 @@ proxy. Every call produces a signed receipt:
 - **Audit-allowed** harness tools: logged, not blocked.
 - **Default-deny** for everything else.
 
-Subagent calls carry `agent_type`; the hook enforces the child warrant.
+Subagent calls carry `agent_type`; the hook enforces the child warrant when present.
+Spawn is cryptographically gated. In-subagent cap selection depends on Claude Code
+populating `agent_type` (see [SECURITY-TEAM.md](SECURITY-TEAM.md)). Measure overhead
+with `tenuo-claude bench`.
 
 In audit mode denials are recorded as `WOULD-DENY` without blocking.
 

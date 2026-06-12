@@ -357,9 +357,9 @@ def cmd_setup(_args) -> None:
 
     # Holder keypair (reuse init's holder key so PoP matches the claimed key).
     if not tc.HOLDER_KEY.exists():
-        tc.STATE.mkdir(parents=True, exist_ok=True)
+        tc.ensure_state_dir()
         holder = SigningKey.generate()
-        tc.HOLDER_KEY.write_text(base64.b64encode(bytes(holder.secret_key_bytes())).decode())
+        tc.write_secret(tc.HOLDER_KEY, base64.b64encode(bytes(holder.secret_key_bytes())).decode())
     else:
         holder = SigningKey.from_bytes(base64.b64decode(tc.HOLDER_KEY.read_text()))
     holder_hex = holder.public_key.to_bytes().hex()
@@ -516,7 +516,7 @@ def cmd_setup(_args) -> None:
 
     # 5) Real fire (authorizer key) — and discover the runtime SA from the warrant.
     warrant_b64, root = tc.fire_session_warrant(cfg, creds)
-    tc.WARRANT.write_text(warrant_b64)
+    tc.write_secret(tc.WARRANT, warrant_b64)
     sa = None
     try:
         from tenuo import Warrant

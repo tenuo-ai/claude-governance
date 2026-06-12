@@ -38,7 +38,7 @@ jobs:
       - name: Smoke test init in temp project
         run: |
           tmp=$(mktemp -d)
-          cp tenuo.yaml.example "$tmp/tenuo.yaml"
+          cp templates/tenuo.yaml.example "$tmp/tenuo.yaml"
           mkdir -p "$tmp/workspace"
           touch "$tmp/workspace/notes.txt"
           TENUO_PROJECT_DIR="$tmp" uv run tenuo-claude init
@@ -84,7 +84,7 @@ jobs:
         run: |
           proj="$RUNNER_TEMP/governed"
           mkdir -p "$proj/workspace"
-          cp tenuo.yaml.example "$proj/tenuo.yaml"
+          cp templates/tenuo.yaml.example "$proj/tenuo.yaml"
           echo "TENUO_PROJECT_DIR=$proj" >> "$GITHUB_ENV"
 
       - name: init (mint local warrant + wire hooks)

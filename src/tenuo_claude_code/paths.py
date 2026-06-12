@@ -53,13 +53,14 @@ def harness_tools_file() -> Path:
 
 
 def template_file(name: str, project_root: Path | None = None) -> Path:
-    """Locate a shipped template (project dir, then parent for git checkout layouts)."""
+    """Locate a shipped template (project dir, ``templates/``, or repo parent)."""
     root = project_root or find_project_root()
     for directory in (root, root.parent):
-        candidate = directory / name
-        if candidate.is_file():
-            return candidate
-    return root / name
+        for sub in ("", "templates"):
+            candidate = directory / sub / name if sub else directory / name
+            if candidate.is_file():
+                return candidate
+    return root / "templates" / name
 
 
 def bind_project_paths(module) -> None:

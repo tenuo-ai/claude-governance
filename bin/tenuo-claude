@@ -18,8 +18,8 @@ run_python() {
   if python3 -c "import tenuo_claude_code" 2>/dev/null; then
     exec "$py" -m tenuo_claude_code.cli "$@"
   fi
-  if [[ -f "$ROOT/tenuo_claude.py" ]]; then
-    exec "$py" "$ROOT/tenuo_claude.py" "$@"
+  if [[ -f "$ROOT/scripts/tenuo_claude.py" ]]; then
+    exec "$py" "$ROOT/scripts/tenuo_claude.py" "$@"
   fi
   exec "$py" -m tenuo_claude_code.cli "$@"
 }

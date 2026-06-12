@@ -27,9 +27,9 @@ Open Claude Code in `demo/` (where `tenuo.yaml` lives).
 | `fake-secrets.env` | Sample out-of-scope credentials file (fake values) |
 | `.claude/agents/researcher.md` | Subagent used in spawn-gate examples |
 
-Cloud and policy overlay templates (`tenuo.yaml.cloud.example`,
-`tenuo.yaml.advanced.example`, `cloud.env.example`) are at the repo root; `init --cloud`
-finds `cloud.env.example` in the project directory or one level up.
+Cloud and policy overlay templates live in [`templates/`](../templates/) (`tenuo.yaml.cloud.example`,
+`tenuo.yaml.advanced.example`, `cloud.env.example`). `init --cloud` finds `cloud.env.example`
+in the project directory, `templates/`, or one level up.
 
 ## Live Claude examples
 

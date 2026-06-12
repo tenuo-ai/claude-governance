@@ -47,7 +47,7 @@ under `/Users/` or `C:\`.
 | `src/tenuo_claude_code/verify.py` | Policy-driven authorizer self-test |
 | `src/tenuo_claude_code/data/harness_tools.yaml` | Bundled audit-allow tool list |
 
-Root `tenuo_claude.py` / `tenuo_admin.py` are thin shims; prefer `tenuo-claude` on PATH.
+Root `scripts/tenuo_claude.py` / `scripts/tenuo_admin.py` are thin shims; prefer `tenuo-claude` on PATH.
 
 When Claude Code adds new inert harness tools, append them to
 `src/tenuo_claude_code/data/harness_tools.yaml` and run `verify`.

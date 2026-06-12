@@ -11,7 +11,7 @@ then tune sandbox paths, domains, and tool lists.
 | [enforce-with-mcp.yaml](enforce-with-mcp.yaml) | Sandbox + inert Bash + scoped MCP tools |
 | [audit-rollout.yaml](audit-rollout.yaml) | Observe-only rollout (`mode: audit`) before enforce |
 
-Minimal starter (no subagents/MCP): [tenuo.yaml.example](../../tenuo.yaml.example) at repo root.
+Minimal starter (no subagents/MCP): [tenuo.yaml.example](../../templates/tenuo.yaml.example).
 
 Full reference project with tour fixtures: [demo/](../../demo/).
 

@@ -7,7 +7,7 @@ PyPI package: [`tenuo-claude-code`](https://pypi.org/project/tenuo-claude-code/)
 [![CI](https://github.com/tenuo-ai/claude-governance/actions/workflows/ci.yml/badge.svg)](https://github.com/tenuo-ai/claude-governance/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-**Keep your AI coding agent inside the lines.** Tenuo governs every path Claude Code uses to act on your machine.
+**Keep your AI coding agent inside the lines.** Tenuo governs every tool call Claude Code makes: native tools, MCP, and subagent spawns, on one laptop or across a Cloud-connected fleet.
 
 **Native tools** (Read, Bash, WebFetch, and the rest) go through a PreToolUse hook. **MCP tools** go through a proxy you wire in place of the downstream server. Both paths hit the same authorizer before anything runs.
 

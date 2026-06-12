@@ -33,7 +33,7 @@ jobs:
 
       - name: Verify package metadata
         run: |
-          uv run python -c "from tenuo_claude_code import __version__; assert __version__ == '0.1.2'"
+          uv run python -c "from tenuo_claude_code import __version__; assert __version__ == '0.1.3'"
 
       - name: Smoke test init in temp project
         run: |

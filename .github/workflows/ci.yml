@@ -56,10 +56,9 @@ jobs:
   enforcement:
     name: Enforcement self-test (live authorizer)
     runs-on: ubuntu-latest
-    # Proves the leash actually holds end to end: mints a local warrant, starts
-    # the authorizer container, and runs `verify` (out-of-scope reads denied,
-    # shell chaining blocked, unlisted tools default-denied). Needs Docker (on
-    # ubuntu-latest) and the public tenuo/authorizer image.
+    # Proves the leash end to end: mints a local warrant, starts the native
+    # tenuo-authorizer binary (from the tenuo core crate on crates.io), and runs
+    # `verify`. No Docker required.
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -71,6 +70,16 @@ jobs:
       - name: Sync dependencies
         run: uv sync --frozen
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
+        with:
+          toolchain: stable
+
+      - name: Install tenuo-authorizer (managed install)
+        run: |
+          uv run tenuo-claude install-authorizer
+          echo "$HOME/.tenuo/bin" >> "$GITHUB_PATH"
+
       - name: Set up a local-mode project
         run: |
           proj="$RUNNER_TEMP/governed"
@@ -81,8 +90,8 @@ jobs:
       - name: init (mint local warrant + wire hooks)
         run: uv run tenuo-claude init
 
-      - name: up (start authorizer container, local issuer)
-        run: uv run tenuo-claude up
+      - name: up (native authorizer, local issuer)
+        run: uv run tenuo-claude up --native
 
       - name: verify (policy self-test against the live authorizer)
         run: uv run tenuo-claude verify
@@ -92,8 +101,6 @@ jobs:
         run: |
           echo "=== authorizer.log ==="
           cat "$TENUO_PROJECT_DIR/.state/authorizer.log" 2>/dev/null || true
-          echo "=== docker ps -a ==="
-          docker ps -a || true
 
       - name: down (stop authorizer)
         if: always()

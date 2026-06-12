@@ -49,14 +49,17 @@ def find_project_root(start: Path | None = None) -> Path:
 
 def harness_tools_file() -> Path:
     """Bundled harness tool list (package data)."""
-    bundled = PACKAGE_DIR / "data" / "harness_tools.yaml"
-    if bundled.is_file():
-        return bundled
-    # Editable install from demo repo: fall back to repo-root copy if present.
-    legacy = PACKAGE_DIR.parent.parent / "harness_tools.yaml"
-    if legacy.is_file():
-        return legacy
-    return bundled
+    return PACKAGE_DIR / "data" / "harness_tools.yaml"
+
+
+def template_file(name: str, project_root: Path | None = None) -> Path:
+    """Locate a shipped template (project dir, then parent for git checkout layouts)."""
+    root = project_root or find_project_root()
+    for directory in (root, root.parent):
+        candidate = directory / name
+        if candidate.is_file():
+            return candidate
+    return root / name
 
 
 def bind_project_paths(module) -> None:
@@ -67,7 +70,7 @@ def bind_project_paths(module) -> None:
     module.CONFIG_FILE = root / "tenuo.yaml"
     module.CLOUD_PROFILE = root / "tenuo.cloud.yaml"
     module.ADVANCED_PROFILE = root / "tenuo.advanced.yaml"
-    module.CLOUD_ENV_EXAMPLE = root / "cloud.env.example"
+    module.CLOUD_ENV_EXAMPLE = template_file("cloud.env.example", root)
     module.LAUNCHER = root / "bin" / BIN_LAUNCHER
     module.LAUNCHER_REL = f"./bin/{BIN_LAUNCHER}"
     module.HARNESS_TOOLS_FILE = harness_tools_file()

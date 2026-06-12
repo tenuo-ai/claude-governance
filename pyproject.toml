@@ -52,3 +52,11 @@ include = ["src/tenuo_claude_code", "README.md", "LICENSE"]
 
 [tool.uv]
 package = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+# Unit tests cover the pure decision logic (routing, constraints, approval
+# encoding, subagent attenuation, secret file modes) — no Docker, no authorizer,
+# no network. Run: `uv run --with pytest pytest`. The live enforcement self-test
+# is `tenuo-claude verify` (needs the authorizer container).

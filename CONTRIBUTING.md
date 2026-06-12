@@ -18,7 +18,8 @@ Re-run `init` or `refresh` after switching Python venvs (hooks pin `sys.executab
 
 1. Fork and branch from `main`.
 2. Keep changes focused; match existing style in `src/tenuo_claude_code/`.
-3. Run `cd demo && tenuo-claude verify` if you touch enforcement or policy wiring.
+3. Run `uv run --with pytest pytest` (fast unit tests, no Docker). If you touch enforcement
+   or policy wiring, also run `cd demo && tenuo-claude verify` (live authorizer).
 4. Do not commit `.state/`, real API keys, or home-directory paths.
 
 Security issues: see [SECURITY.md](SECURITY.md). No public issues for vulnerabilities.
@@ -31,7 +32,7 @@ Security issues: see [SECURITY.md](SECURITY.md). No public issues for vulnerabil
 | `.claude/settings.json` | Generated hook wiring |
 | `~/.tenuo/admin.env` | Admin key for `tenuo-admin setup` only |
 
-Safe to commit: source, `demo/` (sample policy and fake `prod-credentials.env`),
+Safe to commit: source, `demo/` (sample policy and `fake-secrets.env` decoys),
 examples, and templates (`*.example`).
 
 Before pushing, scan staged diffs for bearer tokens (`tc_…`, `tenuo_ct_…`) and paths

@@ -25,6 +25,9 @@ jobs:
       - name: Sync dependencies
         run: uv sync --frozen
 
+      - name: Unit tests (pure logic — no Docker/authorizer)
+        run: uv run --with pytest pytest
+
       - name: Build sdist and wheel
         run: uv build
 
@@ -49,3 +52,49 @@ jobs:
           name: dist
           path: dist/
           if-no-files-found: error
+
+  enforcement:
+    name: Enforcement self-test (live authorizer)
+    runs-on: ubuntu-latest
+    # Proves the leash actually holds end to end: mints a local warrant, starts
+    # the authorizer container, and runs `verify` (out-of-scope reads denied,
+    # shell chaining blocked, unlisted tools default-denied). Needs Docker (on
+    # ubuntu-latest) and the public tenuo/authorizer image.
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --frozen
+
+      - name: Set up a local-mode project
+        run: |
+          proj="$RUNNER_TEMP/governed"
+          mkdir -p "$proj/workspace"
+          cp tenuo.yaml.example "$proj/tenuo.yaml"
+          echo "TENUO_PROJECT_DIR=$proj" >> "$GITHUB_ENV"
+
+      - name: init (mint local warrant + wire hooks)
+        run: uv run tenuo-claude init
+
+      - name: up (start authorizer container, local issuer)
+        run: uv run tenuo-claude up
+
+      - name: verify (policy self-test against the live authorizer)
+        run: uv run tenuo-claude verify
+
+      - name: Authorizer logs on failure
+        if: failure()
+        run: |
+          echo "=== authorizer.log ==="
+          cat "$TENUO_PROJECT_DIR/.state/authorizer.log" 2>/dev/null || true
+          echo "=== docker ps -a ==="
+          docker ps -a || true
+
+      - name: down (stop authorizer)
+        if: always()
+        run: uv run tenuo-claude down || true

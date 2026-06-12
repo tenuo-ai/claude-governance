@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "tenuo-files": {
-      "command": "./bin/tenuo-claude",
+      "command": "tenuo-claude",
       "args": [
         "_mcp-proxy"
       ]

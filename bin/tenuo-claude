@@ -2,7 +2,7 @@
 # Stable launcher for hooks, MCP proxy, and the tenuo-claude CLI.
 #
 # Resolves Python from TENUO_PYTHON, the project .venv, uv, or python3 on PATH.
-# Reference from .mcp.json and Claude hooks when using the git-clone workflow.
+# Reference from demo/.mcp.json and Claude hooks when using the git-clone workflow.
 set -euo pipefail
 
 if [[ -n "${TENUO_ROOT:-}" ]]; then

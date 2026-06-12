@@ -20,5 +20,5 @@ Code itself, and `tenuo.yaml` policies you maintain locally.
 ## Secrets and `.state/`
 
 Never commit `.state/` (keys, warrants, `cloud.env`) or real credentials. The demo
-includes `demo/prod-credentials.env` with fake values for out-of-scope read tests.
+includes `demo/fake-secrets.env` with fake values for out-of-scope read tests.
 Do not replace those values with real secrets.

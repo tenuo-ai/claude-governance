@@ -1,8 +1,8 @@
 # Reference demo
 
 Sample `tenuo.yaml`, sandbox files, MCP stub, and a scripted tour. For day-to-day
-use on a governed project, follow [Use the tool (PyPI)](../README.md#use-the-tool-pypi)
-in the main README. You do not need this folder.
+setup, see [Use the tool (PyPI)](../README.md#use-the-tool-pypi). This folder is
+the reference demo when working from a git checkout.
 
 ## Quick start
 
@@ -10,7 +10,7 @@ From the repo root (after `uv sync` or `pip install tenuo-claude-code`):
 
 ```bash
 cd demo
-tenuo-claude bootstrap --local    # check → init → up → verify
+tenuo-claude bootstrap           # check → init → up → verify (local by default)
 tenuo-claude demo                 # scripted allow/deny tour
 ```
 
@@ -24,15 +24,20 @@ Open Claude Code in `demo/` (where `tenuo.yaml` lives).
 | `sandbox/` | In-scope files; `incident-report.md` has a hidden injection prompt |
 | `ops_server.py` | MCP downstream (Claude talks to `tenuo-claude _mcp-proxy` instead) |
 | `tenuo_demo.py` | Tour without Claude; `tenuo-claude demo` wraps this |
-| `prod-credentials.env` | Sample out-of-scope credentials file (fake values) |
+| `fake-secrets.env` | Sample out-of-scope credentials file (fake values) |
 | `.claude/agents/researcher.md` | Subagent used in spawn-gate examples |
 
 Cloud and policy overlay templates (`tenuo.yaml.cloud.example`,
-`tenuo.yaml.advanced.example`, `cloud.env.example`) are at the repo root.
+`tenuo.yaml.advanced.example`, `cloud.env.example`) are at the repo root; `init --cloud`
+finds `cloud.env.example` in the project directory or one level up.
 
 ## Live Claude examples
 
 Authorizer must be up (`tenuo-claude up`). Claude Code on PATH.
+
+The shipped `tenuo.yaml` uses `mode: audit` (observe-only): out-of-scope calls
+are logged as `WOULD-DENY` in receipts, not blocked. Set `mode: enforce` and run
+`tenuo-claude refresh` to see live denials below.
 
 ```bash
 cd demo

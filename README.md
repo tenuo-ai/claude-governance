@@ -1,13 +1,37 @@
 # Tenuo for Claude Code
 
+[![PyPI](https://img.shields.io/pypi/v/tenuo-claude-code)](https://pypi.org/project/tenuo-claude-code/)
+[![Python](https://img.shields.io/pypi/pyversions/tenuo-claude-code)](https://pypi.org/project/tenuo-claude-code/)
+[![CI](https://github.com/tenuo-ai/claude-governance/actions/workflows/ci.yml/badge.svg)](https://github.com/tenuo-ai/claude-governance/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
+**Keep your AI coding agent inside the lines.** Tenuo enforces a signed, least-privilege
+warrant on every tool call Claude Code makes, so it cannot read files outside its sandbox,
+run shell commands beyond an allowlist, or reach off-policy domains, even when the model is
+jailbroken or running `--dangerously-skip-permissions`. Every decision is recorded as a cryptographic receipt.
+
 [Tenuo](https://tenuo.ai) governance for [Claude Code](https://code.claude.com/docs):
 every agent tool call is checked against a signed warrant (hook → authorizer),
 with a receipt on each decision, including under `--dangerously-skip-permissions`.
 
 **Install:** `pip install tenuo-claude-code` (CLI commands `tenuo-claude` and `tenuo-admin`).
-You do not need to clone this repo to use the tool.
 
-Licensed under [Apache-2.0](LICENSE). PyPI: [pypi.org/project/tenuo-claude-code](https://pypi.org/project/tenuo-claude-code/)
+## How it works
+
+![Architecture](tenuo_claude_code_architecture.svg)
+
+```
+tenuo.yaml  →  init/up  →  warrant + authorizer + hooks + MCP proxy
+                                    ↓
+              native tools (PreToolUse hook)  |  MCP tools (proxy)
+                                    ↓
+                         authorizer → allow / deny → receipt
+```
+
+Claude hits the MCP proxy (not your downstream server) and the PreToolUse hook for
+native tools. Both paths use the same warrant and authorizer.
+
+More: [docs/DETAILS.md](docs/DETAILS.md)
 
 ## Prerequisites
 
@@ -57,7 +81,7 @@ enforce:
 default: deny
 ```
 
-Or download the starter file (no git clone):
+Or fetch the example policy:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tenuo-ai/claude-governance/main/tenuo.yaml.example -o tenuo.yaml
@@ -108,7 +132,7 @@ Generated files (do not commit): `.state/` (keys, warrant), `.claude/settings.js
 | `audit [--tail N]` | Receipt trail |
 | `revoke` | Revoke session warrant |
 
-Docs (no source required): [Policy](#policy-tenuoyaml) · [Cloud mode](#cloud-mode) · [docs/DETAILS.md](docs/DETAILS.md)
+See also: [Policy](#policy-tenuoyaml) · [Cloud mode](#cloud-mode) · [docs/DETAILS.md](docs/DETAILS.md)
 
 ---
 
@@ -137,7 +161,7 @@ Run commands via the repo launcher or editable install:
 
 ```bash
 cd demo
-tenuo-claude bootstrap --local   # check → init → up → verify
+tenuo-claude bootstrap          # check → init → up → verify (local by default)
 tenuo-claude demo                # optional scripted tour
 ```
 
@@ -252,23 +276,6 @@ Cloud trigger warrant config the same way.
 
 For the WebFetch example: allowlisted domains pass directly; SSRF cases remain
 hard-denied. Details: [docs/DETAILS.md § Human approval](docs/DETAILS.md#human-approval-cloud).
-
-## How it works
-
-![Architecture](tenuo_claude_code_architecture.svg)
-
-```
-tenuo.yaml  →  init/up  →  warrant + authorizer + hooks + MCP proxy
-                                    ↓
-              native tools (PreToolUse hook)  |  MCP tools (proxy)
-                                    ↓
-                         authorizer → allow / deny → receipt
-```
-
-Claude hits the MCP proxy (not your downstream server) and the PreToolUse hook for
-native tools. Both paths use the same warrant and authorizer.
-
-More: [docs/DETAILS.md](docs/DETAILS.md)
 
 ## Security
 

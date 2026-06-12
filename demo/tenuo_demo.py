@@ -36,7 +36,7 @@ def run_default_tour(cfg) -> None:
     print("Tenuo + Claude Code — enforcement demo\n" + "=" * 40)
     cases = [
         ("Read", {"file_path": f"{sb}/incident-report.md"}, "summarize an in-scope file"),
-        ("Read", {"file_path": f"{sb}/../prod-credentials.env"}, "read out-of-scope credentials file"),
+        ("Read", {"file_path": f"{sb}/../fake-secrets.env"}, "read out-of-scope credentials file"),
         ("Bash", {"command": "ls -la"}, "inert command"),
         ("Bash", {"command": "ls && rm -rf /"}, "command chaining (Shlex blocks)"),
         ("Grep", {"pattern": "TODO", "path": sb}, "in-scope search"),

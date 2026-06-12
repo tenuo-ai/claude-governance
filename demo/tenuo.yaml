@@ -66,8 +66,9 @@ enforce:
 #    approval:
 #      threshold: 1
 
-# Harness-inert tools (Task*, plan mode, AskUserQuestion, …) ship in
-# harness_tools.yaml and merge at load time. Add site-specific audit-allows:
+# Harness-inert tools (Task*, plan mode, AskUserQuestion, …) ship in the
+# bundled package list (`src/tenuo_claude_code/data/harness_tools.yaml`) and
+# merge at load time. Add site-specific audit-allows:
 # audit_extra:
 #   - MyCustomHarnessTool
 # audit_bundled: false   # disable bundled list (not recommended)

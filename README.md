@@ -54,6 +54,7 @@ warrants, central audit, fleet revocation, and org-wide rollout ([Cloud mode](#c
 | Install and run on your machine | [Use the tool (PyPI)](#use-the-tool-pypi) |
 | Clone, hack, or run the sample project | [Build from source](#build-from-source) |
 | Review security posture | [Security](#security) |
+| Plan org-wide rollout (managed settings, Cloud) | [Talk to us](https://tenuo.ai/early-access.html) |
 | Implementation depth | [docs/DETAILS.md](docs/DETAILS.md) |
 
 ---
@@ -303,11 +304,10 @@ authorizer on every tool call, and a receipt per decision. Policy is one file
 | Revocation | Edit rules; sessions may keep prior allowances | Revoke warrant id → ~30s SRL sync (Cloud) |
 | Evidence | Optional hook logs | Signed receipt per call; Cloud audit stream |
 | Delegation | Project/user tool policy | Per-role child warrant; session is the ceiling |
-| `--dangerously-skip-permissions` | Bypasses Claude prompts* | Warrant still enforced |
 | Org-wide deployment | Per-user settings; users can edit local hooks | Managed settings + shared policy; hook/proxy enforcement is not user-editable |
+| `--dangerously-skip-permissions` | Bypasses Claude permission prompts | Hook and MCP proxy still enforce the warrant |
 
-\*Managed settings can disable bypass (`disableBypassPermissionsMode`). Pair with Tenuo
-so permission bypass does not bypass the warrant.
+That flag skips Claude's permission UI, not the warrant. Org admins can block it in managed settings (`disableBypassPermissionsMode`).
 
 ### Organization-wide policy
 
@@ -318,9 +318,7 @@ For teams that need a **global configuration engineers cannot bypass**:
    per-developer `settings.local.json`.
 3. Use **Cloud** for tenant-root warrants, central audit, and revocation across machines.
 
-Enforcement runs in the PreToolUse hook and MCP proxy against a signed warrant, outside
-Claude's permission UI. Local permission prompts and `--dangerously-skip-permissions`
-do not skip the authorizer check.
+[Talk to us](https://tenuo.ai/early-access.html) about managed-settings rollout and Cloud deployment.
 
 ### Cloud audit
 

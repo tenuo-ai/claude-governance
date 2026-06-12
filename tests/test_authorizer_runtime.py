@@ -140,3 +140,19 @@ def test_ensure_binary_version_skip_env(tmp_path, monkeypatch):
     monkeypatch.setenv("TENUO_AUTHORIZER_SKIP_VERSION", "1")
     with mock.patch.object(art, "query_binary_version", return_value="0.1.0-beta.23+authz.1"):
         assert art.ensure_binary_version(binary) == "0.1.0-beta.23+authz.1"
+
+
+def test_install_authorizer_cmd_without_project(tmp_path, monkeypatch):
+    import sys
+    from pathlib import Path
+
+    from tenuo_claude_code import cli
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["tenuo-claude", "install-authorizer"])
+    fake = tmp_path / "bin" / "tenuo-authorizer"
+    fake.parent.mkdir()
+    fake.write_bytes(b"fake")
+    monkeypatch.setattr(art, "install_authorizer", lambda *a, **kw: fake)
+    monkeypatch.setattr(art, "query_binary_version", lambda p: "0.1.0-beta.24+authz.1")
+    cli.main()

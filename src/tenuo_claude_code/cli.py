@@ -2009,11 +2009,14 @@ def _record_fired_warrant(warrant_b64: str) -> None:
 def cmd_install_authorizer(args) -> None:
     """Install the pinned ``tenuo-authorizer`` binary to ``~/.tenuo/bin``."""
     image = DEFAULT_AUTHZ_IMAGE
-    if CONFIG_FILE.exists():
+    try:
+        bind_project_paths(sys.modules[__name__])
         try:
             image = authorizer_image(load_config())
         except SystemExit:
             pass
+    except SystemExit:
+        pass
     path = art.install_authorizer(image, force=getattr(args, "force", False))
     installed = art.query_binary_version(path)
     print(f"Installed: {path}")
@@ -2621,7 +2624,6 @@ COMMANDS = {
 
 
 def main() -> None:
-    bind_project_paths(sys.modules[__name__])
     parser = argparse.ArgumentParser(prog=CLI_COMMAND, description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd")
@@ -2694,11 +2696,14 @@ def main() -> None:
     if not args.cmd:
         parser.print_help()
         return
+    # Global install — no governed project directory required.
+    if args.cmd != "install-authorizer":
+        bind_project_paths(sys.modules[__name__])
     # Separation of duties: the runtime/agent plane must never carry an admin
     # credential. Admin actions live in `tenuo-admin`. Skip the internal hook
     # handlers — they have their own fail-closed contract and must emit a deny
     # decision rather than raise (a raised SystemExit would be fail-open).
-    if args.cmd not in ("_hook", "_post", "_mcp-proxy", "onboard", "bootstrap"):
+    if args.cmd not in ("_hook", "_post", "_mcp-proxy", "onboard", "bootstrap", "install-authorizer"):
         assert_no_admin_key()
     COMMANDS[args.cmd](args)
 

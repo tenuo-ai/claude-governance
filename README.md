@@ -168,15 +168,17 @@ If you always use native without Docker, set `TENUO_AUTHORIZER_BACKEND=native` i
 
 ### Port conflicts
 
-The authorizer listens on `127.0.0.1:9090` by default. If that port is taken, set `PORT` **before** `init` and `up`:
+The authorizer listens on `127.0.0.1:9090` by default. If that port is taken, set `TENUO_AUTHORIZER_PORT` **before** `init` and `up`:
 
 ```bash
-export PORT=9091
+export TENUO_AUTHORIZER_PORT=9091
 tenuo-claude init
 tenuo-claude up --native
 ```
 
-The chosen URL is saved in `.state/state.json`. Hooks and `verify` read that file, so they stay aligned even if `PORT` is unset later.
+(`PORT` still works but is deprecated; it collides with other tools.)
+
+The chosen URL is saved in `.state/state.json`. Hooks and `verify` read that file, so they stay aligned even if the env var is unset later.
 
 Generated files (do not commit): `.state/` (keys, warrant), `.claude/settings.json` (hooks).
 

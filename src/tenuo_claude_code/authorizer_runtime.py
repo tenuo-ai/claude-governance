@@ -21,8 +21,24 @@ from pathlib import Path
 from typing import Callable
 
 DEFAULT_IMAGE = "tenuo/authorizer:0.1.0-beta.24"
+DEFAULT_AUTHORIZER_PORT = 9090
+AUTHORIZER_PORT_ENV = "TENUO_AUTHORIZER_PORT"
+LEGACY_AUTHORIZER_PORT_ENV = "PORT"
 RELEASE_REPO = "tenuo-ai/tenuo"
 _INFO_VERSION_RE = re.compile(r"^Tenuo Authorizer v(\S+)", re.MULTILINE)
+
+
+def authorizer_port_env_hint() -> str:
+    return f"set {AUTHORIZER_PORT_ENV} to another value"
+
+
+def resolve_authorizer_port() -> int:
+    """Loopback port for the local authorizer (``TENUO_AUTHORIZER_PORT``, else ``PORT``)."""
+    for key in (AUTHORIZER_PORT_ENV, LEGACY_AUTHORIZER_PORT_ENV):
+        raw = os.environ.get(key, "").strip()
+        if raw:
+            return int(raw)
+    return DEFAULT_AUTHORIZER_PORT
 
 
 def managed_install_root() -> Path:
@@ -343,11 +359,11 @@ def assert_port_available(port: int, authz_url: str, mount: Path) -> None:
         raise SystemExit(
             f"127.0.0.1:{port} already serves tenuo-authorizer but is not managed by "
             f"this project (stale PID or manual start). Stop it, run `tenuo-claude down`, "
-            f"or set PORT to another value."
+            f"or {authorizer_port_env_hint()}."
         )
     raise SystemExit(
         f"127.0.0.1:{port} is already in use by another process. "
-        f"Free the port or set PORT to use a different one."
+        f"Free the port or {authorizer_port_env_hint()}."
     )
 
 

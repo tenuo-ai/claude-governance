@@ -29,6 +29,24 @@ def test_version_compatible():
     assert not art.version_compatible("0.1.0-beta.23+authz.1", "0.1.0-beta.24")
 
 
+def test_resolve_authorizer_port_default(monkeypatch):
+    monkeypatch.delenv(art.AUTHORIZER_PORT_ENV, raising=False)
+    monkeypatch.delenv(art.LEGACY_AUTHORIZER_PORT_ENV, raising=False)
+    assert art.resolve_authorizer_port() == art.DEFAULT_AUTHORIZER_PORT
+
+
+def test_resolve_authorizer_port_tenuo_env(monkeypatch):
+    monkeypatch.setenv(art.AUTHORIZER_PORT_ENV, "9091")
+    monkeypatch.setenv(art.LEGACY_AUTHORIZER_PORT_ENV, "3000")
+    assert art.resolve_authorizer_port() == 9091
+
+
+def test_resolve_authorizer_port_legacy_fallback(monkeypatch):
+    monkeypatch.delenv(art.AUTHORIZER_PORT_ENV, raising=False)
+    monkeypatch.setenv(art.LEGACY_AUTHORIZER_PORT_ENV, "9092")
+    assert art.resolve_authorizer_port() == 9092
+
+
 def test_choose_backend_flags():
     args = argparse.Namespace(native=True, docker=False)
     assert art.choose_backend(args) == "native"

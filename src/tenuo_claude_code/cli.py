@@ -81,12 +81,12 @@ CLOUD_STATE: Path
 ADMIN_ENV = Path.home() / ".tenuo" / "admin.env"
 _receipt_write_warned = False  # one-time stderr if .state/receipts.jsonl can't be written
 
-PORT = int(os.environ.get("PORT", "9090"))
+PORT = art.resolve_authorizer_port()
 AUTHZ_URL = f"http://127.0.0.1:{PORT}"
 
 
 def resolve_authz_url() -> str:
-    """URL for authorizer client calls. ``state.json`` overrides ``PORT`` env."""
+    """URL for authorizer client calls. ``state.json`` overrides port env vars."""
     try:
         if STATE_JSON.is_file():
             url = json.loads(STATE_JSON.read_text()).get("authorizer_url")

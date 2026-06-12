@@ -1889,7 +1889,7 @@ def cmd_onboard(args) -> None:
     try:
         cmd_verify(argparse.Namespace(deep=False, no_live=True))
     except SystemExit as exc:
-        raise SystemExit(exc.code or 1)
+        raise SystemExit(1 if exc.code is None else exc.code)
     print("\nOnboard complete (cloud). Open Claude Code in this directory.")
 
 

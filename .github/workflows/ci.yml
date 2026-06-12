@@ -33,7 +33,16 @@ jobs:
 
       - name: Verify package metadata
         run: |
-          uv run python -c "from tenuo_claude_code import __version__; assert __version__ == '0.1.4'"
+          expected=$(uv run python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          actual=$(uv run python -c "from tenuo_claude_code import __version__; print(__version__)")
+          test "$expected" = "$actual"
+
+      - name: check passes without repo launcher (PyPI layout)
+        run: |
+          proj=$(mktemp -d)
+          cp templates/tenuo.yaml.example "$proj/tenuo.yaml"
+          mkdir -p "$proj/workspace"
+          TENUO_PROJECT_DIR="$proj" uv run tenuo-claude check
 
       - name: Smoke test init in temp project
         run: |
@@ -80,18 +89,16 @@ jobs:
           uv run tenuo-claude install-authorizer
           echo "$HOME/.tenuo/bin" >> "$GITHUB_PATH"
 
-      - name: Set up a local-mode project
+      - name: bootstrap from empty directory (golden path)
         run: |
           proj="$RUNNER_TEMP/governed"
-          mkdir -p "$proj/workspace"
-          cp templates/tenuo.yaml.example "$proj/tenuo.yaml"
+          mkdir -p "$proj"
+          cd "$proj"
+          uv run tenuo-claude bootstrap
+          test -f tenuo.yaml
+          test -f .state/warrant.b64
+          test -f .claude/settings.json
           echo "TENUO_PROJECT_DIR=$proj" >> "$GITHUB_ENV"
-
-      - name: init (mint local warrant + wire hooks)
-        run: uv run tenuo-claude init
-
-      - name: up (native authorizer, local issuer)
-        run: uv run tenuo-claude up --native
 
       - name: verify (policy self-test against the live authorizer)
         run: uv run tenuo-claude verify

@@ -1586,7 +1586,7 @@ def _check_wiring(cfg: dict | None, ok: bool) -> bool:
                 ok = _check_line(False, "launcher smoke", "timed out",
                                  "check authorizer / docker") and ok
     else:
-        ok = _check_line(False, "launcher", "missing", f"restore {LAUNCHER_REL}") and ok
+        _check_line(None, "launcher", "not present", "optional — PyPI installs use `tenuo-claude` on PATH")
 
     if not cfg:
         return ok
@@ -1810,15 +1810,18 @@ def cmd_onboard(args) -> None:
         cloud = choice.startswith("c")
         local = not cloud
 
-    scaffold_example_policy(DEMO_DIR, no_scaffold=getattr(args, "no_scaffold", False))
+    created = scaffold_example_policy(DEMO_DIR, no_scaffold=getattr(args, "no_scaffold", False))
 
-    print("\nRunning preflight…")
-    try:
-        cmd_check(argparse.Namespace())
-    except SystemExit as exc:
-        if exc.code not in (0, None):
-            if not _prompt("Preflight failed — continue anyway?", "n").lower().startswith("y"):
-                raise SystemExit(1)
+    if not created:
+        print("\nRunning preflight…")
+        try:
+            cmd_check(argparse.Namespace())
+        except SystemExit as exc:
+            if exc.code not in (0, None):
+                if getattr(args, "yes", False):
+                    print("Preflight failed — continuing (--yes).")
+                elif not _prompt("Preflight failed — continue anyway?", "n").lower().startswith("y"):
+                    raise SystemExit(1)
 
     if local or not cloud:
         moved = disable_cloud_artifacts()

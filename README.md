@@ -7,9 +7,11 @@ PyPI package: [`tenuo-claude-code`](https://pypi.org/project/tenuo-claude-code/)
 [![CI](https://github.com/tenuo-ai/claude-governance/actions/workflows/ci.yml/badge.svg)](https://github.com/tenuo-ai/claude-governance/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-**Keep your AI coding agent inside the lines.** Tenuo checks every Claude Code tool call against a signed warrant.
+**Keep your AI coding agent inside the lines.** Tenuo governs every path Claude Code uses to act on your machine.
 
-File reads stay in the sandbox. Shell commands match an allowlist. URLs match policy. That holds even when Claude runs with `--dangerously-skip-permissions`. Each call uses a PoP-signed authorization request.
+**Native tools** (Read, Bash, WebFetch, and the rest) go through a PreToolUse hook. **MCP tools** go through a proxy you wire in place of the downstream server. Both paths hit the same signed warrant and authorizer before anything runs.
+
+File reads stay in the sandbox. Shell commands match an allowlist. MCP tool arguments get the same checks. URLs match policy. That holds even when Claude runs with `--dangerously-skip-permissions`. Each authorization uses a PoP-signed request.
 
 Connect [Tenuo Cloud](https://cloud.tenuo.ai) for signed audit receipts and fleet revocation.
 

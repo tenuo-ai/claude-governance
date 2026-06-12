@@ -7,18 +7,9 @@ PyPI package: [`tenuo-claude-code`](https://pypi.org/project/tenuo-claude-code/)
 [![CI](https://github.com/tenuo-ai/claude-governance/actions/workflows/ci.yml/badge.svg)](https://github.com/tenuo-ai/claude-governance/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-**Keep your AI coding agent inside the lines.** Tenuo enforces a signed, least-privilege
-warrant on every tool call Claude Code makes, so it cannot read files outside its sandbox,
-run shell commands beyond an allowlist, or reach off-policy domains, even when the model is
-jailbroken or running `--dangerously-skip-permissions`. Every call is checked with a
-PoP-signed authorization request; audit receipts are signed and retained in
-[Tenuo Cloud](https://cloud.tenuo.ai) when connected.
+**Keep your AI coding agent inside the lines.** Tenuo checks every Claude Code tool call against a signed warrant: file reads stay in the sandbox, shell commands match an allowlist, and URLs match policy, including when Claude runs with `--dangerously-skip-permissions`. Each call uses a PoP-signed authorization request. Connect [Tenuo Cloud](https://cloud.tenuo.ai) for signed audit receipts and fleet revocation.
 
-[Tenuo](https://tenuo.ai) governance for [Claude Code](https://code.claude.com/docs):
-every agent tool call is checked against a signed warrant (hook → authorizer),
-with a decision log on each call, including under `--dangerously-skip-permissions`.
-
-**Install:** `pip install tenuo-claude-code` (CLI commands `tenuo-claude` and `tenuo-admin`).
+Install: `pip install tenuo-claude-code` (commands: `tenuo-claude`, `tenuo-admin`).
 
 ## How it works
 
@@ -44,11 +35,9 @@ More: [docs/DETAILS.md](docs/DETAILS.md)
 ## Prerequisites
 
 - Python ≥ 3.10
-- **Authorizer runtime** — pick one:
-  - **Docker (simplest for most users):** install [Docker Desktop](https://www.docker.com/products/docker-desktop/)
-    or your engine, then `tenuo-claude up` (pulls the pinned `tenuo/authorizer` image).
-  - **Native (no Docker):** one command installs the matching binary to `~/.tenuo/bin`
-    (downloads a prebuilt release when available, otherwise builds via Rust in the background):
+- **Authorizer runtime** (pick one):
+  - **Docker:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) or your engine, then `tenuo-claude up` (pulls the pinned `tenuo/authorizer` image). This is the default when Docker is running.
+  - **Native (no Docker):** install the matching binary to `~/.tenuo/bin` (prebuilt download when available, otherwise `cargo install --root`):
 
     ```bash
     pip install tenuo-claude-code
@@ -56,11 +45,8 @@ More: [docs/DETAILS.md](docs/DETAILS.md)
     tenuo-claude up --native
     ```
 
-    Or combine install + start: `tenuo-claude up --native --install`. Override with
-    `TENUO_AUTHORIZER_BIN` if needed. The CLI verifies the binary matches the package pin;
-    set `TENUO_AUTHORIZER_SKIP_VERSION=1` only for local dev builds.
-- [Claude Code](https://code.claude.com/docs) — for live agent use, not for a first eval
-  (see [Quick eval](#quick-eval-no-claude) below)
+    One step on first start: `tenuo-claude up --native --install`. Override the binary with `TENUO_AUTHORIZER_BIN`. The CLI checks the binary matches the package pin; set `TENUO_AUTHORIZER_SKIP_VERSION=1` only for local dev builds.
+- [Claude Code](https://code.claude.com/docs) for live agent use. For a first eval without Claude, see [Quick eval](#quick-eval-no-claude).
 
 **Local mode:** no Tenuo Cloud account; good for one project or evaluation.
 
@@ -114,22 +100,25 @@ Or fetch the example policy:
 curl -fsSL https://raw.githubusercontent.com/tenuo-ai/claude-governance/main/tenuo.yaml.example -o tenuo.yaml
 ```
 
-**4. Initialize and start**: pick one:
+**4. Initialize and start**
+
+`up` uses Docker when the daemon is running. Pass `--native` to force the host binary.
 
 ```bash
-# Manual (Docker — default when Docker is running)
+# Docker (default when Docker is running)
 tenuo-claude init
 tenuo-claude up
 tenuo-claude verify
 
-# Manual (native — no Docker)
+# Native (no Docker)
 tenuo-claude init
-tenuo-claude up --native --install   # installs to ~/.tenuo/bin on first run
+tenuo-claude up --native --install   # first run: install binary to ~/.tenuo/bin
 tenuo-claude verify
 ```
 
+Wizard (same end state; local wizard prefers Docker when it is available):
+
 ```bash
-# Or wizard (same end state; runs check + init + up + verify)
 tenuo-claude onboard --local
 ```
 
@@ -139,27 +128,34 @@ Open Claude Code **in `my-project/`** (same directory as `tenuo.yaml`).
 
 ### Quick eval (no Claude)
 
-To prove policy enforcement without installing Claude Code:
+Prove policy enforcement without Claude Code:
 
 ```bash
 pip install tenuo-claude-code
-tenuo-claude install-authorizer   # skip if using Docker
-# … create my-project/ with tenuo.yaml (steps 2–3 above)
-tenuo-claude onboard --local      # or: init && up --native && verify
+# create my-project/ with tenuo.yaml (steps 2-3 above)
+
+# Docker (when Docker is running):
+tenuo-claude onboard --local
+
+# Native (no Docker):
+tenuo-claude install-authorizer
+tenuo-claude init && tenuo-claude up --native && tenuo-claude verify
 ```
 
-`verify` exercises allow/deny against the live authorizer (out-of-scope reads, shell
+`verify` runs allow/deny probes against the live authorizer (out-of-scope reads, shell
 chaining, default-deny). Or run the [reference demo](demo/) tour: `tenuo-claude demo`.
 
 ### Day to day
 
 | When | Command |
 |------|---------|
-| Start work (authorizer down or warrant expired) | `tenuo-claude up` |
+| Start work (authorizer down or warrant expired) | `tenuo-claude up` (Docker) or `tenuo-claude up --native` |
 | You edited `tenuo.yaml` | `tenuo-claude refresh` |
 | Something broken | `tenuo-claude check` |
 | See decisions | `tenuo-claude audit` |
 | Stop authorizer | `tenuo-claude down` |
+
+If you always use native without Docker, set `TENUO_AUTHORIZER_BACKEND=native` in your shell so plain `up` picks the host binary.
 
 Generated files (do not commit): `.state/` (keys, warrant), `.claude/settings.json` (hooks).
 
@@ -168,7 +164,7 @@ Generated files (do not commit): `.state/` (keys, warrant), `.claude/settings.js
 | Command | Does |
 |---------|------|
 | `init` | Mint warrant, wire hooks and `.mcp.json` |
-| `up` / `down` | Start / stop authorizer |
+| `up` / `down` | Start / stop authorizer. `up` flags: `--native`, `--docker`, `--install` (native, first run) |
 | `install-authorizer` | Install `tenuo-authorizer` to `~/.tenuo/bin` (no manual `cargo`) |
 | `refresh` | Re-apply `tenuo.yaml` (restarts authorizer if up) |
 | `check` | Preflight: deps, credentials, wiring drift |
@@ -196,6 +192,8 @@ uv venv && uv sync && chmod +x bin/tenuo-claude
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 ```
 
+Without Docker, install the authorizer binary once: `uv run tenuo-claude install-authorizer`
+
 Run commands via the repo launcher or editable install:
 
 ```bash
@@ -208,9 +206,11 @@ Run commands via the repo launcher or editable install:
 
 ```bash
 cd demo
-tenuo-claude bootstrap          # check → init → up → verify (local by default)
-tenuo-claude demo                # optional scripted tour
+tenuo-claude bootstrap          # check → init → up → verify (Docker if available)
+tenuo-claude demo               # optional scripted tour
 ```
+
+Use `tenuo-claude up --native` instead of plain `up` if you are not running Docker.
 
 Open Claude Code in `demo/`. See [demo/README.md](demo/README.md).
 
@@ -377,7 +377,7 @@ In `mode: audit`, denials show as `WOULD-DENY` in `audit` output (`shadow: true`
 
 **Cloud (when connected):** the authorizer emits **signed** audit events (Ed25519 over a
 CBOR payload) to your tenant. These are the non-repudiable receipts for compliance and
-fleet audit — not the local JSONL file.
+fleet audit, not the local JSONL file.
 
 ![Authorization receipts in Tenuo Cloud](docs/images/cloud-audit-stream.png)
 
@@ -409,8 +409,8 @@ interactive `!` shell in the Claude TUI
 `tenuo.yaml` denies every call until restored.
 
 Keys and credentials in `.state/` must be owner-only (`0600` in a `0700` directory).
-The authorizer container mounts only `.state/authorizer/` (not holder keys or
-`cloud.env`). PoP signing stays in the hook on the host.
+The authorizer reads gateway config from `.state/authorizer/` (Docker mount or native
+process). Holder keys and `cloud.env` stay on the host. PoP signing runs in the hook.
 
 Report vulnerabilities: [SECURITY.md](SECURITY.md). Implementation depth: [docs/DETAILS.md](docs/DETAILS.md).
 
@@ -418,7 +418,7 @@ Report vulnerabilities: [SECURITY.md](SECURITY.md). Implementation depth: [docs/
 
 ## Performance
 
-Run `tenuo-claude bench` after `up`. On a typical laptop, Tenuo authorization is ~1–3 ms per call; command hooks add ~100–200 ms (mostly process startup). Use `bench --json` on your machines.
+Run `tenuo-claude bench` after `up`. On a typical laptop, Tenuo authorization is about 1-3 ms per call; command hooks add about 100-200 ms (mostly process startup). Use `bench --json` on your machines.
 
 ---
 

@@ -11,7 +11,7 @@ Report bugs: [SECURITY.md](../SECURITY.md).
 ## Audit mode (`mode: audit`)
 
 Shadow mode: every call's real allow/deny is still computed against the warrant
-and written to the signed receipt, but nothing is blocked.
+and written to the local decision log, but nothing is blocked.
 
 **Neutrality invariant:** in audit mode the hook emits *no* permission decision.
 Claude's own permission prompts and settings stay fully in effect. Observe-only
@@ -190,11 +190,19 @@ Requires `tenuo` 0.1.0b24+ and authorizer `0.1.0-beta.24` (pinned in `cli.py`).
 ## Receipts
 
 `PreToolUse` / `PostToolUse` use match-all hooks; MCP tools are also gated by the
-proxy. Every call produces a signed receipt:
+proxy. Every governed call is **PoP-signed and checked by the authorizer**. The hook
+also appends a **local JSON line** per call:
 
 - **Enforced** tools: constraint-checked; out-of-scope denied.
 - **Audit-allowed** harness tools: logged, not blocked.
 - **Default-deny** for everything else.
+
+Example local line (`.state/receipts.jsonl`; pretty-printed):
+
+```json
+{"phase": "pre", "decision": "deny", "claude_tool": "Bash", "governed": true,
+ "args": {"command": "ls && rm -rf /"}, "reason": "Constraint not satisfied"}
+```
 
 Subagent calls carry `agent_type`; the hook enforces the child warrant when present.
 Spawn is cryptographically gated. In-subagent cap selection depends on Claude Code
@@ -204,8 +212,9 @@ with `tenuo-claude bench`.
 In audit mode denials are recorded as `WOULD-DENY` without blocking.
 
 **Authority:** `tenuo-claude audit` pretty-prints `.state/receipts.jsonl` (local
-convenience). Authoritative signed receipts come from the authorizer and stream
-to Tenuo Cloud when connected.
+convenience, not signed). **Signed audit receipts** are emitted by the authorizer and
+stream to Tenuo Cloud when connected (`signature` + `signing_payload` on each event).
+See [README § Receipts](../README.md#receipts).
 
 ## Hook exit codes and fail-closed
 

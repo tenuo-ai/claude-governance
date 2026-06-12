@@ -131,8 +131,8 @@ def run_demo(*, advanced: bool, live_approval: bool) -> None:
     elif tc.webfetch_approval(cfg):
         print("\n(Human approval is configured; run with --advanced to include the WebFetch example.)")
         print("  Run: tenuo-claude demo --advanced")
-    print("\nEvery line above is a signed receipt on the authorizer. "
-          "Run `tenuo-claude audit` to see the trail, `tenuo-claude revoke` to kill the warrant.")
+    print("\nEach line above is an authorizer decision (PoP-signed at enforcement time). "
+          "Run `tenuo-claude audit` for the local log; Cloud streams signed audit receipts.")
 
 
 def main() -> None:

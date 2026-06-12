@@ -1,5 +1,7 @@
 # Tenuo for Claude Code
 
+PyPI package: [`tenuo-claude-code`](https://pypi.org/project/tenuo-claude-code/) · CLI: `tenuo-claude`, `tenuo-admin`
+
 [![PyPI](https://img.shields.io/pypi/v/tenuo-claude-code)](https://pypi.org/project/tenuo-claude-code/)
 [![Python](https://img.shields.io/pypi/pyversions/tenuo-claude-code)](https://pypi.org/project/tenuo-claude-code/)
 [![CI](https://github.com/tenuo-ai/claude-governance/actions/workflows/ci.yml/badge.svg)](https://github.com/tenuo-ai/claude-governance/actions/workflows/ci.yml)
@@ -8,12 +10,13 @@
 **Keep your AI coding agent inside the lines.** Tenuo enforces a signed, least-privilege
 warrant on every tool call Claude Code makes, so it cannot read files outside its sandbox,
 run shell commands beyond an allowlist, or reach off-policy domains, even when the model is
-jailbroken or running `--dangerously-skip-permissions`. Every decision is recorded as a
-cryptographic receipt.
+jailbroken or running `--dangerously-skip-permissions`. Every call is checked with a
+PoP-signed authorization request; audit receipts are signed and retained in
+[Tenuo Cloud](https://cloud.tenuo.ai) when connected.
 
 [Tenuo](https://tenuo.ai) governance for [Claude Code](https://code.claude.com/docs):
 every agent tool call is checked against a signed warrant (hook → authorizer),
-with a receipt on each decision, including under `--dangerously-skip-permissions`.
+with a decision log on each call, including under `--dangerously-skip-permissions`.
 
 **Install:** `pip install tenuo-claude-code` (CLI commands `tenuo-claude` and `tenuo-admin`).
 
@@ -30,7 +33,7 @@ tenuo.yaml  →  init/up  →  warrant + authorizer + hooks + MCP proxy
                                     |
                                     |
                                     v
-                         authorizer → allow / deny → receipt
+                         authorizer → allow / deny → log / receipt
 ```
 
 Claude hits the MCP proxy (not your downstream server) and the PreToolUse hook for
@@ -41,8 +44,11 @@ More: [docs/DETAILS.md](docs/DETAILS.md)
 ## Prerequisites
 
 - Python ≥ 3.10
-- Docker (runs the authorizer container)
-- [Claude Code](https://code.claude.com/docs)
+- **Docker** — required today. The authorizer runs as the pinned `tenuo/authorizer`
+  container (`tenuo-claude up`). Holder keys and PoP signing stay on the host; only
+  `gateway.yaml` is mounted into the container.
+- [Claude Code](https://code.claude.com/docs) — for live agent use, not for a first eval
+  (see [Quick eval](#quick-eval-no-claude) below)
 
 **Local mode:** no Tenuo Cloud account; good for one project or evaluation.
 
@@ -111,6 +117,19 @@ tenuo-claude onboard --local
 **5. Use Claude Code**
 
 Open Claude Code **in `my-project/`** (same directory as `tenuo.yaml`).
+
+### Quick eval (no Claude)
+
+To prove policy enforcement without installing Claude Code:
+
+```bash
+pip install tenuo-claude-code
+# … create my-project/ with tenuo.yaml (steps 2–3 above)
+tenuo-claude onboard --local    # needs Docker; runs check → init → up → verify
+```
+
+`verify` exercises allow/deny against the live authorizer (out-of-scope reads, shell
+chaining, default-deny). Or run the [reference demo](demo/) tour: `tenuo-claude demo`.
 
 ### Day to day
 
@@ -292,7 +311,7 @@ hard-denied. Details: [docs/DETAILS.md § Human approval](docs/DETAILS.md#human-
 
 Tenuo works **alongside** Claude Code permissions. It does not replace managed
 settings. You still deploy hooks; Tenuo adds a signed session warrant, a local
-authorizer on every tool call, and a receipt per decision. Policy is one file
+authorizer on every tool call, and a decision log per call. Policy is one file
 (`tenuo.yaml`).
 
 ### vs. Claude Code permissions
@@ -302,7 +321,7 @@ authorizer on every tool call, and a receipt per decision. Policy is one file
 | Policy | Allow/ask/deny in settings | Signed credential; Cloud chains to tenant root |
 | Expiry | Until edited | Session TTL (~1h); `up` refreshes |
 | Revocation | Edit rules; sessions may keep prior allowances | Revoke warrant id → ~30s SRL sync (Cloud) |
-| Evidence | Optional hook logs | Signed receipt per call; Cloud audit stream |
+| Evidence | Optional hook logs | Local JSONL log; signed audit stream in Cloud |
 | Delegation | Project/user tool policy | Per-role child warrant; session is the ceiling |
 | Org-wide deployment | Per-user settings; users can edit local hooks | Managed settings + shared policy; hook/proxy enforcement is not user-editable |
 | `--dangerously-skip-permissions` | Bypasses Claude permission prompts | Hook and MCP proxy still enforce the warrant |
@@ -320,13 +339,34 @@ For teams that need a **global configuration engineers cannot bypass**:
 
 [Talk to us](https://tenuo.ai/early-access.html) about managed-settings rollout and Cloud deployment.
 
+### Receipts
+
+Every governed tool call is **cryptographically authorized** (PoP-signed request to the
+authorizer). What you can **read back** depends on mode:
+
+**Local (always):** the hook appends a JSON line to `.state/receipts.jsonl`. Inspect
+with `tenuo-claude audit`:
+
+```json
+{"phase": "pre", "decision": "deny", "claude_tool": "Read", "governed": true,
+ "args": {"file_path": "/etc/passwd"}, "reason": "Constraint not satisfied", "ts": "…"}
+```
+
+In `mode: audit`, denials show as `WOULD-DENY` in `audit` output (`shadow: true` in the file).
+
+**Cloud (when connected):** the authorizer emits **signed** audit events (Ed25519 over a
+CBOR payload) to your tenant. These are the non-repudiable receipts for compliance and
+fleet audit — not the local JSONL file.
+
+![Authorization receipts in Tenuo Cloud](docs/images/cloud-audit-stream.png)
+
+More: [docs/DETAILS.md § Receipts](docs/DETAILS.md#receipts).
+
 ### Cloud audit
 
 With [Tenuo Cloud](https://cloud.tenuo.ai), session warrants chain to your tenant
-root. Allow, deny, spawn, and approved exceptions appear in one audit log. Revoke a
-warrant id from `status` or the dashboard without touching the laptop.
-
-![Authorization receipts in Tenuo Cloud](docs/images/cloud-audit-stream.png)
+root. Allow, deny, spawn, and approved exceptions appear in one signed audit log.
+Revoke a warrant id from `status` or the dashboard without touching the laptop.
 
 Admin and runtime keys stay split: `tenuo-admin setup` (once) vs `tenuo-claude up`
 (daily). Runtime refuses to start if an admin key is in the environment.
@@ -363,4 +403,5 @@ Run `tenuo-claude bench` after `up`. On a typical laptop, Tenuo authorization is
 
 ## This repo
 
-PyPI package source (`src/tenuo_claude_code/`). [Build from source](#build-from-source) · [CONTRIBUTING.md](CONTRIBUTING.md)
+GitHub: `claude-governance` · PyPI: [`tenuo-claude-code`](https://pypi.org/project/tenuo-claude-code/).
+Package source: `src/tenuo_claude_code/`. [Build from source](#build-from-source) · [CONTRIBUTING.md](CONTRIBUTING.md)

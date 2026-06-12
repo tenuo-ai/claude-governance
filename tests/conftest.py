@@ -51,6 +51,8 @@ def bound(monkeypatch, tmp_path):
     binding = {
         "DEMO_DIR": tmp_path,
         "STATE": state,
+        "GATEWAY": state / "gateway.yaml",
+        "SRL": state / "srl.cbor",
         "AGENTS_DIRS": (agents, tmp_path / "no-such-user-agents"),
         "HOLDER_KEY": state / "holder_key.b64",
         "ISSUER_KEY": state / "issuer_key.b64",

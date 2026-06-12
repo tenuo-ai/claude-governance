@@ -1203,16 +1203,27 @@ def sync_authorizer_mount() -> None:
     ensure_state_dir()
     mount = authorizer_mount_dir()
     mount.mkdir(exist_ok=True)
+    # World-traversable, not secret: the authorizer container runs as a non-root
+    # user and must read gateway.yaml via the bind mount (CI runners included).
     try:
-        mount.chmod(0o700)
+        mount.chmod(0o755)
     except OSError:
         pass
     if not GATEWAY.exists():
         return
-    shutil.copy2(GATEWAY, mount / GATEWAY.name)
+    dest = mount / GATEWAY.name
+    shutil.copy2(GATEWAY, dest)
+    try:
+        dest.chmod(0o644)
+    except OSError:
+        pass
     srl_dest = mount / SRL.name
     if SRL.exists():
         shutil.copy2(SRL, srl_dest)
+        try:
+            srl_dest.chmod(0o644)
+        except OSError:
+            pass
     elif srl_dest.exists():
         srl_dest.unlink()
 

@@ -8,7 +8,8 @@
 **Keep your AI coding agent inside the lines.** Tenuo enforces a signed, least-privilege
 warrant on every tool call Claude Code makes, so it cannot read files outside its sandbox,
 run shell commands beyond an allowlist, or reach off-policy domains, even when the model is
-jailbroken or running `--dangerously-skip-permissions`. Every decision is recorded as a cryptographic receipt.
+jailbroken or running `--dangerously-skip-permissions`. Every decision is recorded as a
+cryptographic receipt.
 
 [Tenuo](https://tenuo.ai) governance for [Claude Code](https://code.claude.com/docs):
 every agent tool call is checked against a signed warrant (hook → authorizer),
@@ -22,9 +23,13 @@ with a receipt on each decision, including under `--dangerously-skip-permissions
 
 ```
 tenuo.yaml  →  init/up  →  warrant + authorizer + hooks + MCP proxy
-                                    ↓
+                                    |
+                                    |
+                                    v
               native tools (PreToolUse hook)  |  MCP tools (proxy)
-                                    ↓
+                                    |
+                                    |
+                                    v
                          authorizer → allow / deny → receipt
 ```
 
@@ -39,8 +44,9 @@ More: [docs/DETAILS.md](docs/DETAILS.md)
 - Docker (runs the authorizer container)
 - [Claude Code](https://code.claude.com/docs)
 
-**Local mode**: no Tenuo Cloud account; good for one project or evaluation.
-**Cloud mode**: [cloud.tenuo.ai](https://cloud.tenuo.ai) tenant for tenant-root
+**Local mode:** no Tenuo Cloud account; good for one project or evaluation.
+
+**Cloud mode:** [cloud.tenuo.ai](https://cloud.tenuo.ai) tenant for tenant-root
 warrants, central audit, fleet revocation, and org-wide rollout ([Cloud mode](#cloud-mode)).
 
 | If you want to… | Start here |
@@ -210,6 +216,8 @@ folder's README.
 
 Cloud overlays (`tenuo.yaml.cloud.example`, `tenuo.yaml.advanced.example`). Download from this repo or use `tenuo-claude init --cloud` / `--advanced`.
 
+---
+
 ## Cloud mode
 
 Requires a [cloud.tenuo.ai](https://cloud.tenuo.ai) tenant. Use Cloud when you
@@ -276,6 +284,8 @@ Cloud trigger warrant config the same way.
 
 For the WebFetch example: allowlisted domains pass directly; SSRF cases remain
 hard-denied. Details: [docs/DETAILS.md § Human approval](docs/DETAILS.md#human-approval-cloud).
+
+---
 
 ## Security
 
@@ -345,9 +355,13 @@ The authorizer container mounts only `.state/authorizer/` (not holder keys or
 
 Report vulnerabilities: [SECURITY.md](SECURITY.md). Implementation depth: [docs/DETAILS.md](docs/DETAILS.md).
 
+---
+
 ## Performance
 
 Run `tenuo-claude bench` after `up`. On a typical laptop, Tenuo authorization is ~1–3 ms per call; command hooks add ~100–200 ms (mostly process startup). Use `bench --json` on your machines.
+
+---
 
 ## This repo
 

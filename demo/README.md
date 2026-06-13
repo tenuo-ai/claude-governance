@@ -8,10 +8,21 @@ the reference demo when working from a git checkout.
 
 From the repo root (after `uv sync` or `pip install tenuo-claude-code`):
 
+**Local, first run** (no Cloud credentials yet):
+
 ```bash
 cd demo
-tenuo-claude bootstrap           # check → init → up → verify (local by default)
-tenuo-claude demo                 # scripted allow/deny tour
+tenuo-claude bootstrap
+tenuo-claude demo
+```
+
+**Cloud already wired** (`.state/cloud.env` present): skip `bootstrap`. Plain `bootstrap` is local-only and moves Cloud files aside.
+
+```bash
+cd demo
+tenuo-claude up
+tenuo-claude verify
+tenuo-claude demo
 ```
 
 Open Claude Code in `demo/` (where `tenuo.yaml` lives).
@@ -57,8 +68,11 @@ Without Claude: `tenuo-claude demo`, then `tenuo-claude audit`.
 Approver sign-off on gated tool calls. Configure in policy, not in this README.
 See [Cloud mode § Human approval](../README.md#human-approval-cloud) and
 [docs/DETAILS.md § Human approval](../docs/DETAILS.md#human-approval-cloud).
+For team configs, prefer `--approver-id` / `cloud.approver_identity_id`; display
+names are kept for quick demos.
 
-The reference demo exercises the **WebFetch** example when approval is configured:
+The reference demo exercises **WebFetch** (native hook) and **delete_deployment** (MCP proxy)
+when approval is configured:
 
 ```bash
 tenuo-claude demo --advanced

@@ -25,6 +25,8 @@ tenuo-claude bootstrap
 
 Open Claude Code here when `verify` passes. No Claude? `bootstrap` + `verify` is enough to prove enforcement.
 
+No Docker, or prefer native? Run `tenuo-claude install-authorizer` once, then `bootstrap`. Without Docker, the CLI uses native automatically. To force native while Docker is running, set `TENUO_AUTHORIZER_BACKEND=native` before `bootstrap`.
+
 ### Where to go next
 
 | If you want to… | Start here |
@@ -63,9 +65,11 @@ More: [docs/DETAILS.md](docs/DETAILS.md)
 
 - Python ≥ 3.10
 - **Authorizer runtime** (pick one):
-  - **Docker:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) or your engine, then `tenuo-claude up` (pulls the pinned `tenuo/authorizer` image). This is the default when Docker is running.
-  - **Native (no Docker):** `tenuo-claude install-authorizer`, then `tenuo-claude up --native` (or `up --native --install` on first run). Override the binary with `TENUO_AUTHORIZER_BIN`. The CLI checks the binary matches the package pin; set `TENUO_AUTHORIZER_SKIP_VERSION=1` only for local dev builds.
-- [Claude Code](https://code.claude.com/docs) for live agent use (optional for first eval — `verify` is enough).
+  - **Docker:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) or your engine, then `tenuo-claude up`. Pulls the pinned `tenuo/authorizer` image. Default when Docker is running.
+  - **Native (no Docker):** `tenuo-claude install-authorizer`, then `tenuo-claude up --native`. First run: add `--install`. Override the binary with `TENUO_AUTHORIZER_BIN`. Set `TENUO_AUTHORIZER_SKIP_VERSION=1` only for local dev builds.
+
+  Without Docker, `bootstrap` uses native. Run `install-authorizer` first. To force native while Docker is running, set `TENUO_AUTHORIZER_BACKEND=native`.
+- [Claude Code](https://code.claude.com/docs) for live agent use. Optional: `verify` works without it.
 
 **Local mode:** no Tenuo Cloud account. Good for one project or evaluation.
 
@@ -81,7 +85,7 @@ After [Try it](#try-it), you have an example `tenuo.yaml`, a running authorizer,
 
 | When | Command |
 |------|---------|
-| Start work (authorizer down or warrant expired) | `tenuo-claude up` (Docker) or `tenuo-claude up --native` |
+| Start work | `tenuo-claude up` or `tenuo-claude up --native` |
 | You edited `tenuo.yaml` | `tenuo-claude refresh` |
 | Something broken | `tenuo-claude check` |
 | See decisions | `tenuo-claude audit` |
@@ -91,15 +95,14 @@ If you always use native without Docker, set `TENUO_AUTHORIZER_BACKEND=native` i
 
 ### Port conflicts
 
-The authorizer listens on `127.0.0.1:9090` by default. If that port is taken, set `TENUO_AUTHORIZER_PORT` **before** `init` and `up`:
+The authorizer listens on `127.0.0.1:9090` by default. If that port is taken, set `TENUO_AUTHORIZER_PORT` before `bootstrap`:
 
 ```bash
 export TENUO_AUTHORIZER_PORT=9091
-tenuo-claude init
-tenuo-claude up --native
+tenuo-claude bootstrap
 ```
 
-(`PORT` still works but is deprecated; it collides with other tools.)
+`PORT` is deprecated. Use `TENUO_AUTHORIZER_PORT`.
 
 The chosen URL is saved in `.state/state.json`. Hooks and `verify` read that file, so they stay aligned even if the env var is unset later.
 
@@ -111,20 +114,36 @@ Bring your own `tenuo.yaml` (see [Policy](#policy-tenuoyaml)), or edit the examp
 
 ```bash
 tenuo-claude init
-tenuo-claude up              # Docker when the daemon is running; --native for host binary
+tenuo-claude up
 tenuo-claude verify
 ```
 
-First native run: `tenuo-claude up --native --install`. Interactive equivalent: `tenuo-claude onboard --local`.
+Use `--native` when not running Docker. First native run: add `--install`. Or run `tenuo-claude onboard --local`.
 
 ### Reference demo
 
-Sample policy and sandbox are in [demo/](demo/):
+Sample policy, MCP stub, and scripted tour in [demo/](demo/). The shipped `demo/tenuo.yaml` is richer than the bootstrap example; Cloud and approval overlays may already be present.
+
+**First time, local only** (no `.state/cloud.env` yet):
 
 ```bash
-cd demo && tenuo-claude bootstrap
-tenuo-claude demo    # optional scripted tour
+cd demo
+tenuo-claude bootstrap
+tenuo-claude demo
 ```
+
+**Already Cloud-configured** (`.state/cloud.env` or `tenuo.cloud.yaml` present): do not run plain `bootstrap`. It switches to local mode and moves Cloud files aside. Use:
+
+```bash
+cd demo
+tenuo-claude up
+tenuo-claude verify
+tenuo-claude demo
+```
+
+For human approval: [Cloud mode § Human approval](#human-approval-cloud), then `tenuo-claude demo --advanced --live-approval`.
+
+If you ran local `bootstrap` on a Cloud setup by mistake, restore `.state/cloud.env` and overlays from backup, then run `tenuo-admin setup` to re-claim the holder key.
 
 From a git checkout, see [Build from source](#build-from-source).
 
@@ -175,9 +194,11 @@ Run commands via the repo launcher or editable install:
 
 ```bash
 cd demo
-tenuo-claude bootstrap
-tenuo-claude demo               # optional scripted tour
+tenuo-claude up          # if Cloud is already wired; see Reference demo above
+tenuo-claude demo
 ```
+
+First local-only run: `tenuo-claude bootstrap` instead of `up`, only when `.state/cloud.env` is absent.
 
 Use `tenuo-claude up --native` instead of plain `up` if you are not running Docker.
 
@@ -191,7 +212,7 @@ Contributors: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Policy (`tenuo.yaml`)
 
-One file drives the warrant, authorizer routes, hooks, and MCP proxy. `bootstrap` writes a minimal example and sets `name:` from your **folder name** — edit before production.
+One file drives the warrant, authorizer routes, hooks, and MCP proxy. `bootstrap` writes a minimal example and sets `name:` from your **folder name**. Edit before production.
 
 ```yaml
 name: acme-backend          # bootstrap uses your project directory name
@@ -245,26 +266,66 @@ Use Cloud when you need organization-scale governance, not just a single laptop:
 
 Local mode (no Cloud account) remains fully supported for evaluation and single-project use.
 
-Two keys, two files (runtime never sees the admin key):
+### Cloud quickstart
 
-| Key | File | Used by |
-|-----|------|---------|
-| Runtime (Quick Connect) | `.state/cloud.env` | `tenuo-claude up`, hooks |
-| Admin | `~/.tenuo/admin.env` | `tenuo-admin setup` once |
+Two keys, two files. Runtime never sees the admin key:
 
-**Wizard (recommended):**
+| Key | Where to get it | File | Used by |
+|-----|-----------------|------|---------|
+| Quick Connect (runtime) | [cloud.tenuo.ai](https://cloud.tenuo.ai) → **Agents** → **Quick Connect** → **Authorizer Only** → copy `tenuo_ct_…` | `.state/cloud.env` | `tenuo-claude up`, hooks |
+| Tenant-admin (setup once) | **Settings** → **API Keys** → Create (tenant admin role) | `~/.tenuo/admin.env` | `tenuo-admin setup` once |
+
+**Do not** put the tenant-admin key in `.state/cloud.env` or your shell when running `tenuo-claude up`. Runtime refuses to start if an admin key is reachable.
+
+**Fresh project**
+
+Creates an example `tenuo.yaml` if none exists.
 
 ```bash
+pip install tenuo-claude-code
+mkdir my-project && cd my-project
+tenuo-claude bootstrap --cloud
+```
+
+Requires a Quick Connect token (`tenuo_ct_…`). The wizard prompts for it. Using explicit Cloud URL + API key instead? Use the manual setup block below; `bootstrap --cloud` expects Quick Connect.
+
+Prompts for credentials, then runs `init`, `tenuo-admin setup`, `up`, and `verify`. Pass a tenant-admin key to run setup in the same step.
+
+Non-interactive:
+
+```bash
+tenuo-claude bootstrap --cloud --yes \
+  --connect-token "tenuo_ct_…" \
+  --admin-key "tc_…"
+```
+
+Omit `--admin-key` if `tenuo-admin setup` already ran. Prefer flags over `export TENUO_ADMIN_KEY`. A lingering admin key in the shell makes later `tenuo-claude up` fail.
+
+One-shot env vars for CI:
+
+```bash
+TENUO_CONNECT_TOKEN="tenuo_ct_…" TENUO_ADMIN_KEY="tc_…" \
+  tenuo-claude bootstrap --cloud --yes
+```
+
+**Existing local project**
+
+Keeps your current `tenuo.yaml`. Adds Cloud credentials and profile, re-mints the session warrant, and registers or updates the Cloud trigger.
+
+```bash
+cd my-project
 tenuo-claude onboard --cloud
 ```
 
-**Manual setup** (copy credential templates from [templates/](templates/)):
+Without providing an admin key to the wizard, have an admin run `tenuo-admin setup` before `up`, or place the admin key in `~/.tenuo/admin.env` and run it yourself.
+
+Manual equivalent. Credential templates in [templates/](templates/):
 
 ```bash
-cd my-project                 # your tenuo.yaml lives here
+cd my-project
 mkdir -p .state ~/.tenuo
-# templates/cloud.env.example → .state/cloud.env (Quick Connect token)
-# templates/admin.env.example → ~/.tenuo/admin.env (tenant-admin key)
+# templates/cloud.env.example → .state/cloud.env
+# templates/admin.env.example → ~/.tenuo/admin.env
 
 tenuo-claude init --cloud
 tenuo-admin setup
@@ -272,7 +333,21 @@ tenuo-claude up
 tenuo-claude verify
 ```
 
-Re-run `tenuo-admin setup` when Cloud capabilities change. Re-run `tenuo-claude refresh` for local policy edits.
+### Success looks like
+
+After onboarding:
+
+```bash
+tenuo-claude status
+tenuo-claude check
+tenuo-admin show
+```
+
+You should see: authorizer up, cloud profile merged, a trigger id in `tenuo-admin show`, and CHECK OK with no admin key in runtime env.
+
+Re-run `tenuo-admin setup` when Cloud capabilities change — setup syncs the local
+gateway and reloads the authorizer when it is already running. Re-run
+`tenuo-claude refresh` for local-only policy edits (no Cloud trigger change).
 
 ### Human approval (Cloud)
 
@@ -280,18 +355,46 @@ Approval is a **third outcome** on any governed tool call: not just egress.
 
 When the warrant includes an approval gate for a capability, the authorizer can return `approval-required` instead of allow/deny. The hook creates a Cloud approval request, waits for an approver on their notification channel, then re-authorizes with signed approvals in `X-Tenuo-Approvals`.
 
-**Included policy example:** off-allowlist `WebFetch` (URLs that pass SSRF checks but
-are not on your domain allowlist). Other capabilities can carry approval gates in the
-Cloud trigger warrant config the same way.
+**Included policy examples:**
+
+* **Native hook:** off-allowlist `WebFetch` (URLs that pass SSRF checks but are not on your domain allowlist).
+* **MCP proxy:** `delete_deployment` with `target=production` gated; `target=staging` exempt.
+
+Both use the same session approval policy and the same hook/proxy approval workflow for any tool argument the warrant gates.
 
 1. Configure a notification channel and identity binding in Cloud ([channels](https://docs.tenuo.ai/guides/adding-channels),
    [identity bindings](https://docs.tenuo.ai/integrations/identity-bindings)).
-2. Add `approval:` under `enforce.WebFetch` and set `cloud.approver_identity` to that
-   identity's display name. See [templates/tenuo.yaml.advanced.example](templates/tenuo.yaml.advanced.example).
-3. Run `tenuo-claude init --advanced --approver "<identity display name>"`, then
-   `tenuo-admin setup`.
+2. Add approval gates in policy. Prefer `cloud.approver_identity_id` for team/shared
+   configs; `cloud.approver_identity` (display name) is fine for demos and quickstarts.
+   See [templates/tenuo.yaml.advanced.example](templates/tenuo.yaml.advanced.example).
+3. Wire Cloud and re-run setup:
+
+```bash
+tenuo-claude init --advanced --approver-id "idn_..."
+tenuo-admin setup          # syncs gateway; reloads authorizer if already up
+tenuo-claude up            # if authorizer was down
+tenuo-claude verify
+```
+
+For a quick demo, display-name lookup is still supported:
+
+```bash
+tenuo-claude onboard --cloud --advanced --approver "Alice Example"
+```
+
+If multiple Cloud identities share a display name, setup will ask you to use
+`--approver-id` / `cloud.approver_identity_id`.
+
+Reference demo:
+
+```bash
+cd demo
+tenuo-claude demo --advanced --live-approval
+```
 
 For the WebFetch example: allowlisted domains pass directly. SSRF cases remain hard-denied.
+For the MCP example: exempt targets pass directly; other argument values pause for sign-off.
+Both paths use the same Cloud approval request flow.
 
 Details: [docs/DETAILS.md § Human approval](docs/DETAILS.md#human-approval-cloud).
 

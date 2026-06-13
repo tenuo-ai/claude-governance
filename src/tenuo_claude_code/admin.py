@@ -173,8 +173,9 @@ def build_warrant_config(cfg: dict, approval_policy_id: str | None = None) -> di
     holder would bind every developer's warrant to one key and break PoP for all
     but one.
 
-    When WebFetch.approval is linked to a Cloud policy, web_fetch relaxes to
-    SSRF-only url_safe + wildcard host, with approval_gates exempting allowlisted hosts.
+    When WebFetch.approval and/or mcp.enforce approval blocks are linked to a Cloud
+    policy, gated capabilities relax to wildcard args with approval_gates (and Exempt
+    sub-constraints where configured).
     """
     sandbox = cfg["_sandbox_abs"]
     gov = tc.governed_map(cfg)
@@ -199,8 +200,20 @@ def build_warrant_config(cfg: dict, approval_policy_id: str | None = None) -> di
                 per_action[cap] = web_to_wire(g["web"])
         else:
             per_action[cap] = {g["arg"]: to_wire_constraint(g["spec"], sandbox)}
-    for mtool, spec in (cfg.get("mcp", {}).get("enforce") or {}).items():
-        per_action.setdefault(mtool, {"path": to_wire_constraint(spec, sandbox)})
+    gate_approval = bool(approval_policy_id)
+    for mtool, raw in (cfg.get("mcp", {}).get("enforce") or {}).items():
+        if mtool in per_action:
+            continue
+        parsed = tc.parse_mcp_enforce_spec(raw)
+        arg = tc.mcp_tool_arg_field(mtool, parsed)
+        if parsed.get("approval") and gate_approval:
+            per_action[mtool] = {arg: {"_type": "wildcard"}}
+            gate_args: dict = {}
+            for ek, es in (parsed.get("exempt_args") or {}).items():
+                gate_args[ek] = {"exempt": to_wire_constraint(es, sandbox)}
+            approval_gates[mtool] = {"args": gate_args or {arg: {}}}
+        elif parsed.get("path_constraint"):
+            per_action[mtool] = {arg: to_wire_constraint(parsed["path_constraint"], sandbox)}
     # AUDIT-ALLOW capabilities (unconstrained): the hook routes audit-listed
     # tools to /verify/<cap>, so the warrant must GRANT them or every WebSearch/
     # TodoWrite/… is denied in enforce mode. Mirrors mint_local_warrant exactly —
@@ -240,38 +253,53 @@ def build_warrant_config(cfg: dict, approval_policy_id: str | None = None) -> di
 # WebFetch human-approval: resolve the approver identity + Cloud approval policy
 # ---------------------------------------------------------------------------
 
-def resolve_approver_identity(url: str, admin: str, display_name: str) -> tuple[str, str]:
-    """Find an EXISTING Cloud identity binding by display name -> (id, public_key_hex).
+def resolve_approver_identity(url: str, admin: str, selector: str, *, by_id: bool = False) -> tuple[str, str, str]:
+    """Find an EXISTING Cloud identity binding -> (id, display_name, public_key_hex).
 
     The identity carries the approver's KMS public key and notification routing on
     their configured channel. Setup only references an existing identity; it does
     not create or mutate identities in Cloud. Fails loudly if absent or keyless.
+
+    Prefer ``cloud.approver_identity_id`` for durable team configs. Display-name
+    lookup remains supported for demos and quickstarts.
     """
     status, body = tc.cloud_api("GET", url, admin, "/v1/identities")
     if status != 200 or not isinstance(body, dict):
         raise SystemExit(f"List identities failed ({status}): {body}")
-    matches = [i for i in (body.get("identities") or [])
-               if str(i.get("display_name", "")).strip() == display_name.strip()]
+    identities = body.get("identities") or []
+    selector = selector.strip()
+    if by_id:
+        matches = [i for i in identities if str(i.get("id", "")).strip() == selector]
+    else:
+        matches = [i for i in identities
+                   if str(i.get("display_name", "")).strip() == selector]
     if not matches:
+        field = "cloud.approver_identity_id" if by_id else "cloud.approver_identity"
+        kind = "id" if by_id else "display name"
         raise SystemExit(
-            f"No Cloud identity named '{display_name}' (cloud.approver_identity).\n"
+            f"No Cloud identity with {kind} '{selector}' ({field}).\n"
             "  Create an identity binding in the dashboard first:\n"
             "    https://docs.tenuo.ai/guides/adding-channels\n"
             "    https://docs.tenuo.ai/integrations/identity-bindings\n"
-            "  Dashboard → Channels → Identity Bindings — use the exact Display Name.")
+            "  Dashboard -> Channels -> Identity Bindings.")
+    if not by_id and len(matches) > 1:
+        raise SystemExit(
+            f"Multiple Cloud identities are named '{selector}'.\n"
+            "  Set cloud.approver_identity_id to the stable identity id instead.")
     ident = matches[0]
     pub = str(ident.get("public_key") or "")
     if not pub:
-        raise SystemExit(f"Identity '{display_name}' has no public key — it can't sign approvals.")
-    return str(ident["id"]), pub
+        raise SystemExit(f"Identity '{selector}' has no public key - it can't sign approvals.")
+    return str(ident["id"]), str(ident.get("display_name") or selector), pub
 
 
-def ensure_webfetch_approval_policy(url: str, admin: str, name: str, threshold: int,
-                                    approver_key: str, identity_id: str) -> str:
-    """Create-or-reuse a web_fetch approval policy and link the approver. -> policy_id.
+def ensure_session_approval_policy(url: str, admin: str, name: str, threshold: int,
+                                   approver_key: str, identity_id: str) -> str:
+    """Create-or-reuse a session-wide approval policy and link the approver. -> policy_id.
 
-    The policy holds the approver key set + threshold + TTL; linking the identity
-    is what routes the approval prompt to the human. Idempotent.
+    One policy covers every gated capability (native hook + MCP proxy). The policy
+    holds the approver key set + threshold + TTL; linking the identity routes the
+    prompt to the human. Idempotent.
     """
     status, body = tc.cloud_api("GET", url, admin, "/v1/approvals/policies")
     existing = None
@@ -282,8 +310,8 @@ def ensure_webfetch_approval_policy(url: str, admin: str, name: str, threshold: 
                 break
     policy_body = {
         "name": name,
-        "description": "Claude Code WebFetch: human approval for off-allowlist URLs",
-        "tool_pattern": "web_fetch",
+        "description": "Claude Code session: human approval for gated tool calls",
+        "tool_pattern": "*",
         "threshold": int(threshold),
         "approver_keys": [approver_key],
         "ttl_seconds": 300,
@@ -315,6 +343,21 @@ def ensure_webfetch_approval_policy(url: str, admin: str, name: str, threshold: 
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
+
+def ensure_agent_trigger_binding(url: str, admin: str, agent_id: str, tid: str) -> bool:
+    """Ensure an adopted agent is allowed to fire the resolved trigger."""
+    status, cur = tc.cloud_api("GET", url, admin, f"/v1/agents/{agent_id}")
+    if status != 200 or not isinstance(cur, dict):
+        raise SystemExit(f"Inspect agent failed ({status}): {cur}")
+    cur_trigs = cur.get("allowed_triggers")
+    if cur_trigs and tid in cur_trigs:
+        return False
+    s3, b3 = tc.cloud_api("PATCH", url, admin, f"/v1/agents/{agent_id}",
+                          {"allowed_triggers": [tid]})
+    if s3 not in (200, 201):
+        raise SystemExit(f"Reconcile agent trigger binding failed ({s3}): {b3}")
+    return True
+
 
 def cmd_setup(_args) -> None:
     """One-time: register the holder agent + create the trigger from tenuo.yaml.
@@ -445,6 +488,8 @@ def cmd_setup(_args) -> None:
                     "\n  .state/cloud.env must hold the Quick Connect / authorizer "
                     "runtime key (RBAC: agent claim + trigger fire), not the admin key.")
             raise SystemExit(f"Claim agent failed ({status}): {body}{hint}")
+        if ensure_agent_trigger_binding(url, admin, agent_id, tid):
+            print(f"  agent    : {agent_id} '{aname}' (allowed trigger reconciled)")
         print(f"  agent    : {agent_id} '{aname}' (registered + key claimed)")
         tc.save_cloud_state({"agent_id": agent_id, "agent_name": aname})
     else:
@@ -453,12 +498,9 @@ def cmd_setup(_args) -> None:
         # trigger was deleted). Keeps issuance history; just fixes name + binding.
         _, cur = tc.cloud_api("GET", url, admin, f"/v1/agents/{agent_id}")
         cur_name = cur.get("name") if isinstance(cur, dict) else None
-        cur_trigs = cur.get("allowed_triggers") if isinstance(cur, dict) else None
         patch = {}
         if cur_name != aname:
             patch["name"] = aname
-        if not cur_trigs or tid not in cur_trigs:
-            patch["allowed_triggers"] = [tid]
         if patch:
             s3, b3 = tc.cloud_api("PATCH", url, admin, f"/v1/agents/{agent_id}", patch)
             if s3 in (200, 201):
@@ -468,23 +510,38 @@ def cmd_setup(_args) -> None:
                 raise SystemExit(f"Reconcile agent failed ({s3}): {b3}")
         else:
             print(f"  agent    : {agent_id} '{aname}' (reused)")
+        if ensure_agent_trigger_binding(url, admin, agent_id, tid):
+            print(f"  agent    : {agent_id} '{aname}' (allowed trigger reconciled)")
 
-    # 2b) WebFetch human approval (optional): resolve the configured approver
-    #     identity and create/reuse a Cloud approval policy, so the trigger can
-    #     bake the approver's KMS key + threshold into every issued warrant.
-    approval = tc.webfetch_approval(cfg)
+    # 2b) Human approval (optional): resolve the configured approver identity and
+    #     create/reuse one session-wide Cloud approval policy so the trigger can
+    #     bake approver KMS keys + per-capability gates into every warrant.
+    gates = tc.approval_entries(cfg)
     approval_policy_id = None
-    if approval:
-        approver_name = (cfg.get("cloud") or {}).get("approver_identity")
-        if not approver_name:
-            raise SystemExit("enforce.WebFetch.approval is set but cloud.approver_identity is missing.")
-        identity_id, approver_key = resolve_approver_identity(url, admin, approver_name)
-        approval_policy_id = ensure_webfetch_approval_policy(
-            url, admin, f"{tc.slug(authz_name)}-webfetch-approval",
-            int(approval.get("threshold", 1)), approver_key, identity_id)
-        tc.save_cloud_state({"web_fetch_approval_policy_id": approval_policy_id,
-                             "web_fetch_approver": approver_name})
-        print(f"  approval : approver '{approver_name}' ({approver_key[:16]}…)")
+    if gates:
+        cloud_cfg = cfg.get("cloud") or {}
+        approver_id_cfg = cloud_cfg.get("approver_identity_id")
+        approver_name_cfg = cloud_cfg.get("approver_identity")
+        approver_selector = approver_id_cfg or approver_name_cfg
+        if not approver_selector:
+            raise SystemExit(
+                "Approval gates are configured but cloud.approver_identity_id or "
+                "cloud.approver_identity is missing.")
+        identity_id, approver_name, approver_key = resolve_approver_identity(
+            url, admin, str(approver_selector), by_id=bool(approver_id_cfg))
+        threshold = max(int(g[1].get("threshold", 1)) for g in gates)
+        approval_policy_id = ensure_session_approval_policy(
+            url, admin, f"{tc.slug(authz_name)}-session-approval",
+            threshold, approver_key, identity_id)
+        gated = ", ".join(g[0] for g in gates)
+        tc.save_cloud_state({
+            "session_approval_policy_id": approval_policy_id,
+            "web_fetch_approval_policy_id": approval_policy_id,
+            "web_fetch_approver": approver_name,
+            "approver_identity_id": identity_id,
+            "approval_gates": [g[0] for g in gates],
+        })
+        print(f"  approval : {gated} -> '{approver_name}' ({identity_id}) ({approver_key[:16]}…)")
 
     # 3) Trigger — create or update with the warrant_config from tenuo.yaml.
     wc = build_warrant_config(cfg, approval_policy_id)
@@ -540,7 +597,12 @@ def cmd_setup(_args) -> None:
         print("  warning  : could not read initiator identity from warrant; left allow_api_key on")
 
     tc.save_cloud_state({"holder_pub_hex": holder_hex, "root": root})
+    reloaded = tc.sync_runtime_artifacts(cfg, restart_authorizer=tc.authorizer_running(cfg))
     print(f"\nSetup complete. `tenuo-claude up` now fires {tid} for a root-signed session warrant.")
+    if reloaded:
+        print("  local     : gateway synced; authorizer reloaded")
+    else:
+        print("  local     : gateway synced — run `tenuo-claude up` if the authorizer is down")
 
 
 def cmd_show(_args) -> None:
@@ -555,11 +617,14 @@ def cmd_show(_args) -> None:
         v = st.get(k)
         if v:
             print(f"  {k:16}: {v[:24] + '…' if k == 'root' and len(v) > 24 else v}")
-    if tc.webfetch_approval(cfg):
-        who = st.get("web_fetch_approver") or (cfg.get("cloud") or {}).get("approver_identity") or "?"
-        pid = st.get("web_fetch_approval_policy_id")
+    if tc.has_approval_gates(cfg):
+        cloud_cfg = cfg.get("cloud") or {}
+        who = (st.get("web_fetch_approver") or cloud_cfg.get("approver_identity")
+               or cloud_cfg.get("approver_identity_id") or "?")
+        pid = st.get("session_approval_policy_id") or st.get("web_fetch_approval_policy_id")
         wired = pid or "NOT set up (run `tenuo-admin setup`)"
-        print(f"  {'approval':16}: gated tool calls -> {who} | policy {wired}")
+        gates = st.get("approval_gates") or [g[0] for g in tc.approval_entries(cfg)]
+        print(f"  {'approval':16}: {', '.join(gates)} -> {who} | policy {wired}")
 
 
 COMMANDS = {"setup": cmd_setup, "show": cmd_show}

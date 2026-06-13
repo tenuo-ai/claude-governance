@@ -1,18 +1,34 @@
 # Optional policy overlay for human approval on governed tool calls (Cloud).
-# Shipped example: off-allowlist WebFetch (see README § Human approval).
+# Shipped examples:
+#   * off-allowlist WebFetch (native hook path)
+#   * delete_deployment with staging exempt (MCP proxy path)
+# See README § Human approval.
 #
 # PREREQUISITE (Tenuo Cloud):
 #   1. Notification channel: https://docs.tenuo.ai/guides/adding-channels
 #   2. Identity binding: https://docs.tenuo.ai/integrations/identity-bindings
 #
-# Apply:
+# Apply (preferred for team configs):
+#   tenuo-claude init --advanced --approver-id "<Cloud identity id>"
+# Quickstart/demo fallback:
 #   tenuo-claude init --advanced --approver "<Cloud identity display name>"
 # or copy to tenuo.advanced.yaml and re-run `tenuo-admin setup`.
 
 cloud:
-  approver_identity: "<Cloud identity display name>"
+  # Prefer the stable id. Display names are accepted for demos but can be renamed
+  # or duplicated.
+  approver_identity_id: "<Cloud identity id>"
+  # approver_identity: "<Cloud identity display name>"
 
 enforce:
   WebFetch:
     approval:
       threshold: 1
+
+mcp:
+  enforce:
+    delete_deployment:
+      approval:
+        threshold: 1
+        exempt:
+          target: "exact:staging"

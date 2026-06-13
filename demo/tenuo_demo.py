@@ -64,8 +64,21 @@ def run_default_tour(cfg) -> None:
         mcp_cases = [
             ("read_file", {"path": f"{sb}/notes.txt"}, "read in sandbox via MCP"),
             ("read_file", {"path": "/etc/passwd"}, "read outside sandbox via MCP"),
-            ("delete_deployment", {"target": "production"}, "unlisted tool (default-deny)"),
         ]
+        dd_raw = mcp_enforce.get("delete_deployment")
+        if dd_raw is not None:
+            parsed = tc.parse_mcp_enforce_spec(dd_raw)
+            if parsed.get("approval"):
+                mcp_cases.extend([
+                    ("delete_deployment", {"target": "staging"}, "exempt target (direct allow when wired)"),
+                    ("delete_deployment", {"target": "production"}, "approval-gated target"),
+                ])
+            else:
+                mcp_cases.append(
+                    ("delete_deployment", {"target": "production"}, "governed MCP tool"))
+        else:
+            mcp_cases.append(
+                ("delete_deployment", {"target": "production"}, "unlisted tool (default-deny)"))
         for tool, tin, label in mcp_cases:
             allowed, reason, gov, _ = _authz(cfg, tool, tin, skip_approval=True)
             tag = _tag(allowed, reason)
@@ -95,28 +108,59 @@ def run_default_tour(cfg) -> None:
 
 
 def run_advanced_tour(cfg, live: bool) -> None:
-    if not tc.webfetch_approval(cfg):
+    if not tc.has_approval_gates(cfg):
         print("\nHuman approval — not configured.")
         print("  See README § Human approval and tenuo.yaml.advanced.example.")
         return
 
-    print("\nHuman approval (WebFetch example — off-allowlist URL)")
+    gates = tc.approval_entries(cfg)
+    print("\nHuman approval — same Cloud workflow for native hook and MCP proxy")
     print("-" * 40)
-    url = "https://example.com/data"
-    allowed, reason, _, _ = _authz(cfg, "WebFetch", {"url": url}, skip_approval=False)
-    tag = _tag(allowed, reason)
-    extra = "" if allowed else f"({reason})"
-    print(f"  {tag} WebFetch          [enforced] off-allowlist SSRF-safe URL {extra}")
-    print("\nAllowlisted domains still pass; SSRF URLs still hard-denied.")
-    print("Off-allowlist SSRF-safe URLs pause for approver sign-off when approval is enabled.")
+    for cap, _ in gates:
+        print(f"  gated: {cap}")
 
-    if live:
-        live_url = "https://example.com/off-allowlist-test"
-        print(f"\n  LIVE WebFetch {live_url}")
-        print("  waiting for approver on configured notification channel…")
-        allowed, reason, _, _ = _authz(cfg, "WebFetch", {"url": live_url}, live=True, skip_approval=False)
-        print(f"  -> {'ALLOWED' if allowed else 'BLOCKED'}: {reason}")
-    else:
+    if tc.webfetch_approval(cfg):
+        print("\n  Native hook — WebFetch (off-allowlist SSRF-safe URL)")
+        url = "https://example.com/data"
+        allowed, reason, _, _ = _authz(cfg, "WebFetch", {"url": url}, skip_approval=False)
+        tag = _tag(allowed, reason)
+        extra = "" if allowed else f"({reason})"
+        print(f"    {tag} WebFetch  [enforced] off-allowlist URL {extra}")
+        print("    Allowlisted domains pass; SSRF URLs hard-denied.")
+
+        if live:
+            live_url = "https://example.com/off-allowlist-test"
+            print(f"\n    LIVE WebFetch {live_url}")
+            print("    waiting for approver…")
+            allowed, reason, _, _ = _authz(
+                cfg, "WebFetch", {"url": live_url}, live=True, skip_approval=False)
+            print(f"    -> {'ALLOWED' if allowed else 'BLOCKED'}: {reason}")
+
+    mcp_gated = {
+        tool: parsed for tool, parsed in tc.mcp_enforce_entries(cfg).items()
+        if parsed.get("approval")}
+    if "delete_deployment" in mcp_gated:
+        print("\n  MCP proxy — delete_deployment (target argument)")
+        allowed, reason, _, _ = _authz(
+            cfg, "delete_deployment", {"target": "staging"}, skip_approval=False)
+        tag = _tag(allowed, reason)
+        extra = "" if allowed else f"({reason})"
+        print(f"    {tag} delete_deployment  [enforced] target=staging (exempt) {extra}")
+        allowed, reason, _, _ = _authz(
+            cfg, "delete_deployment", {"target": "production"}, skip_approval=False)
+        tag = _tag(allowed, reason)
+        extra = "" if allowed else f"({reason})"
+        print(f"    {tag} delete_deployment  [enforced] target=production (gated) {extra}")
+
+        if live:
+            print("\n    LIVE delete_deployment target=production")
+            print("    waiting for approver…")
+            allowed, reason, _, _ = _authz(
+                cfg, "delete_deployment", {"target": "production"},
+                live=True, skip_approval=False)
+            print(f"    -> {'ALLOWED' if allowed else 'BLOCKED'}: {reason}")
+
+    if not live:
         print("\nRun with --live-approval to block until an approver responds.")
 
 
@@ -128,8 +172,8 @@ def run_demo(*, advanced: bool, live_approval: bool) -> None:
     run_default_tour(cfg)
     if advanced:
         run_advanced_tour(cfg, live=live_approval)
-    elif tc.webfetch_approval(cfg):
-        print("\n(Human approval is configured; run with --advanced to include the WebFetch example.)")
+    elif tc.has_approval_gates(cfg):
+        print("\n(Human approval is configured; run with --advanced for WebFetch + MCP examples.)")
         print("  Run: tenuo-claude demo --advanced")
     print("\nEach line above is an authorizer decision (PoP-signed at enforcement time). "
           "Run `tenuo-claude audit` for the local log; Cloud streams signed audit receipts.")
@@ -140,7 +184,7 @@ def main() -> None:
         prog="tenuo-demo", description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--advanced", action="store_true",
-                        help="include human approval scenarios (WebFetch example; requires overlay in policy)")
+                        help="include human approval scenarios (WebFetch + MCP; requires overlay in policy)")
     parser.add_argument("--live-approval", action="store_true",
                         help="with --advanced: block until approver responds (Cloud)")
     args = parser.parse_args()

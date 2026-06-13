@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import sys
+import types
+
 import pytest
 import yaml
 
+from tenuo_claude_code import cli
 from tenuo_claude_code.paths import (
     bundled_template,
     default_policy_name,
@@ -89,3 +93,41 @@ def test_find_project_root_walks_up(tmp_path, monkeypatch):
     (project / "tenuo.yaml").write_text("name: p\n")
     monkeypatch.chdir(nested)
     assert find_project_root() == project.resolve()
+
+
+def test_write_advanced_profile_prefers_stable_approver_id(monkeypatch, tmp_path):
+    path = tmp_path / "tenuo.advanced.yaml"
+    monkeypatch.setattr(cli, "ADVANCED_PROFILE", path, raising=False)
+
+    cli.write_advanced_profile(approver="Alice Example", approver_id="idn_123")
+
+    data = yaml.safe_load(path.read_text())
+    assert data["cloud"] == {"approver_identity_id": "idn_123"}
+
+
+def test_write_advanced_profile_keeps_display_name_fallback(monkeypatch, tmp_path):
+    path = tmp_path / "tenuo.advanced.yaml"
+    monkeypatch.setattr(cli, "ADVANCED_PROFILE", path, raising=False)
+
+    cli.write_advanced_profile(approver="Alice Example")
+
+    data = yaml.safe_load(path.read_text())
+    assert data["cloud"] == {"approver_identity": "Alice Example"}
+
+
+def test_root_from_warrant_issuer(monkeypatch):
+    class FakeIssuer:
+        def to_bytes(self):
+            return bytes.fromhex("ab" * 32)
+
+    class FakeWarrant:
+        issuer = FakeIssuer()
+
+        @staticmethod
+        def from_base64(warrant_b64):
+            assert warrant_b64 == "WARRANT"
+            return FakeWarrant()
+
+    monkeypatch.setitem(sys.modules, "tenuo", types.SimpleNamespace(Warrant=FakeWarrant))
+
+    assert cli.root_from_warrant_issuer("WARRANT") == "ab" * 32

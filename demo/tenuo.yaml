@@ -98,6 +98,8 @@ subagents:
     tools: [Read, Grep, Glob]
 
 # MCP proxy: wrap a downstream MCP server and enforce these of its tools.
+# Optional `approval:` under any mcp.enforce entry (Cloud) — same workflow as
+# enforce.WebFetch.approval. See tenuo.yaml.advanced.example (delete_deployment).
 mcp:
   downstream: ./ops_server.py
   enforce:

@@ -167,3 +167,33 @@ def test_resolve_tool_mcp_unenforced_falls_to_catchall(cli_mod, make_cfg):
     assert cap == "unlisted"
     assert route == "/gate"
     assert governed is False
+
+
+def test_parse_mcp_enforce_approval_only(cli_mod):
+    parsed = cli_mod.parse_mcp_enforce_spec({
+        "approval": {"threshold": 1, "exempt": {"target": "exact:staging"}},
+    })
+    assert parsed["path_constraint"] is None
+    assert parsed["approval"] == {"threshold": 1}
+    assert parsed["exempt_args"] == {"target": "exact:staging"}
+
+
+def test_approval_entries_native_and_mcp(cli_mod, make_cfg):
+    cfg = make_cfg(
+        enforce={"WebFetch": {"domains": ["a.com"], "approval": {"threshold": 1}}},
+        mcp={"enforce": {"delete_deployment": {"approval": {"threshold": 1}}}},
+    )
+    caps = {cap for cap, _ in cli_mod.approval_entries(cfg)}
+    assert caps == {"web_fetch", "delete_deployment"}
+
+
+def test_resolve_tool_mcp_delete_deployment_target(cli_mod, make_cfg):
+    cfg = make_cfg(mcp={"enforce": {"delete_deployment": {
+        "approval": {"threshold": 1, "exempt": {"target": "exact:staging"}},
+    }}})
+    cap, route, sign_args, body, governed = cli_mod.resolve_tool(
+        cfg, "delete_deployment", {"target": "production"})
+    assert cap == "delete_deployment"
+    assert route == "/verify/delete_deployment"
+    assert sign_args == {"target": "production"}
+    assert governed is True

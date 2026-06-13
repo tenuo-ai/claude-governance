@@ -159,15 +159,31 @@ def build_probes(cfg: dict, *, deep: bool) -> tuple[list[Probe], list[Callable[[
     mcp_cfg = cfg.get("mcp") or {}
     mcp_enforce = mcp_cfg.get("enforce") or {}
     if mcp_cfg.get("downstream") and mcp_enforce:
-        mtool = next(iter(mcp_enforce))
-        probes.extend([
-            Probe("mcp", f"{mtool} in sandbox", mtool,
-                  {"path": str(probe_file)}, True),
-            Probe("mcp", f"{mtool} outside sandbox", mtool,
-                  {"path": "/etc/passwd"}, False),
-            Probe("mcp", "unlisted MCP tool denied", "delete_deployment",
-                  {"target": "production"}, False),
-        ])
+        import tenuo_claude_code.cli as tc
+
+        listed = set(mcp_enforce.keys())
+        for mtool, raw in mcp_enforce.items():
+            parsed = tc.parse_mcp_enforce_spec(raw)
+            if parsed.get("path_constraint"):
+                probes.extend([
+                    Probe("mcp", f"{mtool} in sandbox", mtool,
+                          {"path": str(probe_file)}, True),
+                    Probe("mcp", f"{mtool} outside sandbox", mtool,
+                          {"path": "/etc/passwd"}, False),
+                ])
+            if parsed.get("approval"):
+                field = tc.mcp_tool_arg_field(mtool, parsed)
+                exempt = (parsed.get("exempt_args") or {}).get(field, "")
+                if isinstance(exempt, str) and exempt.startswith("exact:"):
+                    probes.append(Probe(
+                        "mcp", f"{mtool} exempt {field}", mtool,
+                        {field: exempt.split(":", 1)[1]}, True))
+                probes.append(Probe(
+                    "mcp", f"{mtool} approval-gated {field}", mtool,
+                    {field: "production" if field == "target" else "off-gate"}, False))
+        if "delete_deployment" not in listed:
+            probes.append(Probe("mcp", "unlisted MCP tool denied", "delete_deployment",
+                                {"target": "production"}, False))
 
     if cfg.get("default", "deny") == "deny":
         probes.append(Probe("default", "unknown tool denied",

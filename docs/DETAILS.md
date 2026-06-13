@@ -106,9 +106,14 @@ are denied.
 
 Setup (`tenuo-admin setup`):
 
-1. `cloud.approver_identity` names an existing Cloud identity (KMS key + notification routing).
+1. `cloud.approver_identity_id` names an existing Cloud identity (KMS key +
+   notification routing). `cloud.approver_identity` display-name lookup is also
+   supported for demos.
 2. Setup creates or reuses a Cloud approval policy and bakes `approval_gates` into
    the trigger warrant config (including `_policy_id` for offline verification).
+   It also syncs the local gateway and reloads the authorizer when it is already
+   running, so new MCP routes (for example `/verify/delete_deployment`) work
+   immediately.
 
 Receipts: `PENDING [appr]` while parked, then `ALLOW`/`DENY`. In audit mode the
 gate is reported only, never blocks.
@@ -118,9 +123,9 @@ an approver responds (or times out). Ensure the identity is reachable on its
 notification channel before testing. Claude's hook timeout can expire first and look
 like a deny.
 
-### Example: off-allowlist WebFetch
+### Example: off-allowlist WebFetch (native hook)
 
-The repo ships `enforce.WebFetch.approval` as a concrete example. Egress that passes
+The repo ships `enforce.WebFetch.approval` as a concrete native-hook example. Egress that passes
 SSRF checks but is off the domain allowlist:
 
 | URL | Outcome |
@@ -129,8 +134,33 @@ SSRF checks but is off the domain allowlist:
 | off-allowlist, SSRF-safe | paused for approver sign-off |
 | SSRF / metadata / loopback / plain-http / suffix-spoof | denied (gate not reached) |
 
-To test: `WebFetch` an off-allowlist SSRF-safe URL with the authorizer up, or
-`tenuo-claude demo --advanced --live-approval` in the [reference demo](../demo/)
+### Example: delete_deployment (MCP proxy)
+
+The advanced overlay adds `mcp.enforce.delete_deployment.approval` so the MCP proxy uses the
+same approval workflow as the hook:
+
+| Call | Outcome |
+|------|---------|
+| `target=staging` | allowed directly (exempt from gate) |
+| `target=production` | paused for approver sign-off |
+| unlisted MCP tool | denied (capability not granted) |
+
+Policy shape:
+
+```yaml
+mcp:
+  enforce:
+    delete_deployment:
+      approval:
+        threshold: 1
+        exempt:
+          target: "exact:staging"
+```
+
+Any governed capability can carry an approval gate in the Cloud trigger warrant config the
+same way; the hook and MCP proxy both call `authorize_with_approval` on the gated argument.
+
+To test: `tenuo-claude demo --advanced --live-approval` in the [reference demo](../demo/)
 when approval is configured in policy.
 
 ## Search tools and symlinks

@@ -198,6 +198,77 @@ def webfetch_approval(cfg: dict) -> dict | None:
     return None
 
 
+# Primary constraint field per downstream MCP tool (path-scoped vs ops-style args).
+MCP_ARG_FIELD = {
+    "read_file": "path",
+    "list_directory": "path",
+    "delete_deployment": "target",
+}
+
+
+def parse_mcp_enforce_spec(spec) -> dict:
+    """Parse one ``mcp.enforce`` entry: DSL string or structured dict."""
+    if isinstance(spec, str):
+        return {"path_constraint": spec, "approval": None, "exempt_args": None}
+    if not isinstance(spec, dict):
+        raise SystemExit(f"Invalid mcp.enforce value: {spec!r}")
+    raw = dict(spec)
+    approval = raw.get("approval")
+    if approval is not None and not isinstance(approval, dict):
+        raise SystemExit(f"Invalid mcp.enforce approval block: {approval!r}")
+    exempt_args = None
+    if isinstance(approval, dict) and isinstance(approval.get("exempt"), dict):
+        exempt_args = approval["exempt"]
+        approval = {k: v for k, v in approval.items() if k != "exempt"}
+    if isinstance(raw.get("exempt"), dict):
+        exempt_args = raw["exempt"]
+    path_constraint = raw.get("constraint") or raw.get("path")
+    if path_constraint is None and not approval:
+        raise SystemExit(
+            f"Invalid mcp.enforce entry {raw!r}: need a constraint string or approval block")
+    return {"path_constraint": path_constraint, "approval": approval, "exempt_args": exempt_args}
+
+
+def mcp_enforce_entries(cfg: dict) -> dict[str, dict]:
+    return {
+        tool: parse_mcp_enforce_spec(spec)
+        for tool, spec in ((cfg.get("mcp") or {}).get("enforce") or {}).items()
+    }
+
+
+def mcp_tool_arg_field(tool: str, parsed: dict) -> str:
+    if parsed.get("path_constraint"):
+        return "path"
+    return MCP_ARG_FIELD.get(tool, "path")
+
+
+def approval_entries(cfg: dict) -> list[tuple[str, dict]]:
+    """(authorizer capability, approval settings) for every gated tool."""
+    entries: list[tuple[str, dict]] = []
+    if appr := webfetch_approval(cfg):
+        entries.append(("web_fetch", appr))
+    for tool, parsed in mcp_enforce_entries(cfg).items():
+        if parsed.get("approval"):
+            entries.append((tool, parsed["approval"]))
+    return entries
+
+
+def has_approval_gates(cfg: dict) -> bool:
+    return bool(approval_entries(cfg))
+
+
+def approval_policy_id(cfg: dict, tenuo_tool: str | None = None) -> str | None:
+    """Cloud approval policy id for a governed capability (session-wide by default)."""
+    st = load_cloud_state()
+    policies = st.get("approval_policies")
+    if isinstance(policies, dict):
+        if tenuo_tool and policies.get(tenuo_tool):
+            return policies[tenuo_tool]
+        if policies.get("*"):
+            return policies["*"]
+    return st.get("session_approval_policy_id") or st.get("web_fetch_approval_policy_id")
+
+
 def is_audit_mode(cfg: dict) -> bool:
     """Global observe-only posture (`mode: audit` in tenuo.yaml).
 
@@ -627,7 +698,7 @@ def authorize_with_approval(cfg: dict, claude_tool: str, tenuo_tool: str, route:
         return False, reason
 
     creds = cloud_creds(cfg)
-    policy_id = load_cloud_state().get("web_fetch_approval_policy_id")
+    policy_id = approval_policy_id(cfg, tenuo_tool)
     if not (creds.get("url") and creds.get("api_key") and policy_id):
         return False, ("approval required, but the Cloud approver isn't configured — "
                        "run `tenuo-admin setup` (approval gates require Tenuo Cloud)")
@@ -702,20 +773,17 @@ def resolve_tool(cfg: dict, tool_name: str, tool_input: dict):
         cap = audit[tool_name]
         return cap, f"/verify/{cap}", {}, dict(tool_input or {}), False
 
-    mcp_enforce = cfg.get("mcp", {}).get("enforce") or {}
+    mcp_enforce = mcp_enforce_entries(cfg)
     bare = mcp_tool_name(tool_name)
     if bare is None and tool_name in mcp_enforce:
         bare = tool_name
     if bare is not None and bare in mcp_enforce:
-        # mcp.enforce keys on bare tool name + path arg only (demo assumes one
-        # downstream server; a second server with the same tool name would share policy).
-        # Mirror cmd_mcp_proxy: realpath the path arg (so symlinks/relatives
-        # can't smuggle out) and authorize against /verify/<tool>. Same cap and
-        # body field the proxy and gateway use, so the warrant check is identical.
-        val = (tool_input or {}).get("path")
-        if isinstance(val, str) and val:
+        parsed = mcp_enforce[bare]
+        field = mcp_tool_arg_field(bare, parsed)
+        val = (tool_input or {}).get(field)
+        if field == "path" and isinstance(val, str) and val:
             val = os.path.realpath(os.path.abspath(val))
-        args = {"path": val}
+        args = {field: val}
         return bare, f"/verify/{bare}", args, args, True
 
     return catchall_cap(cfg), "/gate", {}, {"tool": tool_name, **(tool_input or {})}, False
@@ -923,9 +991,10 @@ def cmd_mcp_proxy(_args) -> None:
     cfg = load_config()
     mcp_cfg = cfg.get("mcp", {})
     downstream = str((DEMO_DIR / mcp_cfg.get("downstream", "")).resolve())
-    enforced = set((mcp_cfg.get("enforce") or {}).keys())
+    enforced = mcp_enforce_entries(cfg)
     catchall = catchall_cap(cfg)
     audit_only = is_audit_mode(cfg)
+    roles = subagent_roles(cfg)
 
     def log(m):
         print(f"[tenuo-mcp-proxy] {m}", file=sys.stderr, flush=True)
@@ -944,30 +1013,21 @@ def cmd_mcp_proxy(_args) -> None:
 
                 @proxy.call_tool()
                 async def _ct(name: str, arguments: dict):
-                    # enforced keys are bare downstream tool names; path-only (see resolve_tool).
-                    fwd = dict(arguments)
-                    if name in enforced:
-                        val = arguments.get("path")
-                        if isinstance(val, str) and val:
-                            # abspath + realpath: relative paths resolve and
-                            # symlinks can't smuggle reads outside the sandbox.
-                            val = os.path.realpath(os.path.abspath(val))
-                            fwd["path"] = val
-                        allowed, reason = await asyncio.to_thread(
-                            authorize, name, f"/verify/{name}", {"path": val}, {"path": val})
-                    else:
-                        allowed, reason = await asyncio.to_thread(
-                            authorize, catchall, "/gate", {}, {"tool": name, **arguments})
+                    tin = dict(arguments or {})
+                    allowed, reason, _, tenuo_tool = await asyncio.to_thread(
+                        authorize_call, cfg, name, tin, None, roles,
+                        live=not audit_only)
                     write_receipt({"phase": "pre", "source": "mcp_proxy",
                                    "decision": "allow" if allowed else "deny",
                                    "shadow": audit_only, "claude_tool": name,
-                                   "args": fwd, "reason": reason})
+                                   "tenuo_tool": tenuo_tool,
+                                   "args": tin, "reason": reason})
                     if not allowed and not audit_only:
                         log(f"DENY {name}: {reason}")
                         return [TextContent(type="text", text=f"Tenuo denied {name}: {reason}")]
                     if not allowed:
                         log(f"WOULD-DENY {name} (observe-only, forwarding): {reason}")
-                    return (await down.call_tool(name, fwd)).content
+                    return (await down.call_tool(name, tin)).content
 
                 async with stdio_server() as (r, w):
                     await proxy.run(r, w, proxy.create_initialization_options())
@@ -989,6 +1049,7 @@ def enforced_capabilities(cfg: dict) -> dict:
     MCP tool (e.g. read_file) yields one entry.
     """
     from tenuo import OneOf
+    from tenuo_core import Wildcard
 
     sandbox = cfg["_sandbox_abs"]
     gate_web = bool(webfetch_approval(cfg) and trigger_id(cfg))
@@ -1000,8 +1061,15 @@ def enforced_capabilities(cfg: dict) -> dict:
             caps[g["cap"]] = make_web_constraints(g["web"], approval_gate=gate_web)
         else:
             caps[g["cap"]] = {g["arg"]: make_constraint(g["spec"], sandbox)}
-    for mtool, spec in (cfg.get("mcp", {}).get("enforce") or {}).items():
-        caps.setdefault(mtool, {"path": make_constraint(spec, sandbox)})
+    for mtool, raw in (cfg.get("mcp", {}).get("enforce") or {}).items():
+        if mtool in caps:
+            continue
+        parsed = parse_mcp_enforce_spec(raw)
+        arg = mcp_tool_arg_field(mtool, parsed)
+        if parsed.get("approval") and trigger_id(cfg) and not parsed.get("path_constraint"):
+            caps[mtool] = {arg: Wildcard()}
+        elif parsed.get("path_constraint"):
+            caps[mtool] = {arg: make_constraint(parsed["path_constraint"], sandbox)}
     roles = subagent_roles(cfg)
     if roles:
         # Spawning is a first-class signed capability; per-role child warrants
@@ -1091,6 +1159,25 @@ def update_state_warrant_id(wid: str) -> None:
         pass
 
 
+def sync_runtime_artifacts(cfg: dict | None = None, *, restart_authorizer: bool = False) -> bool:
+    """Regenerate hook/MCP wiring, gateway routes, and subwarrants from tenuo.yaml.
+
+    Does not re-mint or re-fire the session warrant. When ``restart_authorizer``
+    is set and the authorizer is up, reloads it so new routes take effect.
+    """
+    cfg = cfg or load_config()
+    write_claude_wiring(cfg)
+    write_gateway(cfg, enforced_capabilities(cfg))
+    refresh_subwarrants(cfg)
+    harden_state_permissions()
+    if restart_authorizer and authorizer_running(cfg):
+        empty = argparse.Namespace()
+        cmd_down(empty)
+        cmd_up(empty)
+        return True
+    return False
+
+
 def refresh_policy(cfg: dict | None = None) -> str:
     """Re-read tenuo.yaml into runtime artifacts (wiring, gateway, warrant, subwarrants).
 
@@ -1131,7 +1218,7 @@ def write_claude_wiring(cfg: dict) -> None:
     """
     claude_dir = DEMO_DIR / ".claude"
     claude_dir.mkdir(exist_ok=True)
-    hook_timeout = APPROVAL_POLL_SECONDS + 30 if webfetch_approval(cfg) else 30
+    hook_timeout = APPROVAL_POLL_SECONDS + 30 if has_approval_gates(cfg) else 30
     (claude_dir / "settings.json").write_text(json.dumps({"hooks": {
         "PreToolUse": [{"matcher": "*", "hooks": [
             {"type": "command", "command": wiring_command_string("_hook"),
@@ -1296,6 +1383,16 @@ def fetch_tenant_root(url: str, api_key: str):
         return None
 
 
+def root_from_warrant_issuer(warrant_b64: str) -> str | None:
+    """Best-effort Cloud trust anchor fallback when no signed SRL exists yet."""
+    try:
+        from tenuo import Warrant
+        issuer = Warrant.from_base64(warrant_b64).issuer
+        return issuer.to_bytes().hex()
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Tenuo Cloud: triggers (Cloud-issued, root-signed warrants)
 # ---------------------------------------------------------------------------
@@ -1421,6 +1518,10 @@ def probe_runtime_creds(creds: dict) -> tuple[bool, str]:
     status, body = cloud_api("GET", url, key, "/v1/revocations/srl/signed")
     if status == 200:
         return True, "runtime key accepted by Cloud"
+    if status == 404 and isinstance(body, dict):
+        code = (body.get("error") or {}).get("code")
+        if code == "srl_not_found":
+            return True, "runtime key accepted by Cloud (no SRL yet)"
     if status == 401:
         return False, "invalid_api_key (use Quick Connect token, not ak_… id)"
     if status == 403:
@@ -1459,12 +1560,30 @@ def write_cloud_profile(*, url: str) -> None:
     CLOUD_PROFILE.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
 
 
-def write_advanced_profile(*, approver: str, threshold: int = 1) -> None:
+def write_advanced_profile(*, approver: str | None = None, approver_id: str | None = None,
+                           threshold: int = 1) -> None:
     import yaml
 
+    cloud = {}
+    if approver_id:
+        cloud["approver_identity_id"] = approver_id
+    elif approver:
+        cloud["approver_identity"] = approver
+    else:
+        raise SystemExit("--advanced requires --approver-id or --approver.")
     data: dict = {
-        "cloud": {"approver_identity": approver},
+        "cloud": cloud,
         "enforce": {"WebFetch": {"approval": {"threshold": threshold}}},
+        "mcp": {
+            "enforce": {
+                "delete_deployment": {
+                    "approval": {
+                        "threshold": threshold,
+                        "exempt": {"target": "exact:staging"},
+                    },
+                },
+            },
+        },
     }
     ADVANCED_PROFILE.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
 
@@ -1733,8 +1852,8 @@ def cmd_check(_args) -> None:
             _check_line(bool(tid), "cloud setup", f"trigger {tid}" if tid else "incomplete")
         else:
             _check_line(None, "cloud setup", "not run yet", "run: tenuo-admin setup")
-        if cfg and webfetch_approval(cfg) and not load_cloud_state().get("web_fetch_approval_policy_id"):
-            _check_line(None, "web approval", "policy not wired", "re-run: tenuo-admin setup")
+        if cfg and has_approval_gates(cfg) and not approval_policy_id(cfg):
+            _check_line(None, "approval", "policy not wired", "re-run: tenuo-admin setup")
 
     run_cfg = cfg or {"name": "tenuo-claude"}
     if WARRANT.exists():
@@ -1852,11 +1971,12 @@ def cmd_onboard(args) -> None:
 
     if getattr(args, "advanced", False) or getattr(args, "demo", False):
         approver = getattr(args, "approver", None)
-        if not approver and not getattr(args, "yes", False):
+        approver_id = getattr(args, "approver_id", None)
+        if not approver and not approver_id and not getattr(args, "yes", False):
             approver = _prompt("Approver display name (must exist in Cloud)")
-        if not approver:
-            raise SystemExit("--advanced requires an approver display name.")
-        write_advanced_profile(approver=approver)
+        if not approver and not approver_id:
+            raise SystemExit("--advanced requires --approver-id or --approver.")
+        write_advanced_profile(approver=approver, approver_id=approver_id)
         print(f"Wrote {ADVANCED_PROFILE.name} (advanced — re-run `tenuo-admin setup`)")
 
     admin_key = getattr(args, "admin_key", None) or os.environ.get("TENUO_ADMIN_KEY")
@@ -1907,6 +2027,7 @@ def cmd_bootstrap(args) -> None:
             advanced=getattr(args, "advanced", False) or getattr(args, "demo", False),
             connect_token=getattr(args, "connect_token", None),
             approver=getattr(args, "approver", None),
+            approver_id=getattr(args, "approver_id", None),
             admin_key=getattr(args, "admin_key", None),
         ))
 
@@ -1942,7 +2063,8 @@ def fire_session_warrant(cfg: dict, creds: dict) -> tuple[str, str]:
                              f"/v1/triggers/{tid}/fire", {"event_data": event})
     if status != 200 or not isinstance(body, dict) or not body.get("warrant"):
         raise SystemExit(f"Trigger fire failed ({status}): {body}")
-    root = creds.get("root") or fetch_tenant_root(creds["url"], creds["api_key"])
+    root = (creds.get("root") or fetch_tenant_root(creds["url"], creds["api_key"])
+            or root_from_warrant_issuer(body["warrant"]))
     if not root:
         raise SystemExit("Fired warrant but could not resolve tenant root for trust anchor.")
     return body["warrant"], root
@@ -2175,12 +2297,15 @@ def cmd_status(_args) -> None:
         print("mode        : AUDIT — observe-only (decisions logged, NOT enforced)")
     print(f"enforced    : {gov or '<none>'}")
     print(f"audit-allow : {aud or '<none>'}   | default: {default_mode(cfg)}")
-    if webfetch_approval(cfg):
+    if has_approval_gates(cfg):
         cs = load_cloud_state()
-        who = cs.get("web_fetch_approver") or (cfg.get("cloud") or {}).get("approver_identity") or "?"
-        pid = cs.get("web_fetch_approval_policy_id")
+        cloud_cfg = cfg.get("cloud") or {}
+        who = (cs.get("web_fetch_approver") or cloud_cfg.get("approver_identity")
+               or cloud_cfg.get("approver_identity_id") or "?")
+        pid = approval_policy_id(cfg)
         wired = f"policy {pid}" if pid else "NOT set up (run `tenuo-admin setup`)"
-        print(f"approval: gated tool calls -> approver sign-off ({who}) | {wired}")
+        gates = cs.get("approval_gates") or [g[0] for g in approval_entries(cfg)]
+        print(f"approval    : {', '.join(gates)} -> {who} | {wired}")
     roles = subagent_roles(cfg)
     if roles:
         defs = agent_definitions()
@@ -2377,28 +2502,52 @@ def cmd_verify(args) -> None:
                 f"NO agent definition — add .claude/agents/{role}.md or rename to a real subagent_type")
             extra.append(f"    {mark} role {role} -> {detail}")
 
-    appr = webfetch_approval(cfg)
-    if appr:
+    if has_approval_gates(cfg):
         extra.append("  [approval]")
         st = load_cloud_state()
-        pid = st.get("web_fetch_approval_policy_id")
-        approver = st.get("web_fetch_approver")
+        pid = approval_policy_id(cfg)
+        cloud_cfg = cfg.get("cloud") or {}
+        approver = (st.get("web_fetch_approver") or cloud_cfg.get("approver_identity")
+                    or cloud_cfg.get("approver_identity_id"))
         cloud_ready = bool((cfg.get("cloud") or {}).get("url") and pid)
         ok = ok and (bool(pid) if cloud_ready else True)
+        gates = st.get("approval_gates") or [g[0] for g in approval_entries(cfg)]
         extra.append(
             f"    {'ok' if pid else '..'} policy {pid or 'not set up (run tenuo-admin setup)'}"
-            f"{f'  approver={approver}' if approver else ''}")
-        allowed, reason, _, _ = authorize_call(
-            cfg, "WebFetch", {"url": "https://example.com/data"}, None, roles, live=False)
-        gated = (not allowed) and reason.startswith(APPROVAL_PENDING_REASON)
-        if cloud_ready:
-            ok = ok and gated
-            extra.append(
-                f"    {'ok' if gated else 'XX'} gate off-allowlist -> "
-                f"{'approval required' if gated else 'NOT gated (' + reason + ')'}")
-        else:
-            extra.append(
-                f"    .. gate off-allowlist denied locally (approval is Cloud-only): {reason}")
+            f"{f'  approver={approver}' if approver else ''}  gates={', '.join(gates)}")
+        if webfetch_approval(cfg):
+            allowed, reason, _, _ = authorize_call(
+                cfg, "WebFetch", {"url": "https://example.com/data"}, None, roles, live=False)
+            gated = (not allowed) and reason.startswith(APPROVAL_PENDING_REASON)
+            if cloud_ready:
+                ok = ok and gated
+                extra.append(
+                    f"    {'ok' if gated else 'XX'} web_fetch off-allowlist -> "
+                    f"{'approval required' if gated else 'NOT gated (' + reason + ')'}")
+            else:
+                extra.append(
+                    f"    .. web_fetch off-allowlist denied locally (approval is Cloud-only): {reason}")
+        mcp_gated = {
+            tool: parsed for tool, parsed in mcp_enforce_entries(cfg).items() if parsed.get("approval")}
+        if "delete_deployment" in mcp_gated:
+            allowed, reason, _, _ = authorize_call(
+                cfg, "delete_deployment", {"target": "production"}, None, roles, live=False)
+            gated = (not allowed) and reason.startswith(APPROVAL_PENDING_REASON)
+            if cloud_ready:
+                ok = ok and gated
+                extra.append(
+                    f"    {'ok' if gated else 'XX'} delete_deployment production -> "
+                    f"{'approval required' if gated else 'NOT gated (' + reason + ')'}")
+            else:
+                extra.append(
+                    f"    .. delete_deployment production denied locally (approval is Cloud-only): {reason}")
+            allowed, reason, _, _ = authorize_call(
+                cfg, "delete_deployment", {"target": "staging"}, None, roles, live=False)
+            if cloud_ready:
+                ok = ok and allowed
+                extra.append(
+                    f"    {'ok' if allowed else 'XX'} delete_deployment staging -> "
+                    f"{'allowed (exempt)' if allowed else reason}")
 
     if deep and not getattr(args, "no_live", False):
         ok = ok and check_claude_hook_exit_contract()
@@ -2591,17 +2740,19 @@ def cmd_init(args) -> None:
         print(f"Cloud profile written: {CLOUD_PROFILE.name}")
         if getattr(args, "advanced", False) or getattr(args, "demo", False):
             approver = getattr(args, "approver", None)
-            if not approver:
-                raise SystemExit("--advanced requires --approver (Cloud identity display name).")
-            write_advanced_profile(approver=approver)
+            approver_id = getattr(args, "approver_id", None)
+            if not approver and not approver_id:
+                raise SystemExit("--advanced requires --approver-id or --approver.")
+            write_advanced_profile(approver=approver, approver_id=approver_id)
             print(f"Advanced profile written: {ADVANCED_PROFILE.name}")
         if not CLOUD_ENV.exists() and CLOUD_ENV_EXAMPLE.exists():
             print(f"Next: copy {CLOUD_ENV_EXAMPLE.name} → .state/cloud.env and paste Quick Connect token")
     if (getattr(args, "advanced", False) or getattr(args, "demo", False)) and not getattr(args, "cloud", False):
         approver = getattr(args, "approver", None)
-        if not approver:
-            raise SystemExit("--advanced requires --approver (Cloud identity display name).")
-        write_advanced_profile(approver=approver)
+        approver_id = getattr(args, "approver_id", None)
+        if not approver and not approver_id:
+            raise SystemExit("--advanced requires --approver-id or --approver.")
+        write_advanced_profile(approver=approver, approver_id=approver_id)
         print(f"Advanced profile written: {ADVANCED_PROFILE.name} — re-run `tenuo-admin setup`")
     cfg = load_config()
     info = generate(cfg)
@@ -2681,6 +2832,7 @@ def main() -> None:
                     help="write tenuo.advanced.yaml (human approval overlay; WebFetch example)")
     pi.add_argument("--demo", action="store_true", help=argparse.SUPPRESS)  # deprecated alias
     pi.add_argument("--approver", help="approver identity display name (requires --advanced)")
+    pi.add_argument("--approver-id", help="stable approver identity id (requires --advanced)")
     pi.add_argument("--cloud-url", help="control plane URL (with --cloud; default from connect token or api.tenuo.ai)")
     po = sub.add_parser("onboard", help="interactive local or Cloud setup wizard")
     po.add_argument("--local", action="store_true", help="local mode (default when neither flag set)")
@@ -2692,6 +2844,7 @@ def main() -> None:
     po.add_argument("--connect-token", help="Quick Connect token (Cloud)")
     po.add_argument("--admin-key", help="tenant-admin key for one-time setup (Cloud)")
     po.add_argument("--approver", help="approver display name (requires --advanced)")
+    po.add_argument("--approver-id", help="stable approver identity id (requires --advanced)")
     po.add_argument("--no-scaffold", action="store_true",
                     help="fail if tenuo.yaml is missing (default: write an example policy)")
     pb = sub.add_parser("bootstrap", help="check + init + up + verify")
@@ -2704,6 +2857,7 @@ def main() -> None:
     pb.add_argument("--connect-token")
     pb.add_argument("--admin-key")
     pb.add_argument("--approver")
+    pb.add_argument("--approver-id")
     pv = sub.add_parser("verify", help="policy self-test against the authorizer")
     pv.add_argument("--deep", action="store_true",
                     help="SSRF matrix, extra Bash denies, live hook exit-code harness")

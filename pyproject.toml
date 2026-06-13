@@ -1,6 +1,6 @@
 [project]
 name = "tenuo-claude-code"
-version = "0.1.9"
+version = "0.2.0"
 description = "Tenuo governance for Claude Code — warrants, hooks, MCP proxy, and Cloud lifecycle"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -49,7 +49,24 @@ build-backend = "hatchling.build"
 packages = ["src/tenuo_claude_code"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/tenuo_claude_code", "README.md", "LICENSE"]
+include = [
+    "src/tenuo_claude_code",
+    "README.md",
+    "LICENSE",
+    "CONTRIBUTING.md",
+    "templates",
+    "docs",
+    "examples",
+    "tests",
+    "demo/README.md",
+    "demo/.claude/agents",
+    "demo/.mcp.json",
+    "demo/fake-secrets.env",
+    "demo/ops_server.py",
+    "demo/sandbox",
+    "demo/tenuo.yaml",
+    "demo/tenuo_demo.py",
+]
 
 [tool.uv]
 package = true

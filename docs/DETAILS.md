@@ -8,6 +8,21 @@ Install and day-to-day commands: [README.md](../README.md). Security summary:
 Trust boundaries: [The Map is not the Territory](https://niyikiza.com/posts/map-territory/).
 Report bugs: [SECURITY.md](../SECURITY.md).
 
+## Agent tools vs operator shell
+
+Tenuo enforces at the **tool-call boundary**: PreToolUse for native tools, the MCP
+proxy for downstream MCP tools. The authorizer decides allow, deny, or
+approval-required from the signed warrant.
+
+| Path | Who triggers it | Governed by Tenuo? |
+|------|-----------------|-------------------|
+| Bash, Read, WebFetch, MCP, … | Model (tool call) | Yes |
+| TUI `!` input-box shell | Operator in Claude Code | No — not a tool call |
+
+The model cannot invoke `!`. Agent-action threats that flow through tools stay on
+the governed path. Operator `!` is a separate affordance and is not intercepted by
+the hook or authorizer.
+
 ## Audit mode (`mode: audit`)
 
 Shadow mode: every call's real allow/deny is still computed against the warrant

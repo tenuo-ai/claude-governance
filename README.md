@@ -487,11 +487,25 @@ Runtime refuses to start if an admin key is in the environment.
    in version control, and the [Cloud capabilities above](#cloud-mode). See
    [Tenuo Cloud docs](https://docs.tenuo.ai).
 
-### Scope and fail-closed
+### Scope and boundaries
 
-Governance covers agent tool calls (Read, Bash, MCP, subagent spawns), not interactive `!` shell in the Claude TUI ([Map vs Territory](https://niyikiza.com/posts/map-territory/)).
+Tenuo governs **model-invoked tool calls**: Read, Bash, WebFetch, MCP tools,
+subagent spawns, and the rest of the PreToolUse hook path. Each call is checked
+against the signed session warrant before it runs.
 
-Missing or broken `tenuo.yaml` denies every call until restored.
+**Agent Bash is in scope.** When the model uses the Bash tool, PreToolUse fires and
+the authorizer applies your policy.
+
+**TUI `!` shell is outside this scope.** In Claude Code, typing `!` in the input
+box runs a command the **operator** typed. The model cannot invoke that path.
+Prompt injection and tool overreach stay on the governed PreToolUse path; they do
+not reach `!`.
+
+Details: [docs/DETAILS.md § Agent tools vs operator shell](docs/DETAILS.md#agent-tools-vs-operator-shell).
+
+### Fail-closed
+
+Missing or broken `tenuo.yaml` denies every governed tool call until restored.
 
 Keys and credentials in `.state/` must be owner-only (`0600` in a `0700` directory).
 

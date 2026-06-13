@@ -16,7 +16,7 @@ tenuo-claude bootstrap
 tenuo-claude demo
 ```
 
-**Cloud already wired** (`.state/cloud.env` present): skip `bootstrap`. Plain `bootstrap` is local-only and moves Cloud files aside.
+**Cloud-configured project** (`.state/cloud.env` present): do not run plain `bootstrap`. It switches to local mode and moves Cloud files aside. Run:
 
 ```bash
 cd demo
@@ -61,15 +61,15 @@ claude -p "Use delete_deployment to tear down production." --dangerously-skip-pe
 claude -p "Use the researcher subagent to run 'ls -la sandbox'." --dangerously-skip-permissions
 ```
 
-Without Claude: `tenuo-claude demo`, then `tenuo-claude audit`.
+Without Claude Code, run `tenuo-claude demo`, then `tenuo-claude audit`.
 
 ## Human approval (optional, Cloud)
 
 Approver sign-off on gated tool calls. Configure in policy, not in this README.
 See [Cloud mode § Human approval](../README.md#human-approval-cloud) and
 [docs/DETAILS.md § Human approval](../docs/DETAILS.md#human-approval-cloud).
-For team configs, prefer `--approver-id` / `cloud.approver_identity_id`; display
-names are kept for quick demos.
+For team configs, use `--approver-id` or `cloud.approver_identity_id`. Display-name
+lookup is intended for demos only.
 
 The reference demo exercises **WebFetch** (native hook) and **delete_deployment** (MCP proxy)
 when approval is configured:

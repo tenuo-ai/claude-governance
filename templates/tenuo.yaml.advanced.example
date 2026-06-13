@@ -10,9 +10,9 @@
 #
 # Apply (preferred for team configs):
 #   tenuo-claude init --advanced --approver-id "<Cloud identity id>"
-# Quickstart/demo fallback:
+# Demo fallback (display name):
 #   tenuo-claude init --advanced --approver "<Cloud identity display name>"
-# or copy to tenuo.advanced.yaml and re-run `tenuo-admin setup`.
+# Or copy to tenuo.advanced.yaml and re-run `tenuo-admin setup`.
 
 cloud:
   # Prefer the stable id. Display names are accepted for demos but can be renamed

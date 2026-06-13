@@ -1787,7 +1787,7 @@ def cmd_check(_args) -> None:
         print("  tenuo-claude verify")
         print("  open Claude Code in this directory")
     else:
-        print("  tenuo-claude up   # refresh warrant if expired")
+        print("  tenuo-claude up   # refresh warrant (authorizer already running)")
     print("\nCHECK OK" if ok else "\nCHECK FAILED — fix items marked !!")
     raise SystemExit(0 if ok else 1)
 

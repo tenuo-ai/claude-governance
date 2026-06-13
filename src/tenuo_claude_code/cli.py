@@ -1931,6 +1931,40 @@ def cmd_onboard(args) -> None:
 
     created = scaffold_example_policy(DEMO_DIR, no_scaffold=getattr(args, "no_scaffold", False))
 
+    admin_key = None
+    if cloud:
+        token = getattr(args, "connect_token", None) or os.environ.get("TENUO_CONNECT_TOKEN")
+        if not token and CLOUD_ENV.exists():
+            token = runtime_env().get("TENUO_CONNECT_TOKEN")
+        if not token and not getattr(args, "yes", False):
+            token = _prompt("Paste Quick Connect token (tenuo_ct_…)")
+        if not token:
+            raise SystemExit("Cloud onboarding needs TENUO_CONNECT_TOKEN (Quick Connect → Authorizer Only).")
+        write_cloud_env(token)
+
+        url = _parse_connect_token(token.strip())["url"]
+        write_cloud_profile(url=url)
+        print(f"Wrote {CLOUD_PROFILE.name}")
+
+        if getattr(args, "advanced", False) or getattr(args, "demo", False):
+            approver = getattr(args, "approver", None)
+            approver_id = getattr(args, "approver_id", None)
+            if not approver and not approver_id and not getattr(args, "yes", False):
+                approver = _prompt("Approver display name (must exist in Cloud)")
+            if not approver and not approver_id:
+                raise SystemExit("--advanced requires --approver-id or --approver.")
+            write_advanced_profile(approver=approver, approver_id=approver_id)
+            print(f"Wrote {ADVANCED_PROFILE.name} (advanced — re-run `tenuo-admin setup`)")
+
+        admin_key = getattr(args, "admin_key", None) or os.environ.get("TENUO_ADMIN_KEY")
+        if not admin_key and ADMIN_ENV.exists():
+            admin_key = read_env_file(ADMIN_ENV).get("TENUO_ADMIN_KEY")
+        if not admin_key and not getattr(args, "yes", False):
+            admin_key = _prompt("Paste tenant-admin key for one-time setup (blank = skip)", "")
+        if admin_key:
+            write_admin_env(admin_key)
+            print(f"Wrote {ADMIN_ENV}")
+
     if not created:
         print("\nRunning preflight…")
         try:
@@ -1954,39 +1988,6 @@ def cmd_onboard(args) -> None:
             raise SystemExit(1 if exc.code is None else exc.code)
         print("\nOnboard complete (local). Open Claude Code in this directory.")
         return
-
-    # Cloud path
-    token = getattr(args, "connect_token", None) or os.environ.get("TENUO_CONNECT_TOKEN")
-    if not token and CLOUD_ENV.exists():
-        token = runtime_env().get("TENUO_CONNECT_TOKEN")
-    if not token and not getattr(args, "yes", False):
-        token = _prompt("Paste Quick Connect token (tenuo_ct_…)")
-    if not token:
-        raise SystemExit("Cloud onboarding needs TENUO_CONNECT_TOKEN (Quick Connect → Authorizer Only).")
-    write_cloud_env(token)
-
-    url = _parse_connect_token(token.strip())["url"]
-    write_cloud_profile(url=url)
-    print(f"Wrote {CLOUD_PROFILE.name}")
-
-    if getattr(args, "advanced", False) or getattr(args, "demo", False):
-        approver = getattr(args, "approver", None)
-        approver_id = getattr(args, "approver_id", None)
-        if not approver and not approver_id and not getattr(args, "yes", False):
-            approver = _prompt("Approver display name (must exist in Cloud)")
-        if not approver and not approver_id:
-            raise SystemExit("--advanced requires --approver-id or --approver.")
-        write_advanced_profile(approver=approver, approver_id=approver_id)
-        print(f"Wrote {ADVANCED_PROFILE.name} (advanced — re-run `tenuo-admin setup`)")
-
-    admin_key = getattr(args, "admin_key", None) or os.environ.get("TENUO_ADMIN_KEY")
-    if not admin_key and ADMIN_ENV.exists():
-        admin_key = read_env_file(ADMIN_ENV).get("TENUO_ADMIN_KEY")
-    if not admin_key and not getattr(args, "yes", False):
-        admin_key = _prompt("Paste tenant-admin key for one-time setup (blank = skip)", "")
-    if admin_key:
-        write_admin_env(admin_key)
-        print(f"Wrote {ADMIN_ENV}")
 
     cmd_init(argparse.Namespace(cloud=False, local=False))
 

@@ -39,7 +39,7 @@ No Docker, or prefer native? Run `tenuo-claude install-authorizer` once, then `b
 
 ## How it works
 
-![Architecture](docs/images/tenuo_claude_code_architecture.svg)
+![Architecture](https://raw.githubusercontent.com/tenuo-ai/claude-governance/main/docs/images/tenuo_claude_code_architecture.png)
 
 ```
 tenuo.yaml  →  init/up  →  warrant + authorizer + hooks + MCP proxy
@@ -451,7 +451,7 @@ In `mode: audit`, denials show as `WOULD-DENY` in `audit` output (`shadow: true`
 
 These are the non-repudiable receipts for compliance and fleet audit, not the local JSONL file.
 
-![Authorization receipts in Tenuo Cloud](docs/images/cloud-audit-stream.png)
+![Authorization receipts in Tenuo Cloud](https://raw.githubusercontent.com/tenuo-ai/claude-governance/main/docs/images/cloud-audit-stream.png)
 
 More: [docs/DETAILS.md § Receipts](docs/DETAILS.md#receipts).
 

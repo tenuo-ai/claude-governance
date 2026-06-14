@@ -1,7 +1,8 @@
 # Implementation details
 
 How **`tenuo-claude-code`** behaves: policy → warrant → authorizer → hooks/MCP proxy.
-Install and day-to-day commands: [README.md](../README.md). Security summary:
+Install and day-to-day commands: [README.md](../README.md). Troubleshooting:
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md). Security summary:
 [README § Security](../README.md#security). Optional sample project:
 [demo/](../demo/).
 
@@ -28,10 +29,9 @@ the hook or authorizer.
 Shadow mode: every call's real allow/deny is still computed against the warrant
 and written to the local decision log, but nothing is blocked.
 
-**Neutrality invariant:** in audit mode the hook emits *no* permission decision.
-Claude's own permission prompts and settings stay fully in effect. Observe-only
-never weakens the stock posture. An explicit hook "allow" would silently
-auto-approve calls the user's settings would have prompted on.
+In audit mode the hook emits no permission decision — it does not allow or deny.
+Claude's own prompts and settings remain fully in effect. An explicit hook "allow"
+would silently auto-approve bypasses, so observe-only emits nothing.
 
 Rollout: watch `WOULD-DENY` rows in `audit`, tune policy, then set `mode: enforce`.
 The hook reads `mode` live (next tool call); the MCP proxy picks it up on the
@@ -49,6 +49,25 @@ config on the control plane. Re-run **`tenuo-admin setup`** when those lists cha
 then `refresh`.
 
 **Live without refresh:** `mode: audit` / `mode: enforce` only (hook blocking posture).
+
+## Preflight and Cloud bindings (`tenuo-claude check`)
+
+`check` validates Python deps, authorizer runtime, hook/MCP wiring, and (when Cloud
+artifacts exist) live control-plane bindings before you run `up`.
+
+With a tenant-admin key in `~/.tenuo/admin.env`, **cloud bindings** compares:
+
+- local holder public key (`.state/holder_key.b64`) vs the Cloud agent's claimed key
+- agent `allowed_triggers` vs the configured trigger id
+- a runtime-key **dry-run trigger fire** (`would_issue=true`)
+
+If any step fails, `check` suggests `tenuo-admin setup`. Day-to-day Cloud workflow:
+
+```bash
+tenuo-claude check && tenuo-claude up
+```
+
+Common failures: [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 ## Production wiring
 
@@ -192,8 +211,7 @@ plants this case). Races between check and open need execution-time guards
 Session warrants expire (1h TTL). `status` flags `EXPIRED` when lapsed.
 `tenuo-claude up` refreshes even while the authorizer is running: Cloud
 re-fires the trigger; local re-mints with the same issuer key. No container
-restart: the warrant rides in each request header.
-Subagent child warrants are
+restart: the warrant rides in each request header. Subagent child warrants are
 re-derived from the fresh session warrant.
 
 ## Bash: `shlex` not `regex`
@@ -220,11 +238,7 @@ runs under the session warrant.
 Roles must match a real `subagent_type` (`.claude/agents/<name>.md` frontmatter
 `name:` or a built-in). `verify` and `status` validate this.
 
-**Workflow:** bundled as audit-allow in the package harness list (`src/tenuo_claude_code/data/harness_tools.yaml`). With `subagents:`
-declared, inner tool calls from Workflow agents carry an `agent_type` that is
-not a declared role. Layer 2 denies them (fail-closed). Workflow is effectively
-unusable in subagent mode unless you remove it from the audit list or omit
-`subagents:` for flat session coverage.
+**Workflow:** bundled as audit-allow in the package harness list (`src/tenuo_claude_code/data/harness_tools.yaml`). With `subagents:` declared, inner tool calls from Workflow agents carry an `agent_type` that is not a declared role; the authorizer denies them. Workflow is effectively unusable in subagent mode unless you remove it from the audit list or omit `subagents:` for flat session coverage.
 
 Changing `subagents:` is a policy change: re-run `tenuo-admin setup` (Cloud) or
 `init` (local). Subagents may drop parent approval gates for tools they no longer
@@ -264,11 +278,9 @@ See [README § Receipts](../README.md#receipts).
 ## Hook exit codes and fail-closed
 
 Claude Code blocks PreToolUse only on exit code **2** or an explicit `deny`.
-Exit code **1** (including an unhandled traceback) is non-blocking. The tool
-call proceeds. Harness semantics can change between Claude Code releases.
-
-`_hook` wraps its body in a fail-closed guard: internal errors become explicit
-deny decisions, never bare exceptions.
+Exit code **1** (including an unhandled traceback) is non-blocking and the tool
+call proceeds. `_hook` wraps its body in a fail-closed guard: internal errors
+become explicit deny decisions, never bare exceptions.
 
 `verify --deep` runs a live canary when `claude` is on PATH (`--no-live` to skip). The
 test hook writes a marker file before exiting so verify can distinguish "hook

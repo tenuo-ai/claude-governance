@@ -11,3 +11,5 @@ Copy these into a governed project directory (or `~/.tenuo/` for the admin env f
 | `admin.env.example` | `~/.tenuo/admin.env` |
 
 Ready-made policies with subagents and MCP: [examples/policies/](../examples/policies/).
+
+Setup issues: [docs/TROUBLESHOOTING.md](../docs/TROUBLESHOOTING.md).

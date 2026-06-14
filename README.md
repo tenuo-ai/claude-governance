@@ -23,8 +23,6 @@ tenuo-claude bootstrap
 
 When `verify` passes, open Claude Code in this directory.
 
-To evaluate without Claude Code, run `bootstrap` and read the `verify` output. That is enough to confirm enforcement.
-
 **Native authorizer (no Docker):**
 
 ```bash
@@ -49,6 +47,7 @@ tenuo-claude bootstrap
 | Connect to Tenuo Cloud | [Cloud mode](#cloud-mode) |
 | Review security posture | [Security](#security) |
 | Plan org-wide rollout | [Talk to us](https://tenuo.ai/early-access.html) |
+| Something failed during setup | [Troubleshooting (Q&A)](docs/TROUBLESHOOTING.md) |
 | Implementation depth | [docs/DETAILS.md](docs/DETAILS.md) |
 
 ## How it works
@@ -69,8 +68,6 @@ tenuo.yaml  →  init/up  →  warrant + authorizer + hooks + MCP proxy
 
 **Native tools** (Read, Bash, WebFetch, and the rest) go through a PreToolUse hook. **MCP tools** go through a proxy in place of the downstream server. At `init`, Tenuo mints a **session warrant**; each call must prove it holds that warrant before the authorizer allows the action.
 
-Both paths use the same warrant and authorizer.
-
 More: [docs/DETAILS.md](docs/DETAILS.md)
 
 ## Prerequisites
@@ -80,7 +77,7 @@ More: [docs/DETAILS.md](docs/DETAILS.md)
   - **Docker** (default when the daemon is running): [Docker Desktop](https://www.docker.com/products/docker-desktop/) or your engine, then `tenuo-claude up`. Uses the pinned `tenuo/authorizer` image.
   - **Native** (no Docker): run `tenuo-claude install-authorizer`, then `tenuo-claude up --native`. On first run, add `--install`. Override the binary with `TENUO_AUTHORIZER_BIN`. Set `TENUO_AUTHORIZER_SKIP_VERSION=1` only for local dev builds.
   - To force native while Docker is installed, set `TENUO_AUTHORIZER_BACKEND=native` before `bootstrap` or `up`.
-- **Claude Code** (optional): required for live agent sessions. `bootstrap` and `verify` run without it.
+- [Claude Code](https://code.claude.com/docs) — Tenuo wires PreToolUse hooks and MCP proxy at `init`.
 
 **Local mode:** no Tenuo Cloud account. Suitable for single-project evaluation.
 
@@ -90,17 +87,21 @@ More: [docs/DETAILS.md](docs/DETAILS.md)
 
 ## Use the tool (PyPI)
 
-After [Try it](#try-it), you have an example `tenuo.yaml`, a running authorizer, and passing `verify`. Stay in that project directory for every command below.
+After [Try it](#try-it), you have an example `tenuo.yaml`, a running authorizer, and passing `verify`.
 
 ### Day to day
 
 | When | Command |
 |------|---------|
-| Start work | `tenuo-claude up` or `tenuo-claude up --native` |
-| You edited `tenuo.yaml` | `tenuo-claude refresh` |
+| Start work (Cloud) | `tenuo-claude check && tenuo-claude up` |
+| Start work (local only) | `tenuo-claude up` or `tenuo-claude up --native` |
+| `check` reports cloud bindings failure | `tenuo-admin setup`, then `check && up` again |
+| You edited `tenuo.yaml` | `tenuo-claude refresh` (local); Cloud capability changes also need `tenuo-admin setup` |
 | Diagnose setup | `tenuo-claude check` |
 | See decisions | `tenuo-claude audit` |
 | Stop authorizer | `tenuo-claude down` |
+
+See [Troubleshooting (Q&A)](docs/TROUBLESHOOTING.md) for common errors.
 
 If you always use the native authorizer without Docker, set `TENUO_AUTHORIZER_BACKEND=native` in your shell so plain `up` selects the host binary.
 
@@ -135,7 +136,9 @@ Use `--native` when Docker is not available. On the first native run, add `--ins
 
 Sample policy, MCP stub, and scripted tour in [demo/](demo/). The shipped `demo/tenuo.yaml` is richer than the bootstrap example; Cloud and approval overlays may already be present.
 
-**First time, local only** (no `.state/cloud.env` yet):
+From repo root: `uv venv && uv sync && source .venv/bin/activate`, then:
+
+**First time, local only** (no `.state/cloud.env`):
 
 ```bash
 cd demo
@@ -143,18 +146,37 @@ tenuo-claude bootstrap
 tenuo-claude demo
 ```
 
-**Already Cloud-configured** (`.state/cloud.env` or `tenuo.cloud.yaml` present): do not run plain `bootstrap`. It switches to local mode and moves Cloud files aside. Use:
+**First time, Cloud** (recommended for the reference demo with receipts):
 
 ```bash
 cd demo
-tenuo-claude up
+tenuo-claude bootstrap --cloud
+# or: tenuo-claude onboard --cloud
+tenuo-claude demo
+```
+
+Paste Quick Connect (**Authorizer Only**) into `.state/cloud.env` and tenant-admin
+key into `~/.tenuo/admin.env` when prompted. See [Cloud mode](#cloud-mode).
+
+**Already Cloud-configured** (`.state/cloud.env` or `tenuo.cloud.yaml` present):
+
+Do **not** run plain `bootstrap` — it switches to local mode and moves Cloud files
+aside. Use:
+
+```bash
+cd demo
+tenuo-claude check && tenuo-claude up
 tenuo-claude verify
 tenuo-claude demo
 ```
 
+If `check` fails on **cloud bindings** → `tenuo-admin setup`, then retry.
+
 For human approval: [Cloud mode § Human approval](#human-approval-cloud), then `tenuo-claude demo --advanced --live-approval`.
 
-If local `bootstrap` was run on a Cloud-configured project, restore `.state/cloud.env` and policy overlays from backup, then run `tenuo-admin setup` to re-claim the holder key.
+If plain `bootstrap` was run on a Cloud-configured project, restore `.state/cloud.env`
+and policy overlays from backup, then `tenuo-admin setup`. See
+[Troubleshooting](docs/TROUBLESHOOTING.md).
 
 From a git checkout, see [Build from source](#build-from-source).
 
@@ -167,15 +189,15 @@ From a git checkout, see [Build from source](#build-from-source).
 | `up` / `down` | Start / stop authorizer. `up` flags: `--native`, `--docker`, `--install` (native, first run) |
 | `install-authorizer` | Install `tenuo-authorizer` to `~/.tenuo/bin` (no manual `cargo`) |
 | `refresh` | Re-apply `tenuo.yaml` (restarts authorizer if up) |
-| `check` | Preflight: deps, credentials, wiring drift |
-| `verify [--deep]` | Policy self-test against the authorizer |
+| `check` | Preflight: deps, credentials, wiring drift, Cloud binding probe |
+| `verify [--deep]` | Policy self-test against the authorizer (no agent session required) |
 | `status` | Warrant, posture, Cloud summary |
 | `onboard` | Interactive local or Cloud setup wizard |
 | `bench [--json]` | Per-tool-call overhead |
 | `audit [--tail N]` | Receipt trail |
 | `revoke` | Revoke session warrant |
 
-See also: [Policy](#policy-tenuoyaml) · [Cloud mode](#cloud-mode) · [docs/DETAILS.md](docs/DETAILS.md)
+See also: [Policy](#policy-tenuoyaml) · [Cloud mode](#cloud-mode) · [Troubleshooting](docs/TROUBLESHOOTING.md) · [docs/DETAILS.md](docs/DETAILS.md)
 
 ---
 
@@ -205,11 +227,12 @@ Run commands via the repo launcher or editable install:
 
 ```bash
 cd demo
-tenuo-claude up          # if Cloud is already wired; see Reference demo above
+tenuo-claude check && tenuo-claude up   # Cloud; see Reference demo if check fails
 tenuo-claude demo
 ```
 
-First local-only run: use `tenuo-claude bootstrap` instead of `up` when `.state/cloud.env` is not present.
+First local-only run (no `.state/cloud.env`): use `tenuo-claude bootstrap` instead.
+First Cloud run: `tenuo-claude bootstrap --cloud` or `onboard --cloud`.
 
 Use `tenuo-claude up --native` when Docker is not available.
 
@@ -275,8 +298,6 @@ Use Cloud when you need organization-scale governance, not just a single laptop:
   every tool call at the hook and MCP proxy. Engineers cannot disable it with local
   Claude permission edits or `--dangerously-skip-permissions`
 
-Local mode (no Cloud account) remains fully supported for evaluation and single-project use.
-
 ### Cloud quickstart
 
 Two keys, two files. Runtime never sees the admin key:
@@ -288,9 +309,7 @@ Two keys, two files. Runtime never sees the admin key:
 
 **Do not** put the tenant-admin key in `.state/cloud.env` or your shell when running `tenuo-claude up`. Runtime refuses to start if an admin key is reachable.
 
-**Fresh project**
-
-Creates an example `tenuo.yaml` if none exists.
+**Fresh project** (creates `tenuo.yaml` if none exists):
 
 ```bash
 pip install tenuo-claude-code
@@ -298,9 +317,7 @@ mkdir my-project && cd my-project
 tenuo-claude bootstrap --cloud
 ```
 
-Requires a Quick Connect token (`tenuo_ct_…`); the wizard prompts for it. For an explicit Cloud URL and API key (without Quick Connect), use the manual setup block below. `bootstrap --cloud` requires Quick Connect.
-
-Prompts for credentials, then runs `init`, `tenuo-admin setup`, `up`, and `verify`. Pass a tenant-admin key to run setup in the same step.
+The wizard prompts for a Quick Connect token (`tenuo_ct_…`), then runs `init`, `tenuo-admin setup`, `up`, and `verify`. For an explicit Cloud URL and API key without Quick Connect, use the manual setup block below.
 
 Non-interactive:
 
@@ -340,9 +357,17 @@ mkdir -p .state ~/.tenuo
 
 tenuo-claude init --cloud
 tenuo-admin setup
-tenuo-claude up
+tenuo-claude check && tenuo-claude up
 tenuo-claude verify
 ```
+
+**Every session** (after onboarding):
+
+```bash
+tenuo-claude check && tenuo-claude up
+```
+
+If `check` reports **cloud bindings** failure, run `tenuo-admin setup` and retry.
 
 ### Verify onboarding
 
@@ -354,11 +379,14 @@ tenuo-claude check
 tenuo-admin show
 ```
 
-You should see: authorizer up, cloud profile merged, a trigger id in `tenuo-admin show`, and CHECK OK with no admin key in runtime env.
+You should see: authorizer up, cloud profile merged, a trigger id in `tenuo-admin show`, **cloud bindings — trigger fire dry-run OK**, and CHECK OK with no admin key in runtime env.
 
 Re-run `tenuo-admin setup` when Cloud capabilities change — setup syncs the local
-gateway and reloads the authorizer when it is already running. Re-run
-`tenuo-claude refresh` for local-only policy edits (no Cloud trigger change).
+gateway, reconciles agent/trigger/holder bindings, and reloads the authorizer when
+it is already running. Re-run `tenuo-claude refresh` for local-only policy edits (no
+Cloud trigger change).
+
+Stuck? [Troubleshooting (Q&A)](docs/TROUBLESHOOTING.md).
 
 ### Human approval (Cloud)
 
@@ -413,9 +441,7 @@ Details: [docs/DETAILS.md § Human approval](docs/DETAILS.md#human-approval-clou
 
 ## Security
 
-Tenuo works **alongside** Claude Code permissions. It does not replace managed settings.
-
-You still deploy hooks. Tenuo adds a signed session warrant, a local authorizer on every tool call, and a decision log per call. Policy is one file (`tenuo.yaml`).
+Tenuo works **alongside** Claude Code permissions — it does not replace managed settings. `tenuo-claude init` wires a PreToolUse hook and MCP proxy; the authorizer enforces the session warrant on every tool call and logs a receipt. Policy is one file (`tenuo.yaml`).
 
 ### vs. Claude Code permissions
 
@@ -429,7 +455,7 @@ You still deploy hooks. Tenuo adds a signed session warrant, a local authorizer 
 | Org-wide deployment | Per-user settings; users can edit local hooks | Managed settings + shared policy; hook/proxy enforcement is not user-editable |
 | `--dangerously-skip-permissions` | Bypasses Claude permission prompts | Hook and MCP proxy still enforce the warrant |
 
-That flag skips Claude's permission UI, not the warrant.
+`--dangerously-skip-permissions` skips Claude's permission UI, not the warrant.
 
 Org admins can block it in managed settings (`disableBypassPermissionsMode`).
 
@@ -446,7 +472,7 @@ For teams that need a **global configuration engineers cannot bypass**:
 
 ### Receipts
 
-Every governed tool call must prove possession of the session key (proof-of-possession) when asking the authorizer for allow/deny.
+Every governed tool call carries a proof-of-possession signature; the authorizer verifies it before returning allow/deny.
 
 What you can **read back** depends on mode:
 

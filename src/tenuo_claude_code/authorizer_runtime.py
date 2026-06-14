@@ -464,7 +464,19 @@ def start_native(
     assert_port_available(port, authz_url, mount)
     ensure_binary_version(binary, image)
     stop_native(mount)
-    env = os.environ.copy()
+    # Scoped environment: pass only what the authorizer process needs.
+    # Starting from os.environ would leak unrelated shell secrets into a
+    # long-lived network service; Docker mode already limits to denv only.
+    _ALLOWLIST = {
+        "PATH", "HOME", "TMPDIR", "TMP", "TEMP",
+        # TLS CA bundles — needed on some Linux distros / NixOS / corporate MITM
+        "SSL_CERT_FILE", "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+        "NIX_SSL_CERT_DATA",
+        # macOS system locale (avoids Popen locale warnings)
+        "LC_ALL", "LANG",
+    }
+    env: dict[str, str] = {k: v for k, v in os.environ.items() if k in _ALLOWLIST}
     env.update(denv)
     if srl_name and (mount / srl_name).is_file():
         env["TENUO_REVOCATION_LIST"] = str((mount / srl_name).resolve())

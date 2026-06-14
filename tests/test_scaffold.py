@@ -1,7 +1,8 @@
-"""Tests for example policy scaffolding."""
+"""Tests for example policy scaffolding and Claude wiring."""
 
 from __future__ import annotations
 
+import json
 import sys
 import types
 
@@ -113,6 +114,116 @@ def test_write_advanced_profile_keeps_display_name_fallback(monkeypatch, tmp_pat
 
     data = yaml.safe_load(path.read_text())
     assert data["cloud"] == {"approver_identity": "Alice Example"}
+
+
+def _make_cfg(mcp=False):
+    """Minimal config dict for write_claude_wiring tests."""
+    cfg: dict = {"name": "test", "approval": {}}
+    if mcp:
+        cfg["mcp"] = {"downstream": "stdio://unused"}
+    return cfg
+
+
+def _patch_wiring(monkeypatch, tmp_path):
+    """Patch module-level globals needed by write_claude_wiring / wiring_command_parts."""
+    monkeypatch.setattr(cli, "DEMO_DIR", tmp_path, raising=False)
+    monkeypatch.setattr(cli, "APPROVAL_POLL_SECONDS", 30, raising=False)
+    monkeypatch.setattr(cli, "LAUNCHER", tmp_path / "bin" / "tenuo-claude", raising=False)
+    monkeypatch.setattr(cli, "LAUNCHER_REL", "./bin/tenuo-claude", raising=False)
+
+
+def test_write_claude_wiring_creates_settings(monkeypatch, tmp_path):
+    _patch_wiring(monkeypatch, tmp_path)
+
+    cli.write_claude_wiring(_make_cfg())
+
+    settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
+    assert "PreToolUse" in settings["hooks"]
+    assert "PostToolUse" in settings["hooks"]
+
+
+def test_write_claude_wiring_preserves_existing_hooks(monkeypatch, tmp_path):
+    """Non-Tenuo hooks must survive a wiring refresh."""
+    _patch_wiring(monkeypatch, tmp_path)
+    claude_dir = tmp_path / ".claude"
+    claude_dir.mkdir()
+    existing = {
+        "permissions": {"allow": ["Bash"]},
+        "hooks": {
+            "PreToolUse": [
+                {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo hi"}]}
+            ],
+        },
+    }
+    (claude_dir / "settings.json").write_text(json.dumps(existing))
+
+    cli.write_claude_wiring(_make_cfg())
+
+    settings = json.loads((claude_dir / "settings.json").read_text())
+    assert settings["permissions"] == {"allow": ["Bash"]}
+    pre = settings["hooks"]["PreToolUse"]
+    commands = [h["hooks"][0]["command"] for h in pre]
+    assert any("echo hi" in c for c in commands), "existing hook was removed"
+    assert any("_hook" in c for c in commands), "Tenuo hook was not added"
+
+
+def test_write_claude_wiring_updates_tenuo_hook_in_place(monkeypatch, tmp_path):
+    """Re-running refresh should update the Tenuo hook, not duplicate it."""
+    _patch_wiring(monkeypatch, tmp_path)
+    cli.write_claude_wiring(_make_cfg())
+    cli.write_claude_wiring(_make_cfg())
+
+    settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
+    tenuo_hooks = [
+        h for h in settings["hooks"]["PreToolUse"]
+        if "_hook" in h.get("hooks", [{}])[0].get("command", "")
+    ]
+    assert len(tenuo_hooks) == 1, "Tenuo hook was duplicated"
+
+
+def test_write_claude_wiring_mcp_preserves_other_servers(monkeypatch, tmp_path):
+    """Other MCP servers must be kept when Tenuo server is added."""
+    _patch_wiring(monkeypatch, tmp_path)
+    existing_mcp = {"mcpServers": {"other-server": {"command": "other"}}}
+    mcp_path = tmp_path / ".mcp.json"
+    mcp_path.write_text(json.dumps(existing_mcp) + "\n")
+
+    cli.write_claude_wiring(_make_cfg(mcp=True))
+
+    mcp = json.loads(mcp_path.read_text())
+    assert "other-server" in mcp["mcpServers"]
+    assert cli.MCP_SERVER_NAME in mcp["mcpServers"]
+
+
+def test_write_claude_wiring_mcp_removal_keeps_other_servers(monkeypatch, tmp_path):
+    """When MCP downstream is removed, only the Tenuo server is deleted."""
+    _patch_wiring(monkeypatch, tmp_path)
+    existing_mcp = {
+        "mcpServers": {
+            "other-server": {"command": "other"},
+            cli.MCP_SERVER_NAME: {"command": "tenuo"},
+        }
+    }
+    mcp_path = tmp_path / ".mcp.json"
+    mcp_path.write_text(json.dumps(existing_mcp) + "\n")
+
+    cli.write_claude_wiring(_make_cfg(mcp=False))
+
+    mcp = json.loads(mcp_path.read_text())
+    assert "other-server" in mcp["mcpServers"]
+    assert cli.MCP_SERVER_NAME not in mcp["mcpServers"]
+
+
+def test_write_claude_wiring_mcp_removal_deletes_file_when_empty(monkeypatch, tmp_path):
+    """When the only MCP server is Tenuo's, removing it should delete .mcp.json."""
+    _patch_wiring(monkeypatch, tmp_path)
+    existing_mcp = {"mcpServers": {cli.MCP_SERVER_NAME: {"command": "tenuo"}}}
+    mcp_path = tmp_path / ".mcp.json"
+    mcp_path.write_text(json.dumps(existing_mcp) + "\n")
+
+    cli.write_claude_wiring(_make_cfg(mcp=False))
+
+    assert not mcp_path.exists()
 
 
 def test_root_from_warrant_issuer(monkeypatch):

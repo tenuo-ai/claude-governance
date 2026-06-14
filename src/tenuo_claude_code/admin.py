@@ -359,6 +359,32 @@ def ensure_agent_trigger_binding(url: str, admin: str, agent_id: str, tid: str) 
     return True
 
 
+def ensure_agent_holder_claimed(url: str, api_key: str, admin: str,
+                                agent_id: str, holder_hex: str) -> bool:
+    """Re-claim the holder public key when local material drifted from Cloud."""
+    status, cur = tc.cloud_api("GET", url, admin, f"/v1/agents/{agent_id}")
+    if status != 200 or not isinstance(cur, dict):
+        raise SystemExit(f"Inspect agent failed ({status}): {cur}")
+    cloud_hex = (cur.get("public_key") or "").lower()
+    if cloud_hex and cloud_hex == holder_hex.lower():
+        return False
+    s, rot = tc.cloud_api("POST", url, admin, f"/v1/agents/{agent_id}/rotate", {})
+    if s not in (200, 201) or not isinstance(rot, dict):
+        raise SystemExit(f"Rotate key for re-claim failed ({s}): {rot}")
+    reg_token = rot["registration_token"]
+    s2, body = tc.cloud_api("POST", url, api_key, "/v1/agents/claim",
+                            {"agent_id": agent_id, "public_key": holder_hex,
+                             "registration_token": reg_token})
+    if s2 != 200:
+        hint = ""
+        if s2 == 403:
+            hint = (
+                "\n  .state/cloud.env must hold the Quick Connect / authorizer "
+                "runtime key (RBAC: agent claim + trigger fire), not the admin key.")
+        raise SystemExit(f"Re-claim agent failed ({s2}): {body}{hint}")
+    return True
+
+
 def cmd_setup(_args) -> None:
     """One-time: register the holder agent + create the trigger from tenuo.yaml.
 
@@ -512,6 +538,9 @@ def cmd_setup(_args) -> None:
             print(f"  agent    : {agent_id} '{aname}' (reused)")
         if ensure_agent_trigger_binding(url, admin, agent_id, tid):
             print(f"  agent    : {agent_id} '{aname}' (allowed trigger reconciled)")
+        if ensure_agent_holder_claimed(url, api_key, admin, agent_id, holder_hex):
+            print(f"  agent    : {agent_id} '{aname}' (holder key re-claimed)")
+            tc.save_cloud_state({"holder_pub_hex": holder_hex})
 
     # 2b) Human approval (optional): resolve the configured approver identity and
     #     create/reuse one session-wide Cloud approval policy so the trigger can

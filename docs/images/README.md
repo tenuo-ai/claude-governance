@@ -5,7 +5,7 @@
 | `tenuo_claude_code_architecture.png` | README (PyPI + GitHub) | Architecture diagram (export from `.svg`) |
 | `tenuo_claude_code_architecture.svg` | Source | Editable diagram |
 | `cloud-audit-stream.png` | README | Cloud receipt list (allow/deny/approved) |
-| `cloud-receipt-approval-detail.png` | PRESENTATION | Drill-down: human approval + request hash |
+| `cloud-receipt-approval-detail.png` | README (human approval) | Drill-down: human approval + request hash |
 
 **PyPI:** the project README uses absolute `raw.githubusercontent.com` URLs and PNG
 (raster) assets. PyPI does not resolve relative paths and does not render SVG in

@@ -105,6 +105,93 @@ def test_ensure_agent_trigger_binding_fails_on_patch_error(monkeypatch):
         admin.ensure_agent_trigger_binding("https://api.example", "admin", "agt_1", "trig_new")
 
 
+def test_ensure_agent_holder_claimed_no_op_when_keys_match(monkeypatch):
+    calls = []
+
+    def fake_cloud_api(method, url, api_key, path, body=None):
+        calls.append((method, path))
+        return 200, {"public_key": "aa" * 32}
+
+    monkeypatch.setattr(admin.tc, "cloud_api", fake_cloud_api)
+
+    changed = admin.ensure_agent_holder_claimed(
+        "https://api.example", "runtime", "admin", "agt_1", "aa" * 32)
+
+    assert changed is False
+    assert calls == [("GET", "/v1/agents/agt_1")]
+
+
+def test_ensure_agent_holder_claimed_rotates_and_claims(monkeypatch):
+    calls = []
+
+    def fake_cloud_api(method, url, api_key, path, body=None):
+        calls.append((method, path, body))
+        if method == "GET":
+            return 200, {"public_key": "old" * 16}
+        if method == "POST" and path.endswith("/rotate"):
+            return 200, {"registration_token": "reg_tok"}
+        if method == "POST" and path == "/v1/agents/claim":
+            assert body == {
+                "agent_id": "agt_1",
+                "public_key": "new" * 16,
+                "registration_token": "reg_tok",
+            }
+            assert api_key == "runtime"
+            return 200, {"ok": True}
+        raise AssertionError((method, path))
+
+    monkeypatch.setattr(admin.tc, "cloud_api", fake_cloud_api)
+
+    changed = admin.ensure_agent_holder_claimed(
+        "https://api.example", "runtime", "admin", "agt_1", "new" * 16)
+
+    assert changed is True
+    assert calls == [
+        ("GET", "/v1/agents/agt_1", None),
+        ("POST", "/v1/agents/agt_1/rotate", {}),
+        ("POST", "/v1/agents/claim", {
+            "agent_id": "agt_1",
+            "public_key": "new" * 16,
+            "registration_token": "reg_tok",
+        }),
+    ]
+
+
+def test_ensure_agent_holder_claimed_claims_when_cloud_has_no_key(monkeypatch):
+    calls = []
+
+    def fake_cloud_api(method, url, api_key, path, body=None):
+        calls.append(method)
+        if method == "GET":
+            return 200, {"public_key": ""}
+        if method == "POST" and path.endswith("/rotate"):
+            return 200, {"registration_token": "reg_tok"}
+        return 200, {"ok": True}
+
+    monkeypatch.setattr(admin.tc, "cloud_api", fake_cloud_api)
+
+    changed = admin.ensure_agent_holder_claimed(
+        "https://api.example", "runtime", "admin", "agt_1", "new" * 16)
+
+    assert changed is True
+    assert calls == ["GET", "POST", "POST"]
+
+
+def test_ensure_agent_holder_claimed_fails_on_claim_forbidden(monkeypatch):
+    def fake_cloud_api(method, url, api_key, path, body=None):
+        if method == "GET":
+            return 200, {"public_key": "old" * 16}
+        if method == "POST" and path.endswith("/rotate"):
+            return 200, {"registration_token": "reg_tok"}
+        return 403, {"error": {"code": "forbidden"}}
+
+    monkeypatch.setattr(admin.tc, "cloud_api", fake_cloud_api)
+
+    with pytest.raises(SystemExit, match="Re-claim agent failed"):
+        admin.ensure_agent_holder_claimed(
+            "https://api.example", "runtime", "admin", "agt_1", "new" * 16)
+
+
 def test_build_warrant_config_mcp_approval_gate():
     cfg = {
         "_sandbox_abs": "/sandbox",

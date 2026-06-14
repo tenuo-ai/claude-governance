@@ -443,7 +443,17 @@ def refresh_subwarrants(cfg: dict) -> None:
         builder.with_intent(f"subagent:{role}")
         if rc.get("ttl_seconds"):
             builder.with_ttl(int(rc["ttl_seconds"]))
-        child = builder.delegate(holder)
+        try:
+            child = builder.delegate(holder)
+        except Exception as e:
+            from tenuo.exceptions import DelegationAuthorityError
+            if isinstance(e, DelegationAuthorityError) and "signing key mismatch" in str(e):
+                raise SystemExit(
+                    "Holder signing key does not match the session warrant.\n"
+                    "Local .state/holder_key.b64 drifted from the Cloud-claimed agent key.\n"
+                    "Fix: tenuo-admin setup  (will re-claim the holder key)"
+                ) from e
+            raise
         # Persist the full chain (parent..child): a delegated warrant must be
         # presented as a WarrantStack so the authorizer can verify to the root.
         write_secret(subwarrant_path(role),
@@ -1209,29 +1219,94 @@ def refresh_policy(cfg: dict | None = None) -> str:
     return wid
 
 
-def write_claude_wiring(cfg: dict) -> None:
-    """Generate .claude/settings.json (hooks) and .mcp.json (MCP proxy).
+def _is_tenuo_hook(hook: dict, subcommand: str) -> bool:
+    """True when a hook entry belongs to Tenuo (matches our command string).
 
-    Uses ``bin/tenuo-claude`` (or ``TENUO_CLAUDE_BIN``) so wiring stays portable —
-    no machine-specific Python paths. Re-run ``init`` / ``refresh`` after moving
-    the repo or changing the install path.
+    Hook entries have the shape ``{"matcher": ..., "hooks": [{"command": ...}]}``.
+    The command lives one level deeper, inside the nested ``hooks`` list.
+    """
+    for inner in hook.get("hooks") or []:
+        cmd = inner.get("command", "")
+        if wiring_command_string(subcommand) in cmd or f" {subcommand}" in cmd:
+            return True
+    return False
+
+
+def _merge_hook_list(existing: list, tenuo_entry: dict, subcommand: str) -> list:
+    """Replace the existing Tenuo hook entry in-place; append if absent.
+
+    Preserves all non-Tenuo hooks at their original positions.
+    """
+    merged = [h for h in existing if not _is_tenuo_hook(h, subcommand)]
+    merged.append(tenuo_entry)
+    return merged
+
+
+def write_claude_wiring(cfg: dict) -> None:
+    """Merge Tenuo hooks into .claude/settings.json and Tenuo server into .mcp.json.
+
+    Only Tenuo-owned entries are added or updated; all other keys (permissions,
+    other hooks, other MCP servers) are left untouched.  Re-run ``init`` /
+    ``refresh`` after moving the repo or changing the install path.
     """
     claude_dir = DEMO_DIR / ".claude"
     claude_dir.mkdir(exist_ok=True)
     hook_timeout = APPROVAL_POLL_SECONDS + 30 if has_approval_gates(cfg) else 30
-    (claude_dir / "settings.json").write_text(json.dumps({"hooks": {
-        "PreToolUse": [{"matcher": "*", "hooks": [
+
+    settings_path = claude_dir / "settings.json"
+    try:
+        settings = json.loads(settings_path.read_text()) if settings_path.exists() else {}
+    except (json.JSONDecodeError, OSError):
+        settings = {}
+    if not isinstance(settings, dict):
+        settings = {}
+
+    hooks = settings.setdefault("hooks", {})
+    if not isinstance(hooks, dict):
+        hooks = {}
+        settings["hooks"] = hooks
+
+    hooks["PreToolUse"] = _merge_hook_list(
+        hooks.get("PreToolUse") or [],
+        {"matcher": "*", "hooks": [
             {"type": "command", "command": wiring_command_string("_hook"),
-             "timeout": hook_timeout}]}],
-        "PostToolUse": [{"matcher": "*", "hooks": [
-            {"type": "command", "command": wiring_command_string("_post")}]}],
-    }}, indent=2))
-    mcp = mcp_wiring(cfg)
+             "timeout": hook_timeout}]},
+        "_hook",
+    )
+    hooks["PostToolUse"] = _merge_hook_list(
+        hooks.get("PostToolUse") or [],
+        {"matcher": "*", "hooks": [
+            {"type": "command", "command": wiring_command_string("_post")}]},
+        "_post",
+    )
+    settings_path.write_text(json.dumps(settings, indent=2))
+
     mcp_path = DEMO_DIR / ".mcp.json"
-    if mcp:
-        mcp_path.write_text(json.dumps(mcp, indent=2) + "\n")
+    desired = mcp_wiring(cfg)
+    if desired:
+        try:
+            existing_mcp = json.loads(mcp_path.read_text()) if mcp_path.exists() else {}
+        except (json.JSONDecodeError, OSError):
+            existing_mcp = {}
+        if not isinstance(existing_mcp, dict):
+            existing_mcp = {}
+        servers = existing_mcp.setdefault("mcpServers", {})
+        servers.update(desired["mcpServers"])
+        mcp_path.write_text(json.dumps(existing_mcp, indent=2) + "\n")
     elif mcp_path.exists():
-        mcp_path.unlink()
+        # Remove only the Tenuo server; leave any other MCP servers intact.
+        try:
+            existing_mcp = json.loads(mcp_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            existing_mcp = {}
+        if isinstance(existing_mcp, dict):
+            existing_mcp.get("mcpServers", {}).pop(MCP_SERVER_NAME, None)
+            if existing_mcp.get("mcpServers") == {}:
+                existing_mcp.pop("mcpServers", None)
+            if existing_mcp:
+                mcp_path.write_text(json.dumps(existing_mcp, indent=2) + "\n")
+            else:
+                mcp_path.unlink()
 
 
 def ensure_state_dir() -> None:
@@ -1529,6 +1604,103 @@ def probe_runtime_creds(creds: dict) -> tuple[bool, str]:
     return False, f"HTTP {status}: {body}"
 
 
+def read_admin_key() -> str | None:
+    """Tenant-admin key from env or ~/.tenuo/admin.env (never from cloud.env)."""
+    key = os.environ.get("TENUO_ADMIN_KEY") or os.environ.get("TENUO_ADMIN_API_KEY")
+    if not key and ADMIN_ENV.exists():
+        af = read_env_file(ADMIN_ENV)
+        key = af.get("TENUO_ADMIN_KEY") or af.get("TENUO_ADMIN_API_KEY")
+    return key
+
+
+def local_holder_pub_hex() -> str | None:
+    """Hex-encoded Ed25519 public key from .state/holder_key.b64, if present."""
+    if not HOLDER_KEY.exists():
+        return None
+    try:
+        from tenuo import SigningKey
+        holder = SigningKey.from_bytes(base64.b64decode(HOLDER_KEY.read_text()))
+        return holder.public_key.to_bytes().hex()
+    except Exception:
+        return None
+
+
+def _cloud_error_info(body) -> dict:
+    if not isinstance(body, dict):
+        return {}
+    err = body.get("error")
+    return err if isinstance(err, dict) else body
+
+
+def trigger_fire_failure_message(status: int, body, tid: str) -> str:
+    """Human-readable error when POST /v1/triggers/{id}/fire fails."""
+    err = _cloud_error_info(body)
+    code = err.get("code", "")
+    if code == "agent_not_allowed":
+        agent = load_cloud_state().get("agent_id", "?")
+        return (
+            f"Trigger fire failed ({status}): agent {agent} is not allowed to fire {tid}.\n"
+            "This usually means setup wasn't run after a trigger rename or policy change.\n"
+            "Fix: tenuo-admin setup  (needs admin key in ~/.tenuo/admin.env)"
+        )
+    return f"Trigger fire failed ({status}): {body}"
+
+
+def probe_cloud_bindings(cfg: dict, creds: dict, *, admin_key: str | None = None) -> tuple[bool, str]:
+    """Verify Cloud agent/trigger/holder bindings (dry-run fire + optional admin inspect).
+
+    Returns (ok, detail). When ``admin_key`` is set, also compares the local holder
+    key to the Cloud agent's claimed public key and checks ``allowed_triggers``.
+    """
+    st = load_cloud_state()
+    tid = trigger_id(cfg)
+    agent_id = st.get("agent_id")
+    if not tid or not agent_id:
+        return False, "incomplete cloud setup (missing agent_id or trigger_id)"
+    url, rt_key = creds.get("url"), creds.get("api_key")
+    if not url or not rt_key:
+        return False, "missing runtime credentials in cloud.env"
+
+    local_hex = local_holder_pub_hex()
+    if admin_key:
+        status, agent = cloud_api("GET", url, admin_key, f"/v1/agents/{agent_id}")
+        if status != 200 or not isinstance(agent, dict):
+            return False, f"cannot inspect agent ({status}): {agent}"
+        cloud_hex = (agent.get("public_key") or "").lower()
+        if local_hex and cloud_hex and cloud_hex != local_hex.lower():
+            return False, (
+                f"holder key mismatch (local {local_hex[:16]}… vs cloud {cloud_hex[:16]}…) "
+                "— run tenuo-admin setup"
+            )
+        allowed = agent.get("allowed_triggers") or []
+        if allowed and tid not in allowed:
+            stale = ", ".join(allowed)
+            return False, (
+                f"agent allowed_triggers [{stale}] missing {tid} — run tenuo-admin setup"
+            )
+
+    event = {"sandbox": cfg.get("_sandbox_abs", ""), "agent_id": agent_id}
+    status, body = cloud_api("POST", url, rt_key, f"/v1/triggers/{tid}/fire",
+                             {"event_data": event, "dry_run": True})
+    if status == 200:
+        dr = (body or {}).get("dry_run", {}) if isinstance(body, dict) else {}
+        if dr.get("would_issue"):
+            return True, "trigger fire dry-run OK"
+        return False, f"dry-run would not issue warrant: {body}"
+
+    err = _cloud_error_info(body)
+    if err.get("code") == "agent_not_allowed":
+        if admin_key:
+            return False, (
+                f"agent {agent_id} not allowed to fire {tid} — run tenuo-admin setup"
+            )
+        return False, (
+            f"agent not allowed to fire {tid} — run tenuo-admin setup "
+            "(add admin key to ~/.tenuo/admin.env for a fuller diagnosis)"
+        )
+    return False, f"trigger dry-run failed ({status}): {body}"
+
+
 def write_cloud_env(connect_token: str, authorizer_name: str | None = None) -> None:
     ensure_state_dir()
     cfg = load_config() if CONFIG_FILE.exists() else {}
@@ -1755,6 +1927,7 @@ def _check_wiring(cfg: dict | None, ok: bool) -> bool:
 def cmd_check(_args) -> None:
     """Preflight before init/up: deps, credentials, mode, suggested next steps."""
     ok = True
+    cloud_bindings_ok = True
     print("Preflight check\n")
 
     py_ok = sys.version_info >= (3, 10)
@@ -1850,6 +2023,13 @@ def cmd_check(_args) -> None:
             st = load_cloud_state()
             tid = st.get("trigger_id")
             _check_line(bool(tid), "cloud setup", f"trigger {tid}" if tid else "incomplete")
+            if parsed and st.get("agent_id") and tid:
+                admin_key = read_admin_key()
+                cloud_bindings_ok, b_msg = probe_cloud_bindings(
+                    cfg or {}, creds, admin_key=admin_key)
+                ok = _check_line(
+                    cloud_bindings_ok, "cloud bindings", b_msg,
+                    "" if cloud_bindings_ok else "run: tenuo-admin setup") and ok
         else:
             _check_line(None, "cloud setup", "not run yet", "run: tenuo-admin setup")
         if cfg and has_approval_gates(cfg) and not approval_policy_id(cfg):
@@ -1896,7 +2076,9 @@ def cmd_check(_args) -> None:
 
     print("\nSuggested next steps:")
     hooks_wired = (DEMO_DIR / ".claude" / "settings.json").exists()
-    if not hooks_wired:
+    if mode == "cloud" and files.get("cloud_state") and not cloud_bindings_ok:
+        print("  tenuo-admin setup && tenuo-claude up")
+    elif not hooks_wired:
         print("  tenuo-claude init")
     elif mode == "cloud" and not files["cloud_state"]:
         print("  tenuo-admin setup && tenuo-claude up")
@@ -2063,7 +2245,7 @@ def fire_session_warrant(cfg: dict, creds: dict) -> tuple[str, str]:
     status, body = cloud_api("POST", creds["url"], creds["api_key"],
                              f"/v1/triggers/{tid}/fire", {"event_data": event})
     if status != 200 or not isinstance(body, dict) or not body.get("warrant"):
-        raise SystemExit(f"Trigger fire failed ({status}): {body}")
+        raise SystemExit(trigger_fire_failure_message(status, body, tid))
     root = (creds.get("root") or fetch_tenant_root(creds["url"], creds["api_key"])
             or root_from_warrant_issuer(body["warrant"]))
     if not root:
@@ -2252,15 +2434,15 @@ def cmd_up(_args) -> None:
 def cmd_down(_args) -> None:
     cfg = load_config()
     mount = authorizer_mount_dir()
-    running = authorizer_running(cfg)
     stopped = False
     if art.read_runtime_backend(mount) == "native" or art.native_pid_path(mount).is_file():
         stopped = art.stop_native(mount)
-    name = container_name(cfg)
-    if docker("inspect", "-f", "{{.State.Running}}", name).returncode == 0:
-        docker("rm", "-f", name)
-        art.clear_runtime_meta(mount)
-        stopped = True
+    if _docker_ok()[0]:
+        name = container_name(cfg)
+        if docker("inspect", "-f", "{{.State.Running}}", name).returncode == 0:
+            docker("rm", "-f", name)
+            art.clear_runtime_meta(mount)
+            stopped = True
     if stopped:
         print("Stopped authorizer.")
     else:

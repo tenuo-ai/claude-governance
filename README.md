@@ -7,7 +7,7 @@
 
 **Keep your AI coding agent inside the lines.** Claude Code can read files, run shell, fetch URLs, and call MCP tools. Tenuo puts a signed policy in front of all of it so the agent only does what you allowed, on one laptop or across a Cloud-connected fleet.
 
-**Why:** Claude's permission prompts are easy to bypass (`--dangerously-skip-permissions`, local settings edits). Hook-only guardrails trust the process. Tenuo adds limits you can **prove were enforced**: sandbox-scoped reads, shell allowlists, MCP argument checks, URL policy, and an audit trail per call.
+**Why:** Claude's permission prompts are easy to bypass (`--dangerously-skip-permissions`, local settings edits). Hook-only guardrails trust the process. Tenuo adds limits you can verify were enforced: sandbox-scoped reads, shell allowlists, MCP argument checks, URL policy, and warrant-checked decisions logged per call. With Cloud, those decisions become **signed, non-repudiable receipts**.
 
 **What you get:** one policy file (`tenuo.yaml`), a local authorizer that says allow/deny on every call, and optional [Tenuo Cloud](https://cloud.tenuo.ai) for verifiable receipts, **human approval gates** on high-risk calls, and fleet-wide revocation.
 
@@ -118,7 +118,7 @@ tenuo-claude bootstrap
 
 The chosen URL is saved in `.state/state.json`. Hooks and `verify` read that file, so they stay aligned even if the env var is unset later.
 
-Generated files (do not commit): `.state/` (keys, warrant), `.claude/settings.json` (hooks).
+Generated files (do not commit): `.state/` (keys, warrant, credentials), `.claude/settings.json` (hooks), `.mcp.json` (MCP proxy wiring). `init` also scaffolds `tenuo.yaml` if one does not exist.
 
 ### Custom policy
 
@@ -238,7 +238,7 @@ Use `tenuo-claude up --native` when Docker is not available.
 
 Open Claude Code in `demo/`. See [demo/README.md](demo/README.md) and [Reference demo](#reference-demo) above.
 
-Re-run `tenuo-claude init` or `refresh` after switching Python venvs. Hooks pin `sys.executable` in `.claude/settings.json`.
+Re-run `tenuo-claude init` or `refresh` after moving the repo or reinstalling the package. The hook command is resolved at wiring time (repo `bin/tenuo-claude` → `tenuo-claude` on PATH), so stale wiring after an install change will silently no-op.
 
 Contributors: [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -347,15 +347,19 @@ tenuo-claude onboard --cloud
 
 If you do not pass an admin key to the wizard, run `tenuo-admin setup` before `up`, or place the admin key in `~/.tenuo/admin.env` and run setup yourself.
 
-**Manual setup** (equivalent to the wizard). Credential templates are in [templates/](templates/):
+**Manual setup** (equivalent to the wizard):
 
 ```bash
 cd my-project
-mkdir -p .state ~/.tenuo
-# templates/cloud.env.example → .state/cloud.env
-# templates/admin.env.example → ~/.tenuo/admin.env
-
 tenuo-claude init --cloud
+# init prints the path to a bundled cloud.env.example when .state/cloud.env is missing.
+# Copy it to .state/cloud.env and fill in your Quick Connect token (tenuo_ct_…).
+# See the inline comments in that example file for the two credential formats.
+
+mkdir -p ~/.tenuo
+# ~/.tenuo/admin.env — one line: export TENUO_ADMIN_KEY="tc_…"
+# Get a tenant-admin key from cloud.tenuo.ai → Settings → API Keys.
+
 tenuo-admin setup
 tenuo-claude check && tenuo-claude up
 tenuo-claude verify

@@ -5,15 +5,14 @@
 [![CI](https://github.com/tenuo-ai/claude-governance/actions/workflows/ci.yml/badge.svg)](https://github.com/tenuo-ai/claude-governance/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-Claude Code can read files, run shell commands, fetch URLs, and call MCP tools. **Tenuo lets you write a policy for which of those calls are allowed — and enforces it on every call the model makes.**
+Claude Code can read files, run shell commands, fetch URLs, and call MCP tools.
+Tenuo lets you write a `tenuo.yaml` policy for which of those calls are allowed,
+then checks every model-invoked tool call before it runs.
 
-You list the tools the agent may use and put a constraint on each: file paths confined to a directory, shell limited to specific commands, web requests limited to specific domains. Tenuo compiles that into a signed, expiring credential (a **warrant**) and runs a local **authorizer** that checks every tool call against it, returning allow or deny *before the call runs*. Each decision is logged.
-
-Enforcement is **deterministic and cause-agnostic**: the policy denies an out-of-scope call the same way no matter *why* the model tried it — prompt injection, a hallucination, drift after a long context window, a malicious user, a poisoned tool input, or tomorrow's unnamed attack class. You can't control what the model thinks or is asked to do; you can control what the agent is allowed to do.
-
-This holds even when Claude's own permission prompts are skipped (`--dangerously-skip-permissions`), because enforcement happens at the tool-call boundary, not in Claude's UI. For team deployments where developers should not be able to edit the hook/proxy wiring, use Claude Code managed settings. Connect [Tenuo Cloud](https://cloud.tenuo.ai) to issue warrants from your org's root, collect signed receipts, require human approval on specific calls, and revoke across a fleet.
-
-> Scope note: Tenuo validates the **arguments of each tool call** (a path, a command, a URL) against your policy. It is not an OS sandbox — it doesn't isolate the process or follow what a URL resolves to at connect time. It governs what the model is allowed to *ask a tool to do*.
+Start with the local quickstart below. It writes a starter policy, starts the
+authorizer, wires Claude Code hooks, and runs a self-test. The security model,
+Cloud receipts, approvals, revocation, and rollout notes come after the working
+path.
 
 ## Quickstart
 
@@ -37,7 +36,13 @@ enforce:
 default: deny                        # every other tool call is denied
 ```
 
-Now open Claude Code in `my-project/`. The agent is governed: `Read ./workspace/notes.txt` is allowed; `Read /etc/passwd`, `Bash(curl …)`, or any tool not listed is denied and logged. Run `tenuo-claude audit` to see the decisions. Edit `tenuo.yaml` to fit your project (see [Policy](#policy)), then `tenuo-claude refresh`.
+Now open Claude Code in `my-project/`:
+
+```bash
+claude
+```
+
+The agent is governed: `Read ./workspace/notes.txt` is allowed; `Read /etc/passwd`, `Bash(curl …)`, or any tool not listed is denied and logged. Run `tenuo-claude audit` to see the decisions. Edit `tenuo.yaml` to fit your project (see [Policy](#policy)), then `tenuo-claude refresh`.
 
 Prefer a fuller, pre-built example with an MCP server and a subagent? See the [reference demo](demo/).
 
@@ -46,7 +51,7 @@ Prefer a fuller, pre-built example with an MCP server and a subagent? See the [r
 | Write the policy | [Policy](#policy) |
 | Day-to-day commands | [Commands](#commands) |
 | Org root, receipts, approvals, revocation | [Cloud mode](#cloud-mode) |
-| Why it can't be bypassed | [Security](#security) |
+| Security model and limits | [Security](#security) |
 | Something broke | [Troubleshooting](docs/TROUBLESHOOTING.md) · deep dive [docs/DETAILS.md](docs/DETAILS.md) |
 
 ## Policy

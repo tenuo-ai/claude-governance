@@ -335,8 +335,9 @@ def policy_capability_fingerprint(cfg: dict) -> str:
     """Stable hash of the policy inputs that a Cloud trigger bakes into warrants.
 
     Covers exactly what `tenuo-admin setup` encodes into the trigger's
-    warrant_config: enforced capabilities + their constraint specs, MCP-enforced
-    tools, subagent roles, approval gates, and the catch-all default. Used to
+    warrant_config: enforced capabilities + their constraint specs, audit-allow
+    capabilities, MCP-enforced tools, subagent roles, approval gates, and the
+    catch-all default. Used to
     detect when tenuo.yaml has drifted from the issued warrant — in Cloud mode,
     capability changes only take effect after re-running `tenuo-admin setup`, so a
     plain `refresh` silently ignores them.
@@ -364,6 +365,7 @@ def policy_capability_fingerprint(cfg: dict) -> str:
         "mcp_enforce": mcp_enforce,
         "subagents": subagents,
         "approval": sorted(t for t, _ in approval_entries(cfg)),
+        "audit": sorted(set(audit_map(cfg).values())),
         "default": default_mode(cfg),
     }
     blob = json.dumps(payload, sort_keys=True, default=str)
@@ -2013,6 +2015,18 @@ def _check_line(ok: bool | None, label: str, detail: str = "", hint: str = "") -
     return ok is not False
 
 
+def _find_hook_command(entries: list, subcommand: str) -> str:
+    """Return the Tenuo-owned hook command from a Claude hook list."""
+    for entry in entries or []:
+        if not isinstance(entry, dict) or not _is_tenuo_hook(entry, subcommand):
+            continue
+        for inner in entry.get("hooks") or []:
+            cmd = inner.get("command", "")
+            if cmd:
+                return cmd
+    return ""
+
+
 def _hook_launcher_resolves(command: str) -> tuple[bool, str]:
     """Verify the wired PreToolUse command resolves to a runnable launcher.
 
@@ -2080,9 +2094,7 @@ def _check_wiring(cfg: dict | None, ok: bool) -> bool:
         try:
             settings = json.loads(hooks.read_text())
             pre = (settings.get("hooks") or {}).get("PreToolUse") or []
-            cmd = ""
-            if pre and pre[0].get("hooks"):
-                cmd = pre[0]["hooks"][0].get("command", "")
+            cmd = _find_hook_command(pre, "_hook")
             expect = hook_wiring_command_string("_hook")
             drift = cmd != expect
             ok = _check_line(
@@ -3192,12 +3204,12 @@ def cmd_refresh(args) -> None:
         current = policy_capability_fingerprint(cfg)
         if baked and baked != current:
             print()
-            print("  !! POLICY DRIFT — enforce/mcp/subagent/approval rules changed since the")
+            print("  !! POLICY DRIFT — enforce/audit/mcp/subagent/approval rules changed since the")
             print("     last `tenuo-admin setup`. Cloud warrants come from the TRIGGER, so this")
             print("     refresh did NOT apply those changes. They will NOT take effect until you:")
             print("         tenuo-admin setup")
         elif not baked:
-            print("  note     : Cloud mode — capability changes (enforce/mcp/subagent/approval)")
+            print("  note     : Cloud mode — capability changes (enforce/audit/mcp/subagent/approval)")
             print("             take effect only after `tenuo-admin setup` (run it once to enable")
             print("             drift detection on future refreshes).")
 

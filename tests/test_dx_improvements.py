@@ -37,6 +37,12 @@ def test_fingerprint_changes_when_capabilities_change(cli_mod, make_cfg):
     assert cli_mod.policy_capability_fingerprint(base) != cli_mod.policy_capability_fingerprint(widened)
 
 
+def test_fingerprint_changes_when_audit_capabilities_change(cli_mod, make_cfg):
+    base = make_cfg(audit=["WebSearch"])
+    widened = make_cfg(audit=["WebSearch", "TodoWrite"])
+    assert cli_mod.policy_capability_fingerprint(base) != cli_mod.policy_capability_fingerprint(widened)
+
+
 def test_fingerprint_tracks_subagents_and_default(cli_mod, make_cfg):
     base = make_cfg(enforce={"Read": "subpath:{sandbox}"})
     with_role = make_cfg(enforce={"Read": "subpath:{sandbox}"},

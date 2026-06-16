@@ -112,7 +112,16 @@ In audit mode, denials are recorded as `WOULD-DENY`. Subagent calls carry `agent
 
 ## Production wiring
 
-Hooks and the MCP proxy invoke `tenuo-claude` on PATH (PyPI install) or `./bin/tenuo-claude` (git clone). Project files (`tenuo.yaml`, `.state/`) live in your governed project directory, not the package install path. Discovery: `tenuo.yaml` in the cwd or any parent, or set `TENUO_PROJECT_DIR`.
+Hooks are wired to a PATH-independent launcher. In PyPI installs this is usually
+`<python> -m tenuo_claude_code.cli`; in a checkout it may be the absolute
+`bin/tenuo-claude` path. On POSIX, the PreToolUse hook is wrapped in a small
+`/bin/sh` guard so a moved or deleted launcher emits an explicit deny instead of
+silently allowing the tool call.
+
+The MCP proxy uses the same launcher resolution, without the PreToolUse deny
+guard. Project files (`tenuo.yaml`, `.state/`) live in your governed project
+directory, not the package install path. Discovery: `tenuo.yaml` in the cwd or
+any parent, or set `TENUO_PROJECT_DIR`.
 
 ## Preflight and Cloud bindings (`tenuo-claude check`)
 

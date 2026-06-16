@@ -11,7 +11,7 @@ You list the tools the agent may use and put a constraint on each: file paths co
 
 Enforcement is **deterministic and cause-agnostic**: the policy denies an out-of-scope call the same way no matter *why* the model tried it — prompt injection, a hallucination, drift after a long context window, a malicious user, a poisoned tool input, or tomorrow's unnamed attack class. You can't control what the model thinks or is asked to do; you can control what the agent is allowed to do.
 
-This holds even when Claude's own permission prompts are skipped (`--dangerously-skip-permissions`) or its settings are edited, because enforcement happens at the tool-call boundary, not in Claude's UI. Connect [Tenuo Cloud](https://cloud.tenuo.ai) to issue warrants from your org's root, collect signed receipts, require human approval on specific calls, and revoke across a fleet.
+This holds even when Claude's own permission prompts are skipped (`--dangerously-skip-permissions`), because enforcement happens at the tool-call boundary, not in Claude's UI. For team deployments where developers should not be able to edit the hook/proxy wiring, use Claude Code managed settings. Connect [Tenuo Cloud](https://cloud.tenuo.ai) to issue warrants from your org's root, collect signed receipts, require human approval on specific calls, and revoke across a fleet.
 
 > Scope note: Tenuo validates the **arguments of each tool call** (a path, a command, a URL) against your policy. It is not an OS sandbox — it doesn't isolate the process or follow what a URL resolves to at connect time. It governs what the model is allowed to *ask a tool to do*.
 
@@ -178,7 +178,7 @@ Tenuo runs **alongside** Claude Code permissions; it doesn't replace managed set
 |---|---|---|
 | Form | Allow/ask/deny rules in settings | Signed, expiring capability token; Cloud chains to your org root |
 | Enforcement point | Claude's permission UI | PreToolUse hook + MCP proxy, checked by the authorizer |
-| `--dangerously-skip-permissions` | Skips the prompts | **Still enforced** — the flag doesn't touch the warrant |
+| `--dangerously-skip-permissions` | Skips the prompts | Does not disable installed Tenuo hook/proxy checks |
 | Expiry | Until edited | ~1h session TTL; `up` refreshes |
 | Revocation | Edit rules (live sessions may keep allowances) | Revoke warrant id → ~30s fleet sync (Cloud) |
 | Evidence | Optional hook logs | Local JSONL; signed receipt stream in Cloud |

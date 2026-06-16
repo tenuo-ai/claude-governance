@@ -83,6 +83,30 @@ def test_check_passes_resolvable_absolute_hook_command(monkeypatch, tmp_path):
     assert ok is True
 
 
+def test_check_passes_when_tenuo_hook_is_not_first(monkeypatch, tmp_path):
+    """User hooks before Tenuo should not make preflight report stale wiring."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    monkeypatch.setattr(cli, "LAUNCHER", proj / "bin" / "tenuo-claude", raising=False)
+    monkeypatch.setattr(cli, "DEMO_DIR", proj, raising=False)
+    launcher = proj / "tenuo-claude"
+    launcher.write_text("#!/bin/sh\n")
+    launcher.chmod(0o755)
+    command = f"{launcher} _hook"
+    monkeypatch.setattr(cli, "hook_wiring_command_string",
+                        lambda sub: command, raising=False)
+    claude = proj / ".claude"
+    claude.mkdir(parents=True)
+    settings = {"hooks": {"PreToolUse": [
+        {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo user-hook"}]},
+        {"matcher": "*", "hooks": [{"type": "command", "command": command}]},
+    ]}}
+    (claude / "settings.json").write_text(json.dumps(settings))
+
+    ok = cli._check_wiring({"mcp": {}}, True)
+    assert ok is True
+
+
 def test_hook_launcher_resolves_unwraps_posix_guard(tmp_path):
     """The resolver unwraps the `/bin/sh -c` guard and probes the exec target."""
     if os.name != "posix":

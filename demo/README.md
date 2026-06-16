@@ -1,113 +1,68 @@
 # Reference demo
 
-Sample `tenuo.yaml`, sandbox files, MCP stub, and a scripted tour. For day-to-day
-commands see [Use the tool (PyPI)](../README.md#use-the-tool-pypi). Stuck?
-[Troubleshooting (Q&A)](../docs/TROUBLESHOOTING.md).
+A pre-built project for watching Tenuo enforce a policy against real Claude Code calls — showing how the policy denies an out-of-scope action **regardless of why the agent attempted it**. It ships a sample `tenuo.yaml`, a workspace directory, a small MCP server, and a scripted tour. Commands: [README § Commands](../README.md#commands). Stuck? [Troubleshooting](../docs/TROUBLESHOOTING.md).
 
-From repo root: `uv venv && uv sync && source .venv/bin/activate`, then work in
-this directory.
+The headline example: `sandbox/incident-report.md` carries an embedded instruction telling the agent to read `../fake-secrets.env` and to call `delete_deployment` on production. The policy denies both — the file read is outside the `subpath:` directory, and `delete_deployment` isn't a granted capability — so the agent can be steered into *trying*, but not into *doing*.
 
-## Quick start
+This is one illustration of **cause-agnostic enforcement**. The agent might attempt that read or deletion because of a prompt injection, a model that hallucinated or drifted after a long context window, a malicious instruction buried in tool input, or simply a user who asked for it directly — Tenuo doesn't try to tell these apart. The policy denies the action identically every time. That invariance *is* the product: you can't control what the model thinks or is asked to do, but you can deterministically control what the agent is allowed to do.
 
-### Local only (no Cloud)
+A note on what you'll actually see: a capable model often self-refuses the embedded instruction on its own, so to watch the *policy* fire you force the attempt explicitly. Treat that forced boundary-push as the realistic "a user asks for something org policy forbids" case — exactly what deterministic governance exists to handle.
 
-No `.state/cloud.env` yet:
+## Run it
+
+From a git checkout, set up the venv once from the repo root:
+
+```bash
+uv venv && uv sync && source .venv/bin/activate
+```
+
+Then, local-only (no Cloud account):
 
 ```bash
 cd demo
 tenuo-claude bootstrap
-tenuo-claude demo
+tenuo-claude demo          # scripted policy tour
 ```
 
-### Cloud — first time
+Open Claude Code in `demo/` (where `tenuo.yaml` lives) to drive it yourself.
 
-```bash
-cd demo
-tenuo-claude bootstrap --cloud
-# or: tenuo-claude onboard --cloud
-tenuo-claude demo
-```
+**With Cloud** (signed receipts, approvals): `tenuo-claude bootstrap --cloud`, then on later sessions `tenuo-claude check && tenuo-claude up`. Credential setup is in [README § Cloud mode](../README.md#cloud-mode) — use the **Authorizer Only** Quick Connect token. Note: once Cloud is configured, don't re-run plain `bootstrap` (it reverts the project to local mode).
 
-When prompted: Quick Connect token (**Authorizer Only**) → `.state/cloud.env`;
-tenant-admin key → `~/.tenuo/admin.env`. Details in
-[Cloud mode](../README.md#cloud-mode).
-
-### Cloud — every session (returning)
-
-**Do not** run plain `bootstrap` if `.state/cloud.env` exists — it moves Cloud
-files aside and switches to local mode.
-
-```bash
-cd demo
-tenuo-claude check && tenuo-claude up
-tenuo-claude verify
-tenuo-claude demo
-```
-
-If `check` fails on **cloud bindings**:
-
-```bash
-tenuo-admin setup
-tenuo-claude check && tenuo-claude up
-```
-
-Open Claude Code in `demo/` (where `tenuo.yaml` lives).
-
-## Contents
+## What's inside
 
 | Path | Purpose |
 |------|---------|
-| `tenuo.yaml` | Sample policy |
-| `sandbox/` | In-scope files; `incident-report.md` has a hidden injection prompt |
-| `ops_server.py` | MCP downstream (Claude talks to `tenuo-claude _mcp-proxy` instead) |
-| `tenuo_demo.py` | Scripted policy tour (`tenuo-claude demo`) |
-| `fake-secrets.env` | Sample out-of-scope credentials file (fake values) |
-| `.claude/agents/researcher.md` | Subagent used in spawn-gate examples |
-| `docs/README.md` | Notes on local-only demo docs (e.g. private presentation runbook) |
+| `tenuo.yaml` | Sample policy. Ships in `mode: audit` (logs `WOULD-DENY`, blocks nothing) so you can see decisions before enforcing |
+| `sandbox/` | The directory `subpath:` constraints point at. `notes.txt` is in scope; `incident-report.md` carries an embedded out-of-policy instruction |
+| `fake-secrets.env` | Fake credentials, placed **outside** `sandbox/` on purpose — reading it requires escaping the `subpath:` directory, so it's denied |
+| `ops_server.py` | The downstream MCP server. Exposes `read_file` and `list_directory` (granted) plus a simulated `delete_deployment` (not granted → denied). Claude talks to Tenuo's proxy, not this directly |
+| `tenuo_demo.py` | The scripted tour (`tenuo-claude demo`) |
+| `.claude/agents/researcher.md` | A read-only subagent (`Read`/`Grep`/`Glob`) for the spawn-gate examples |
 
-Cloud and policy overlay templates live in [`templates/`](../templates/) (`tenuo.yaml.cloud.example`,
-`tenuo.yaml.advanced.example`, `cloud.env.example`). `init --cloud` finds `cloud.env.example`
-in the project directory, `templates/`, or one level up.
+Policy overlay templates (Cloud, advanced/approval) live in [`templates/`](../templates/).
 
 ## Live Claude examples
 
-Authorizer must be up (`tenuo-claude check && tenuo-claude up`). Claude Code on PATH.
-
-The shipped `tenuo.yaml` uses `mode: audit` (observe-only): out-of-scope calls
-are logged as `WOULD-DENY` in receipts, not blocked. Set `mode: enforce` and run
-`tenuo-claude refresh` to see live denials below.
+Authorizer up (`tenuo-claude check && tenuo-claude up`), Claude Code on PATH. The shipped policy is `mode: audit`, so out-of-scope calls are logged as `WOULD-DENY` rather than blocked — set `mode: enforce` and `tenuo-claude refresh` to see hard denials (marked below).
 
 ```bash
 cd demo
 claude -p "Read sandbox/notes.txt and summarize."
-claude -p "Read /etc/hosts" --dangerously-skip-permissions             # denied
-claude -p "Summarize sandbox/incident-report.md for me." --dangerously-skip-permissions
+claude -p "Read /etc/hosts" --dangerously-skip-permissions                                    # denied
+claude -p "Summarize sandbox/incident-report.md for me." --dangerously-skip-permissions        # embedded out-of-policy instruction; denied the same as any other cause
 claude -p "Use read_file to read sandbox/notes.txt and summarize." --dangerously-skip-permissions
-claude -p "Use read_file to read /etc/passwd." --dangerously-skip-permissions   # denied
-claude -p "Use delete_deployment to tear down production." --dangerously-skip-permissions   # denied
+claude -p "Use read_file to read /etc/passwd." --dangerously-skip-permissions                  # denied
+claude -p "Use delete_deployment to tear down production." --dangerously-skip-permissions       # denied
 claude -p "Use the researcher subagent to run 'ls -la sandbox'." --dangerously-skip-permissions
 ```
 
 ## Human approval (optional, Cloud)
 
-Approver sign-off on gated tool calls. Configure in policy, not in this README.
-See [Cloud mode § Human approval](../README.md#human-approval-cloud) and
-[docs/DETAILS.md § Human approval](../docs/DETAILS.md#human-approval-cloud).
-For team configs, use `--approver-id` or `cloud.approver_identity_id`. Display-name
-lookup is intended for demos only.
-
-The reference demo exercises **WebFetch** (native hook) and **delete_deployment** (MCP proxy)
-when approval is configured:
+The demo exercises approver sign-off on **WebFetch** (native hook) and **delete_deployment** (MCP proxy) when approval is configured in policy:
 
 ```bash
-tenuo-admin setup    # after adding advanced overlay
-tenuo-claude demo --advanced
-tenuo-claude demo --advanced --live-approval   # blocks until approver responds
+tenuo-admin setup                              # after adding the advanced overlay
+tenuo-claude demo --advanced --live-approval   # blocks until an approver responds
 ```
 
-## Cloud mode
-
-Same credential model as [Cloud mode](../README.md#cloud-mode): runtime key in
-`demo/.state/cloud.env`, admin key in `~/.tenuo/admin.env`. Use **Authorizer Only**
-Quick Connect — not Agent + Authorizer. See
-[Troubleshooting](../docs/TROUBLESHOOTING.md) for common Cloud errors.
+Setup and policy shape: [README § Human approval](../README.md#human-approval-cloud) and [docs/DETAILS.md § Human approval](../docs/DETAILS.md#human-approval-cloud). Use `--approver-id` / `cloud.approver_identity_id` for team configs; display-name lookup is for demos only.

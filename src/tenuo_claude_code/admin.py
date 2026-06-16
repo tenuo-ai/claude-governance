@@ -589,7 +589,11 @@ def cmd_setup(_args) -> None:
         if status not in (200, 201):
             raise SystemExit(f"Create trigger failed ({status}): {body}")
         print(f"  trigger  : {tid} (created)")
-    tc.save_cloud_state({"trigger_id": tid})
+    # Record the policy fingerprint baked into this trigger so a later
+    # `tenuo-claude refresh` can detect capability drift and tell the user to
+    # re-run setup (Cloud warrants come from the trigger, not from refresh).
+    tc.save_cloud_state({"trigger_id": tid,
+                         "policy_fingerprint": tc.policy_capability_fingerprint(cfg)})
 
     # 4) Dry-run fire — validate before issuing.
     event = {"sandbox": cfg["_sandbox_abs"], "agent_id": agent_id}

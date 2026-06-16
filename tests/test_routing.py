@@ -69,6 +69,22 @@ def test_webfetch_approval(cli_mod, make_cfg):
 
 # --- governed_map -----------------------------------------------------------
 
+def test_validate_webfetch_policy_rejects_approval_with_cidrs(cli_mod):
+    # Approval wildcards the host + drops block_private, so a cidrs allowlist
+    # would silently widen to all private ranges -> refuse the combination.
+    cfg = {"enforce": {"WebFetch": {
+        "cidrs": ["10.0.0.0/8"], "approval": {"threshold": 1}}}}
+    with pytest.raises(SystemExit, match="cannot be combined with `cidrs`"):
+        cli_mod.validate_webfetch_policy(cfg)
+
+
+def test_validate_webfetch_policy_allows_approval_with_domains(cli_mod):
+    # domains + approval is the supported shape and must not raise.
+    cfg = {"enforce": {"WebFetch": {
+        "domains": ["api.github.com"], "approval": {"threshold": 1}}}}
+    cli_mod.validate_webfetch_policy(cfg)  # no raise
+
+
 def test_governed_map_unknown_tool_raises(cli_mod, make_cfg):
     with pytest.raises(SystemExit):
         cli_mod.governed_map(make_cfg(enforce={"Frobnicate": "subpath:/x"}))
@@ -106,6 +122,38 @@ def test_resolve_tool_bash_passthrough(cli_mod, make_cfg):
     assert cap == "run_command"
     assert sign_args["command"] == "ls -la"
     assert governed is True
+
+
+@pytest.mark.parametrize("tool,cap", [
+    ("PowerShell", "run_powershell"),
+    ("Monitor", "run_monitor"),
+])
+def test_resolve_tool_command_exec_tools(cli_mod, make_cfg, tool, cap):
+    cfg = make_cfg(enforce={tool: "oneof:Get-ChildItem"})
+    rcap, route, sign_args, body, governed = cli_mod.resolve_tool(
+        cfg, tool, {"command": "Get-ChildItem"})
+    assert rcap == cap
+    assert route == f"/verify/{cap}"
+    assert sign_args == {"command": "Get-ChildItem"}
+    assert governed is True
+
+
+def test_command_exec_tools_get_independent_capabilities(cli_mod, make_cfg):
+    """Bash/PowerShell/Monitor must NOT collapse to one capability: a shared cap
+    would silently drop a second tool's constraint under the first-wins de-dup."""
+    cfg = make_cfg(enforce={
+        "Bash": "shlex:ls,echo",
+        "PowerShell": "oneof:Get-ChildItem",
+        "Monitor": "shlex:tail,cat",
+    })
+    caps = cli_mod.enforced_capabilities(cfg)
+    assert {"run_command", "run_powershell", "run_monitor"} <= set(caps)
+    # each carries its own command constraint, none dropped
+    assert set(caps["run_command"]) == {"command"}
+    assert set(caps["run_powershell"]) == {"command"}
+    assert set(caps["run_monitor"]) == {"command"}
+    assert type(caps["run_command"]["command"]).__name__ == "Shlex"
+    assert type(caps["run_powershell"]["command"]).__name__ == "OneOf"
 
 
 def test_resolve_tool_webfetch_extracts_host(cli_mod, make_cfg):
@@ -169,13 +217,81 @@ def test_resolve_tool_mcp_unenforced_falls_to_catchall(cli_mod, make_cfg):
     assert governed is False
 
 
-def test_parse_mcp_enforce_approval_only(cli_mod):
-    parsed = cli_mod.parse_mcp_enforce_spec({
-        "approval": {"threshold": 1, "exempt": {"target": "exact:staging"}},
-    })
-    assert parsed["path_constraint"] is None
-    assert parsed["approval"] == {"threshold": 1}
-    assert parsed["exempt_args"] == {"target": "exact:staging"}
+def test_load_config_never_auto_audits_command_exec_tools(cli_mod, monkeypatch, tmp_path):
+    """The shipped harness bundle is auto-audited (allow+log). A command-exec tool
+    slipping into it would grant an unconstrained shell, so load_config drops them."""
+    cfg_file = tmp_path / "tenuo.yaml"
+    cfg_file.write_text("name: t\nsandbox: ./sb\ndefault: audit\n")
+    monkeypatch.setattr(cli_mod, "CONFIG_FILE", cfg_file, raising=False)
+    monkeypatch.setattr(cli_mod, "CLOUD_PROFILE", tmp_path / "none1", raising=False)
+    monkeypatch.setattr(cli_mod, "ADVANCED_PROFILE", tmp_path / "none2", raising=False)
+    monkeypatch.setattr(cli_mod, "DEMO_DIR", tmp_path, raising=False)
+    # simulate a future edit that adds a shell to the bundled audit list
+    monkeypatch.setattr(cli_mod, "load_harness_tools",
+                        lambda: ["WebSearch", "Bash", "Monitor", "PowerShell"])
+    audit = cli_mod.load_config()["audit"]
+    assert "WebSearch" in audit                       # harmless harness tool kept
+    assert not (cli_mod.COMMAND_EXEC_TOOLS & set(audit))  # shells dropped
+
+
+@pytest.mark.parametrize("spec,expected", [
+    # approval-only: no arg constraints; approval + exempt split out
+    ({"approval": {"threshold": 1, "exempt": {"target": "exact:staging"}}},
+     {"constraints": {}, "approval": {"threshold": 1}, "exempt_args": {"target": "exact:staging"}}),
+    # bare string and explicit `constraint:` both pin the default `path` arg
+    ("subpath:/sb", {"constraints": {"path": "subpath:/sb"}}),
+    ({"constraint": "subpath:/sb"}, {"constraints": {"path": "subpath:/sb"}}),
+    # named single arg
+    ({"arg": "sql", "constraint": "regex:^SELECT"}, {"constraints": {"sql": "regex:^SELECT"}}),
+    # multi-arg
+    ({"args": {"url": "urlpattern:https://x/*", "method": "oneof:GET,HEAD"}},
+     {"constraints": {"url": "urlpattern:https://x/*", "method": "oneof:GET,HEAD"}}),
+])
+def test_parse_mcp_enforce_valid(cli_mod, spec, expected):
+    parsed = cli_mod.parse_mcp_enforce_spec(spec)
+    for key, val in expected.items():
+        assert parsed[key] == val
+
+
+@pytest.mark.parametrize("spec,match", [
+    ({"arg": "sql"}, None),                                                   # arg w/o constraint
+    ({"args": {"a": "exact:x"}, "arg": "b", "constraint": "exact:y"}, None),  # args+arg combo
+    ({"path": "target", "constraint": "exact:production"}, "path:"),          # legacy path alias
+    ({"constriant": "exact:x"}, "unknown key"),                               # typo / unknown key
+])
+def test_parse_mcp_enforce_invalid(cli_mod, spec, match):
+    with pytest.raises(SystemExit, match=match):
+        cli_mod.parse_mcp_enforce_spec(spec)
+
+
+def test_resolve_tool_mcp_named_arg(cli_mod, make_cfg):
+    cfg = make_cfg(mcp={"enforce": {"run_query": {"arg": "sql", "constraint": "regex:^SELECT"}}})
+    cap, route, sign_args, body, governed = cli_mod.resolve_tool(
+        cfg, "run_query", {"sql": "SELECT 1", "other": "ignored"})
+    assert cap == "run_query"
+    assert route == "/verify/run_query"
+    assert sign_args == {"sql": "SELECT 1"}     # only the constrained arg is signed
+    assert governed is True
+
+
+def test_resolve_tool_mcp_multi_arg(cli_mod, make_cfg):
+    cfg = make_cfg(mcp={"enforce": {"http_call": {
+        "args": {"url": "urlpattern:https://api.example.com/*", "method": "oneof:GET,HEAD"}}}})
+    cap, route, sign_args, body, governed = cli_mod.resolve_tool(
+        cfg, "http_call", {"url": "https://api.example.com/v1", "method": "GET"})
+    assert cap == "http_call"
+    assert sign_args == {"url": "https://api.example.com/v1", "method": "GET"}
+    assert governed is True
+
+
+def test_enforced_capabilities_mcp_named_and_multi_arg(cli_mod, make_cfg):
+    cfg = make_cfg(mcp={"enforce": {
+        "run_query": {"arg": "sql", "constraint": "regex:^SELECT"},
+        "http_call": {"args": {"url": "urlpattern:https://x/*", "method": "oneof:GET"}},
+    }})
+    caps = cli_mod.enforced_capabilities(cfg)
+    assert set(caps["run_query"]) == {"sql"}
+    assert set(caps["http_call"]) == {"url", "method"}
 
 
 def test_approval_entries_native_and_mcp(cli_mod, make_cfg):

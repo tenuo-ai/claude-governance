@@ -7,6 +7,113 @@ import pytest
 from tenuo_claude_code import admin
 
 
+def test_to_wire_constraint_new_kinds():
+    # New kinds must match the trigger API schema (tenuo-cloud fire.go):
+    # not_one_of -> excluded list, url_pattern -> string, range -> "min..max" string.
+    assert admin.to_wire_constraint("notoneof:rm,curl", "/sb") == {
+        "_type": "not_one_of", "_value": ["rm", "curl"],
+    }
+    assert admin.to_wire_constraint("urlpattern:https://api.github.com/repos/*", "/sb") == {
+        "_type": "url_pattern", "_value": "https://api.github.com/repos/*",
+    }
+    assert admin.to_wire_constraint("cidr:10.0.0.0/8", "/sb") == {
+        "_type": "cidr", "_value": "10.0.0.0/8",
+    }
+    assert admin.to_wire_constraint("range:1,10", "/sb") == {
+        "_type": "range", "_value": "1..10",
+    }
+    # Open-ended bounds keep the separator so the server reads one-sided ranges.
+    assert admin.to_wire_constraint("range:5,", "/sb") == {"_type": "range", "_value": "5.."}
+    assert admin.to_wire_constraint("range:,100", "/sb") == {"_type": "range", "_value": "..100"}
+
+
+def test_to_wire_constraint_range_rejects_invalid_specs():
+    # Cloud must refuse the same specs local mint refuses, instead of silently
+    # emitting ".." (match-all) or "5.." for a one-sided/no-comma input.
+    with pytest.raises(SystemExit, match="at least one bound"):
+        admin.to_wire_constraint("range:,", "/sb")     # blank both -> match-all
+    with pytest.raises(SystemExit, match="min,max"):
+        admin.to_wire_constraint("range:5", "/sb")      # no comma
+
+
+def test_web_to_wire_cidrs_and_domains():
+    # cidrs join domains as host members; url_safe permits private ranges.
+    wire = admin.web_to_wire({"domains": ["api.github.com"], "cidrs": ["10.0.0.0/8"]})
+    host_members = wire["host"]["_value"]
+    assert {"_type": "pattern", "_value": "api.github.com"} in host_members
+    assert {"_type": "cidr", "_value": "10.0.0.0/8"} in host_members
+    assert wire["url"]["_value"]["block_private"] is False         # cidrs present
+    assert wire["url"]["_value"]["allow_domains"] == ["api.github.com"]
+
+
+def test_web_to_wire_cidrs_only():
+    # A cidrs-only policy is now valid on Cloud (was a hard error before).
+    wire = admin.web_to_wire({"cidrs": ["192.168.0.0/16"]})
+    assert wire["host"]["_value"] == [{"_type": "cidr", "_value": "192.168.0.0/16"}]
+    # No domain allowlist -> explicit null (host Cidr carries the allowlist).
+    assert wire["url"]["_value"]["allow_domains"] is None
+
+
+def test_web_to_wire_requires_domain_or_cidr():
+    with pytest.raises(SystemExit, match="domain or cidr"):
+        admin.web_to_wire({})
+
+
+def test_web_to_wire_ports():
+    # ports reach the Cloud warrant as UrlSafe.allow_ports (tenuo-core honours it,
+    # mirroring local make_web_constraints); absent when unset = any port.
+    with_ports = admin.web_to_wire({"domains": ["api.github.com"], "ports": [443, 8443]})
+    assert with_ports["url"]["_value"]["allow_ports"] == [443, 8443]
+    assert "allow_ports" not in admin.web_to_wire({"domains": ["api.github.com"]})["url"]["_value"]
+
+
+def test_build_warrant_config_mcp_named_and_multi_arg():
+    """Named-arg / multi-arg MCP constraints serialize to per-arg Cloud wire,
+    keeping local and Cloud warrants at parity for arbitrary MCP tools."""
+    cfg = {
+        "_sandbox_abs": "/sandbox",
+        "enforce": {},
+        "mcp": {"enforce": {
+            "run_query": {"arg": "sql", "constraint": "regex:^SELECT"},
+            "http_call": {"args": {
+                "url": "urlpattern:https://api.example.com/*",
+                "method": "oneof:GET,HEAD",
+            }},
+        }},
+        "default": "deny",
+        "audit": [],
+    }
+    wc = admin.build_warrant_config(cfg, None)
+    pac = wc["per_action_constraints"]
+    assert pac["run_query"] == {"sql": {"_type": "regex", "_value": "^SELECT"}}
+    assert pac["http_call"] == {
+        "url": {"_type": "url_pattern", "_value": "https://api.example.com/*"},
+        "method": {"_type": "one_of", "_value": ["GET", "HEAD"]},
+    }
+
+
+def test_build_warrant_config_command_exec_tools():
+    """PowerShell/Monitor serialize to their own Cloud actions with the command
+    constraint, so the local and Cloud warrants stay at parity."""
+    cfg = {
+        "_sandbox_abs": "/sandbox",
+        "enforce": {
+            "Bash": "shlex:ls,echo",
+            "PowerShell": "oneof:Get-ChildItem",
+            "Monitor": "shlex:tail",
+        },
+        "mcp": {},
+        "default": "deny",
+        "audit": [],
+    }
+    wc = admin.build_warrant_config(cfg, None)
+    pac = wc["per_action_constraints"]
+    assert {"run_command", "run_powershell", "run_monitor"} <= set(wc["actions"])
+    assert pac["run_powershell"] == {"command": {"_type": "one_of", "_value": ["Get-ChildItem"]}}
+    assert pac["run_monitor"]["command"]["_type"] == "shlex"
+    assert pac["run_command"]["command"]["_type"] == "shlex"
+
+
 def test_resolve_approver_identity_by_id(monkeypatch):
     def fake_cloud_api(method, url, api_key, path, body=None):
         assert (method, path) == ("GET", "/v1/identities")

@@ -91,8 +91,22 @@ def to_wire_constraint(spec: str, sandbox: str):
         return {"_type": "pattern", "_value": rest}
     if kind == "oneof":
         return {"_type": "one_of", "_value": [v.strip() for v in rest.split(",")]}
+    if kind == "notoneof":
+        return {"_type": "not_one_of", "_value": [v.strip() for v in rest.split(",")]}
     if kind == "exact":
         return {"_type": "exact", "_value": rest}
+    if kind == "urlpattern":
+        return {"_type": "url_pattern", "_value": rest}
+    if kind == "cidr":
+        return {"_type": "cidr", "_value": rest}
+    if kind == "range":
+        # Reuse the local validator so Cloud rejects the same specs (a missing
+        # comma or a blank-both `range:,` would otherwise serialize to `..` =
+        # match-all). The trigger API parses a STRING with a `..` separator.
+        lo, hi = tc.parse_range_spec(spec)
+        lo_s = "" if lo is None else lo
+        hi_s = "" if hi is None else hi
+        return {"_type": "range", "_value": f"{lo_s}..{hi_s}"}
     raise SystemExit(f"Unknown constraint kind '{kind}' in '{spec}'")
 
 
@@ -122,40 +136,47 @@ def url_safe_ssrf_wire(policy: dict) -> dict:
     """
     schemes = [str(s) for s in policy.get("schemes") or
                (["https"] if not policy.get("cidrs") else ["http", "https"])]
-    return {
-        "_type": "url_safe",
-        "_value": {
-            "schemes": schemes,
-            # Explicit null — omitting the key makes Cloud default to [], which
-            # blocks every domain. Null means "no domain allowlist" (SSRF-only).
-            "allow_domains": None,
-            "block_private": not bool(policy.get("cidrs")),
-            "block_loopback": True,
-            "block_metadata": True,
-            "block_reserved": True,
-        },
+    value = {
+        "schemes": schemes,
+        # Explicit null — omitting the key makes Cloud default to [], which
+        # blocks every domain. Null means "no domain allowlist" (SSRF-only).
+        "allow_domains": None,
+        "block_private": not bool(policy.get("cidrs")),
+        "block_loopback": True,
+        "block_metadata": True,
+        "block_reserved": True,
     }
+    # tenuo-core UrlSafe.allow_ports is honoured by Cloud (mirrors local
+    # make_web_constraints); omit when unset so any port is allowed.
+    if policy.get("ports"):
+        value["allow_ports"] = [int(p) for p in policy["ports"]]
+    return {"_type": "url_safe", "_value": value}
 
 
 def web_to_wire(policy: dict):
     """WebFetch org policy -> trigger constraints for the `url` and `host` args.
 
-    Mirrors the local two-field design: `url` is url_safe (secure defaults block
-    private/loopback/metadata/encoded IPs), `host` is an AnyOf of the allowed
-    domains so the hostname the hook extracts is matched explicitly. Both fields
-    must be present because resolve_tool always sends {url, host}.
+    Mirrors the local two-field design (make_web_constraints): `url` is url_safe
+    (secure defaults block private/loopback/metadata/encoded IPs), `host` is an
+    AnyOf of the allowed domains (Pattern) and IP ranges (Cidr) so the hostname
+    the hook extracts is matched explicitly. Both fields must be present because
+    resolve_tool always sends {url, host}.
 
-    NOTE: internal-CIDR egress (cidrs) is local-only in v1 — url_safe blocks
-    private IPs here; see README.
+    When `cidrs` are set, url_safe_ssrf_wire permits private ranges and plain
+    http so internal egress works — same as local. For non-WebFetch IP-based
+    tools, use the standalone `cidr:` constraint instead.
     """
     domains = [str(d) for d in policy.get("domains") or []]
-    if not domains:
-        raise SystemExit("WebFetch cloud policy needs at least one domain (cidrs are local-only in v1)")
-    host_alts = [{"_type": "pattern", "_value": d} for d in domains]
+    cidrs = [str(c) for c in policy.get("cidrs") or []]
+    if not domains and not cidrs:
+        raise SystemExit("WebFetch cloud policy needs at least one domain or cidr")
+    host_alts = ([{"_type": "pattern", "_value": d} for d in domains]
+                 + [{"_type": "cidr", "_value": c} for c in cidrs])
     # Structured url_safe with explicit allow_domains (not the legacy bare-list
-    # `_value`) so Cloud/core honour the full SSRF field set.
+    # `_value`) so Cloud/core honour the full SSRF field set. None when only
+    # cidrs are used — the host Cidr members carry the IP allowlist instead.
     url_val = url_safe_ssrf_wire(policy)
-    url_val["_value"]["allow_domains"] = domains
+    url_val["_value"]["allow_domains"] = domains or None
     return {
         "url": url_val,
         "host": {"_type": "any", "_value": host_alts},
@@ -205,15 +226,17 @@ def build_warrant_config(cfg: dict, approval_policy_id: str | None = None) -> di
         if mtool in per_action:
             continue
         parsed = tc.parse_mcp_enforce_spec(raw)
-        arg = tc.mcp_tool_arg_field(mtool, parsed)
-        if parsed.get("approval") and gate_approval:
-            per_action[mtool] = {arg: {"_type": "wildcard"}}
+        cons = parsed["constraints"]
+        if cons:
+            # Concrete constraints win over a gate (matches mint_local_warrant).
+            per_action[mtool] = {a: to_wire_constraint(spec, sandbox) for a, spec in cons.items()}
+        elif parsed.get("approval") and gate_approval:
+            gated = list((parsed.get("exempt_args") or {}).keys()) or [tc.mcp_default_arg(mtool)]
+            per_action[mtool] = {a: {"_type": "wildcard"} for a in gated}
             gate_args: dict = {}
             for ek, es in (parsed.get("exempt_args") or {}).items():
                 gate_args[ek] = {"exempt": to_wire_constraint(es, sandbox)}
-            approval_gates[mtool] = {"args": gate_args or {arg: {}}}
-        elif parsed.get("path_constraint"):
-            per_action[mtool] = {arg: to_wire_constraint(parsed["path_constraint"], sandbox)}
+            approval_gates[mtool] = {"args": gate_args or {a: {} for a in gated}}
     # AUDIT-ALLOW capabilities (unconstrained): the hook routes audit-listed
     # tools to /verify/<cap>, so the warrant must GRANT them or every WebSearch/
     # TodoWrite/… is denied in enforce mode. Mirrors mint_local_warrant exactly —

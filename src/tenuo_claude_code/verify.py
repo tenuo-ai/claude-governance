@@ -164,15 +164,17 @@ def build_probes(cfg: dict, *, deep: bool) -> tuple[list[Probe], list[Callable[[
         listed = set(mcp_enforce.keys())
         for mtool, raw in mcp_enforce.items():
             parsed = tc.parse_mcp_enforce_spec(raw)
-            if parsed.get("path_constraint"):
-                probes.extend([
-                    Probe("mcp", f"{mtool} in sandbox", mtool,
-                          {"path": str(probe_file)}, True),
-                    Probe("mcp", f"{mtool} outside sandbox", mtool,
-                          {"path": "/etc/passwd"}, False),
-                ])
+            for arg, spec in parsed["constraints"].items():
+                if isinstance(spec, str) and spec.startswith("subpath:"):
+                    probes.extend([
+                        Probe("mcp", f"{mtool} {arg} in sandbox", mtool,
+                              {arg: str(probe_file)}, True),
+                        Probe("mcp", f"{mtool} {arg} outside sandbox", mtool,
+                              {arg: "/etc/passwd"}, False),
+                    ])
             if parsed.get("approval"):
-                field = tc.mcp_tool_arg_field(mtool, parsed)
+                gated = list((parsed.get("exempt_args") or {}).keys()) or [tc.mcp_default_arg(mtool)]
+                field = gated[0]
                 exempt = (parsed.get("exempt_args") or {}).get(field, "")
                 if isinstance(exempt, str) and exempt.startswith("exact:"):
                     probes.append(Probe(

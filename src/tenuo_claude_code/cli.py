@@ -107,17 +107,34 @@ POP_HEADER = "X-Tenuo-PoP"
 DEFAULT_AUTHZ_IMAGE = "tenuo/authorizer:0.1.0-beta.24"
 
 # Claude tool -> (capability, primary arg, Claude input field for that arg)
+#
+# Command-execution tools (Bash, PowerShell, Monitor) all constrain a `command`
+# string but each gets its OWN capability, not a shared `run_command`. Reasons:
+#   - enforced_capabilities() de-dups capabilities first-wins, so a shared cap
+#     would silently drop the second tool's constraint and check one shell's
+#     command against another shell's policy.
+#   - PowerShell is a different dialect from POSIX sh: prefer oneof/pattern/regex
+#     over shlex for it. Separate caps let each tool carry its own constraint.
+#   - Separate caps keep audit receipts unambiguous (which shell ran) and let an
+#     operator allow one shell while denying another.
+# All three are permission-required, side-effecting tools: never add them to the
+# harness audit bundle. Govern them via `enforce` (or deny via the catch-all).
 TOOL_DEFAULTS = {
     "Read": ("read_file", "path", "file_path"),
     "Write": ("write_file", "path", "file_path"),
     "Edit": ("edit_file", "path", "file_path"),
     "Bash": ("run_command", "command", "command"),
+    "PowerShell": ("run_powershell", "command", "command"),
+    "Monitor": ("run_monitor", "command", "command"),
     "Glob": ("glob", "path", "path"),
     "Grep": ("grep", "path", "path"),
     "WebFetch": ("web_fetch", "url", "url"),
     "WebSearch": ("web_search", "query", "query"),
     "NotebookEdit": ("notebook_edit", "path", "notebook_path"),
 }
+# The command-execution tool class: distinct shell front-ends over a `command`
+# string. Each is an independent capability (see TOOL_DEFAULTS rationale above).
+COMMAND_EXEC_TOOLS = frozenset({"Bash", "PowerShell", "Monitor"})
 _CAP_TO_CLAUDE = {cap: tool for tool, (cap, *_) in TOOL_DEFAULTS.items()}
 
 
@@ -249,7 +266,29 @@ def webfetch_approval(cfg: dict) -> dict | None:
     return None
 
 
-# Primary constraint field per downstream MCP tool (path-scoped vs ops-style args).
+def validate_webfetch_policy(cfg: dict) -> None:
+    """Reject `enforce.WebFetch.approval` combined with `cidrs` (fail closed).
+
+    Approval relaxes the host constraint to a wildcard and, for internal egress,
+    turns off block_private — so a `cidrs:` allowlist meant to permit ONE private
+    range would silently let EVERY private range reach the human gate, and the
+    gate's domain-only exempt can't represent CIDR membership. The two mechanisms
+    don't compose with today's url_safe primitives, so we refuse the combination
+    rather than emit a policy that's wider than it reads. Enforced once in
+    load_config, so local mint, Cloud build, and verify all see the same error.
+    """
+    wf = (cfg.get("enforce") or {}).get("WebFetch")
+    if isinstance(wf, dict) and wf.get("approval") and wf.get("cidrs"):
+        raise SystemExit(
+            "enforce.WebFetch: `approval` cannot be combined with `cidrs`.\n"
+            "  Approval wildcards the host and permits all private ranges to reach "
+            "the gate, so the cidrs allowlist would not be enforced.\n"
+            "  Use `domains:` with approval, or drop `approval` to hard-enforce cidrs.")
+
+
+# Fallback constrained arg per downstream MCP tool, used only when a policy
+# doesn't name one (back-compat for the shipped examples). The `arg:`/`args:`
+# keys in mcp.enforce are the general mechanism; this table is just a default.
 MCP_ARG_FIELD = {
     "read_file": "path",
     "list_directory": "path",
@@ -257,10 +296,64 @@ MCP_ARG_FIELD = {
 }
 
 
+# Keys a structured mcp.enforce entry may contain.
+_MCP_SPEC_KEYS = frozenset({"arg", "args", "constraint", "approval", "exempt"})
+
+
+def _mcp_constraints_from_spec(raw: dict) -> dict:
+    """Extract {arg: constraint_spec} from a structured mcp.enforce entry.
+
+    Forms (mutually exclusive; unknown/conflicting keys are rejected, not
+    silently resolved):
+      {args: {<arg>: "<spec>", ...}}        -> constrain several named arguments
+      {arg: <name>, constraint: "<spec>"}   -> constrain one named argument
+      {constraint: "<spec>"}                -> constrain the default (`path`) arg
+    """
+    if "path" in raw:
+        raise SystemExit(
+            "mcp.enforce: `path:` is not a key; use `constraint:` for the path arg, "
+            "or `arg: <name>` + `constraint:` to constrain a different argument")
+    unknown = set(raw) - _MCP_SPEC_KEYS
+    if unknown:
+        raise SystemExit(
+            f"mcp.enforce: unknown key(s) {sorted(unknown)}; expected any of "
+            f"{sorted(_MCP_SPEC_KEYS)}")
+    has_args, has_arg, has_constraint = "args" in raw, "arg" in raw, "constraint" in raw
+    if has_args and (has_arg or has_constraint):
+        raise SystemExit("mcp.enforce: use either `args:` or `arg:`/`constraint:`, not both")
+    if has_args:
+        args = raw["args"]
+        if not isinstance(args, dict) or not args:
+            raise SystemExit(
+                f"mcp.enforce `args:` must be a non-empty map of arg->constraint, got {args!r}")
+        out = {}
+        for a, s in args.items():
+            if not isinstance(s, str):
+                raise SystemExit(f"mcp.enforce `args.{a}` must be a constraint string, got {s!r}")
+            out[str(a)] = s
+        return out
+    if has_arg:
+        spec = raw.get("constraint")
+        if not isinstance(spec, str):
+            raise SystemExit("mcp.enforce: `arg:` needs a `constraint:` string")
+        return {str(raw["arg"]): spec}
+    if has_constraint:
+        spec = raw["constraint"]
+        if not isinstance(spec, str):
+            raise SystemExit(f"mcp.enforce `constraint:` must be a string, got {spec!r}")
+        return {"path": spec}
+    return {}
+
+
 def parse_mcp_enforce_spec(spec) -> dict:
-    """Parse one ``mcp.enforce`` entry: DSL string or structured dict."""
+    """Parse one ``mcp.enforce`` entry into named-arg constraints + approval.
+
+    Returns ``{"constraints": {arg: spec_str}, "approval": dict|None,
+    "exempt_args": {arg: spec_str}|None}``. A bare string constrains the `path`
+    argument (back-compat); `arg:`/`args:` name any other argument(s).
+    """
     if isinstance(spec, str):
-        return {"path_constraint": spec, "approval": None, "exempt_args": None}
+        return {"constraints": {"path": spec}, "approval": None, "exempt_args": None}
     if not isinstance(spec, dict):
         raise SystemExit(f"Invalid mcp.enforce value: {spec!r}")
     raw = dict(spec)
@@ -273,11 +366,12 @@ def parse_mcp_enforce_spec(spec) -> dict:
         approval = {k: v for k, v in approval.items() if k != "exempt"}
     if isinstance(raw.get("exempt"), dict):
         exempt_args = raw["exempt"]
-    path_constraint = raw.get("constraint") or raw.get("path")
-    if path_constraint is None and not approval:
+    constraints = _mcp_constraints_from_spec(raw)
+    if not constraints and not approval:
         raise SystemExit(
-            f"Invalid mcp.enforce entry {raw!r}: need a constraint string or approval block")
-    return {"path_constraint": path_constraint, "approval": approval, "exempt_args": exempt_args}
+            f"Invalid mcp.enforce entry {raw!r}: need a constraint string, an "
+            "`arg`/`args` constraint, or an approval block")
+    return {"constraints": constraints, "approval": approval, "exempt_args": exempt_args}
 
 
 def mcp_enforce_entries(cfg: dict) -> dict[str, dict]:
@@ -287,10 +381,25 @@ def mcp_enforce_entries(cfg: dict) -> dict[str, dict]:
     }
 
 
-def mcp_tool_arg_field(tool: str, parsed: dict) -> str:
-    if parsed.get("path_constraint"):
-        return "path"
+def mcp_default_arg(tool: str) -> str:
+    """The constrained arg to assume when a policy doesn't name one."""
     return MCP_ARG_FIELD.get(tool, "path")
+
+
+def mcp_constraint_args(tool: str, parsed: dict) -> dict:
+    """arg name -> constraint spec string (``None`` = approval-gated wildcard arg).
+
+    Concrete constraints win; an approval gate only relaxes its arg(s) to
+    wildcards when there are no concrete constraints. The gated args are the
+    `exempt:` keys, or the tool's default arg when no exemptions are declared.
+    """
+    cons = parsed.get("constraints") or {}
+    if cons:
+        return dict(cons)
+    if parsed.get("approval"):
+        gated = list((parsed.get("exempt_args") or {}).keys()) or [mcp_default_arg(tool)]
+        return {a: None for a in gated}
+    return {}
 
 
 def approval_entries(cfg: dict) -> list[tuple[str, dict]]:
@@ -411,7 +520,10 @@ def load_config() -> dict:
     cfg.setdefault("enforce", {})
     cfg.setdefault("mcp", {})
     if cfg.get("audit_bundled", True):
-        bundled = load_harness_tools()
+        # Command-execution tools are never harness-inert: auto-audit would grant
+        # an unconstrained shell. Defensive guard so a future edit to the shipped
+        # bundle can't silently allow one — they must be governed via `enforce`.
+        bundled = [t for t in load_harness_tools() if t not in COMMAND_EXEC_TOOLS]
         legacy = cfg.get("audit") if isinstance(cfg.get("audit"), list) else []
         extra = [str(t) for t in (cfg.get("audit_extra") or [])]
         seen: set[str] = set()
@@ -423,12 +535,45 @@ def load_config() -> dict:
         cfg["audit"] = audit
     else:
         cfg.setdefault("audit", [])
+    validate_webfetch_policy(cfg)
     return cfg
+
+
+def _range_bound(text: str, spec: str):
+    """Parse one side of a `range:min,max` bound; blank means open-ended (None)."""
+    text = text.strip()
+    if not text:
+        return None
+    try:
+        return float(text) if ("." in text or "e" in text.lower()) else int(text)
+    except ValueError:
+        raise SystemExit(f"range bound '{text}' is not a number in '{spec}'.")
+
+
+def parse_range_spec(spec: str) -> tuple:
+    """Validate a `range:min,max` spec and return (lo, hi) bounds (None = open).
+
+    Shared by local mint (make_constraint) and Cloud wire (admin.to_wire_constraint)
+    so both reject the same specs. A blank side is open-ended, but not both (that
+    is a match-all range), and a missing comma (`range:5`) is rejected outright —
+    otherwise Cloud would silently emit `..` (match-all) or `5..` for inputs the
+    local authorizer refuses.
+    """
+    _, _, rest = spec.partition(":")
+    if "," not in rest:
+        raise SystemExit(
+            f"range constraint needs 'min,max' (either side may be blank) in '{spec}'.")
+    lo, _, hi = rest.partition(",")
+    lo_v, hi_v = _range_bound(lo, spec), _range_bound(hi, spec)
+    if lo_v is None and hi_v is None:
+        raise SystemExit(f"range constraint needs at least one bound in '{spec}'.")
+    return lo_v, hi_v
 
 
 def make_constraint(spec: str, sandbox: str):
     """Constraint DSL -> tenuo constraint object."""
-    from tenuo import Exact, OneOf, Pattern, Regex, Subpath
+    from tenuo import (Cidr, Exact, NotOneOf, OneOf, Pattern, Range, Regex,
+                       Subpath, UrlPattern)
     from tenuo_core import Shlex  # core constraint type (mintable)
 
     spec = spec.replace("{sandbox}", sandbox)
@@ -443,13 +588,23 @@ def make_constraint(spec: str, sandbox: str):
         return Pattern(rest)
     if kind == "oneof":
         return OneOf([v.strip() for v in rest.split(",")])
+    if kind == "notoneof":
+        return NotOneOf([v.strip() for v in rest.split(",")])
     if kind == "exact":
         return Exact(rest)
+    if kind == "urlpattern":
+        return UrlPattern(rest)
+    if kind == "cidr":
+        # Any tool argument that is an IP/host (not just WebFetch): the value
+        # must fall inside the CIDR block. Non-IP values fail closed.
+        return Cidr(rest)
+    if kind == "range":
+        return Range(*parse_range_spec(spec))
     raise SystemExit(
         f"Unknown constraint kind '{kind}' in '{spec}'. "
-        "Valid kinds: subpath, shlex, regex, pattern, oneof, exact "
-        "(or a WebFetch policy with domains/cidrs). "
-        "Syntax: <kind>:<value>, e.g. subpath:{sandbox} or shlex:ls,pwd.")
+        "Valid kinds: subpath, shlex, regex, pattern, oneof, notoneof, exact, "
+        "range, urlpattern, cidr (or a WebFetch policy with domains/cidrs). "
+        "Syntax: <kind>:<value>, e.g. subpath:{sandbox} or cidr:10.0.0.0/8.")
 
 
 def make_web_constraints(policy: dict, *, approval_gate: bool = False) -> dict:
@@ -885,11 +1040,15 @@ def resolve_tool(cfg: dict, tool_name: str, tool_input: dict):
         bare = tool_name
     if bare is not None and bare in mcp_enforce:
         parsed = mcp_enforce[bare]
-        field = mcp_tool_arg_field(bare, parsed)
-        val = (tool_input or {}).get(field)
-        if field == "path" and isinstance(val, str) and val:
-            val = os.path.realpath(os.path.abspath(val))
-        args = {field: val}
+        args = {}
+        for field, spec in mcp_constraint_args(bare, parsed).items():
+            val = (tool_input or {}).get(field)
+            # Canonicalize symlinks only for path-scoped (subpath) args, so the
+            # Territory we check matches the Map; never rewrite non-path values.
+            if isinstance(spec, str) and spec.startswith("subpath:") \
+                    and isinstance(val, str) and val:
+                val = os.path.realpath(os.path.abspath(val))
+            args[field] = val
         return bare, f"/verify/{bare}", args, args, True
 
     return catchall_cap(cfg), "/gate", {}, {"tool": tool_name, **(tool_input or {})}, False
@@ -1232,11 +1391,12 @@ def enforced_capabilities(cfg: dict) -> dict:
         if mtool in caps:
             continue
         parsed = parse_mcp_enforce_spec(raw)
-        arg = mcp_tool_arg_field(mtool, parsed)
-        if parsed.get("approval") and trigger_id(cfg) and not parsed.get("path_constraint"):
-            caps[mtool] = {arg: Wildcard()}
-        elif parsed.get("path_constraint"):
-            caps[mtool] = {arg: make_constraint(parsed["path_constraint"], sandbox)}
+        cons = parsed["constraints"]
+        if cons:
+            caps[mtool] = {a: make_constraint(spec, sandbox) for a, spec in cons.items()}
+        elif parsed.get("approval") and trigger_id(cfg):
+            gated = list((parsed.get("exempt_args") or {}).keys()) or [mcp_default_arg(mtool)]
+            caps[mtool] = {a: Wildcard() for a in gated}
     roles = subagent_roles(cfg)
     if roles:
         # Spawning is a first-class signed capability; per-role child warrants

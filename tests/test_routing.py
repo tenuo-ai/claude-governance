@@ -258,6 +258,8 @@ def test_parse_mcp_enforce_valid(cli_mod, spec, expected):
     ({"args": {"a": "exact:x"}, "arg": "b", "constraint": "exact:y"}, None),  # args+arg combo
     ({"path": "target", "constraint": "exact:production"}, "path:"),          # legacy path alias
     ({"constriant": "exact:x"}, "unknown key"),                               # typo / unknown key
+    ({"args": {"": "exact:x"}}, "cannot be empty"),                           # empty arg name
+    ({"arg": "  ", "constraint": "exact:x"}, "cannot be empty"),              # whitespace arg name
 ])
 def test_parse_mcp_enforce_invalid(cli_mod, spec, match):
     with pytest.raises(SystemExit, match=match):

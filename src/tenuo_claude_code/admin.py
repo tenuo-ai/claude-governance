@@ -147,9 +147,11 @@ def url_safe_ssrf_wire(policy: dict) -> dict:
         "block_reserved": True,
     }
     # tenuo-core UrlSafe.allow_ports is honoured by Cloud (mirrors local
-    # make_web_constraints); omit when unset so any port is allowed.
-    if policy.get("ports"):
-        value["allow_ports"] = [int(p) for p in policy["ports"]]
+    # make_web_constraints); omit when unset so any port is allowed. Shared
+    # validator rejects malformed ports identically to local mint.
+    ports = tc.parse_ports(policy)
+    if ports:
+        value["allow_ports"] = ports
     return {"_type": "url_safe", "_value": value}
 
 

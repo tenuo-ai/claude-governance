@@ -80,3 +80,14 @@ def test_make_web_constraints_approval_gate_wildcard_host(cli_mod):
 def test_make_web_constraints_requires_domain_or_cidr(cli_mod):
     with pytest.raises(SystemExit):
         cli_mod.make_web_constraints({})
+
+
+@pytest.mark.parametrize("ports,match", [
+    (["nope"], "must be integers"),
+    ([70000], "out of range"),
+    ([0], "out of range"),
+])
+def test_make_web_constraints_rejects_bad_ports(cli_mod, ports, match):
+    # Malformed ports must be a clear policy error, not a Python traceback.
+    with pytest.raises(SystemExit, match=match):
+        cli_mod.make_web_constraints({"domains": ["a.com"], "ports": ports})

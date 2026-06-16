@@ -328,15 +328,21 @@ def _mcp_constraints_from_spec(raw: dict) -> dict:
                 f"mcp.enforce `args:` must be a non-empty map of arg->constraint, got {args!r}")
         out = {}
         for a, s in args.items():
+            key = str(a)
+            if not key.strip():
+                raise SystemExit("mcp.enforce `args:` argument name cannot be empty")
             if not isinstance(s, str):
                 raise SystemExit(f"mcp.enforce `args.{a}` must be a constraint string, got {s!r}")
-            out[str(a)] = s
+            out[key] = s
         return out
     if has_arg:
+        key = str(raw["arg"])
+        if not key.strip():
+            raise SystemExit("mcp.enforce `arg:` name cannot be empty")
         spec = raw.get("constraint")
         if not isinstance(spec, str):
             raise SystemExit("mcp.enforce: `arg:` needs a `constraint:` string")
-        return {str(raw["arg"]): spec}
+        return {key: spec}
     if has_constraint:
         spec = raw["constraint"]
         if not isinstance(spec, str):
@@ -607,6 +613,28 @@ def make_constraint(spec: str, sandbox: str):
         "Syntax: <kind>:<value>, e.g. subpath:{sandbox} or cidr:10.0.0.0/8.")
 
 
+def parse_ports(policy: dict) -> list[int] | None:
+    """Validate a WebFetch `ports:` allowlist -> list[int], or None when unset.
+
+    Shared by local mint (make_web_constraints) and Cloud wire
+    (admin.url_safe_ssrf_wire) so a malformed entry fails with one clear policy
+    error on both paths instead of a Python traceback. Ports are u16 in core.
+    """
+    raw = policy.get("ports")
+    if not raw:
+        return None
+    out: list[int] = []
+    for p in raw:
+        try:
+            n = int(p)
+        except (TypeError, ValueError):
+            raise SystemExit(f"tenuo.yaml WebFetch `ports:` must be integers, got {p!r}")
+        if not 1 <= n <= 65535:
+            raise SystemExit(f"tenuo.yaml WebFetch `ports:` value {n} out of range (1-65535)")
+        out.append(n)
+    return out
+
+
 def make_web_constraints(policy: dict, *, approval_gate: bool = False) -> dict:
     """Org egress policy -> {url: UrlSafe, host: AnyOf(domains|cidrs) or Wildcard}.
 
@@ -625,8 +653,9 @@ def make_web_constraints(policy: dict, *, approval_gate: bool = False) -> dict:
     kwargs = dict(allow_schemes=schemes,
                   block_private=not cidrs, block_loopback=True,
                   block_metadata=True, block_reserved=True)
-    if policy.get("ports"):
-        kwargs["allow_ports"] = [int(p) for p in policy["ports"]]
+    ports = parse_ports(policy)
+    if ports:
+        kwargs["allow_ports"] = ports
     url = UrlSafe(**kwargs)
     if approval_gate:
         return {"url": url, "host": Wildcard()}

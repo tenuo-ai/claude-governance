@@ -65,6 +65,9 @@ def test_web_to_wire_ports():
     with_ports = admin.web_to_wire({"domains": ["api.github.com"], "ports": [443, 8443]})
     assert with_ports["url"]["_value"]["allow_ports"] == [443, 8443]
     assert "allow_ports" not in admin.web_to_wire({"domains": ["api.github.com"]})["url"]["_value"]
+    # Malformed ports fail closed on the Cloud path too (shared validator).
+    with pytest.raises(SystemExit, match="must be integers"):
+        admin.web_to_wire({"domains": ["api.github.com"], "ports": ["nope"]})
 
 
 def test_build_warrant_config_mcp_named_and_multi_arg():

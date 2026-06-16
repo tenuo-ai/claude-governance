@@ -1,106 +1,53 @@
 # Implementation details
 
-How **`tenuo-claude-code`** behaves: policy → warrant → authorizer → hooks/MCP proxy.
-Install and day-to-day commands: [README.md](../README.md). Troubleshooting:
-[TROUBLESHOOTING.md](TROUBLESHOOTING.md). Security summary:
-[README § Security](../README.md#security). Optional sample project:
-[demo/](../demo/).
+How `tenuo-claude-code` works under the hood, for when the [README](../README.md) isn't enough. Install and commands are in the README; common errors in [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
-Trust boundaries: [The Map is not the Territory](https://niyikiza.com/posts/map-territory/).
-Report bugs: [SECURITY.md](../SECURITY.md).
+The honest framing for the whole system: Tenuo checks the **arguments of each tool call** against a signed policy at the tool-call boundary. It validates the *string* the model passes (a path, a command, a URL) — it is not a kernel sandbox and does not follow what a URL resolves to at connect time. Trust boundaries: [The Map is not the Territory](https://niyikiza.com/posts/map-territory/).
 
-## Agent tools vs operator shell
+**Contents:** [Enforcement model](#why-hook-and-mcp-proxy) · [What's in scope](#agent-tools-vs-operator-shell) · [Fail-closed & exit codes](#hook-exit-codes-and-fail-closed) · [Constraints: Bash](#bash-shlex-not-regex) · [Constraints: WebFetch](#webfetch-egress) · [Path constraints & symlinks](#search-tools-and-symlinks) · [Subagents](#subagents) · [Audit mode](#audit-mode-mode-audit) · [Refresh & TTL](#policy-refresh-tenuo-claude-refresh) · [Receipts](#receipts) · [Cloud: check](#preflight-and-cloud-bindings-tenuo-claude-check) · [Cloud: approval](#human-approval-cloud) · [Cloud: extended](#tenuo-cloud-extended)
 
-Tenuo enforces at the **tool-call boundary**: PreToolUse for native tools, the MCP
-proxy for downstream MCP tools. The authorizer decides allow, deny, or
-approval-required from the signed warrant.
-
-| Path | Who triggers it | Governed by Tenuo? |
-|------|-----------------|-------------------|
-| Bash, Read, WebFetch, MCP, … | Model (tool call) | Yes |
-| TUI `!` input-box shell | Operator in Claude Code | No — not a tool call |
-
-The model cannot invoke `!`. Agent-action threats that flow through tools stay on
-the governed path. Operator `!` is a separate affordance and is not intercepted by
-the hook or authorizer.
-
-## Audit mode (`mode: audit`)
-
-Shadow mode: every call's real allow/deny is still computed against the warrant
-and written to the local decision log, but nothing is blocked.
-
-In audit mode the hook emits no permission decision — it does not allow or deny.
-Claude's own prompts and settings remain fully in effect. An explicit hook "allow"
-would silently auto-approve bypasses, so observe-only emits nothing.
-
-Rollout: watch `WOULD-DENY` rows in `audit`, tune policy, then set `mode: enforce`.
-The hook reads `mode` live (next tool call); the MCP proxy picks it up on the
-next Claude session. `status` shows the active posture.
-
-## Policy refresh (`tenuo-claude refresh`)
-
-After editing warrant-backed policy in `tenuo.yaml` (`enforce`, `default`, `audit_*`,
-`subagents`, `mcp`, approval overlay), run **`tenuo-claude refresh`**. It re-mints
-the session warrant (or re-fires the Cloud trigger), regenerates `.state/gateway.yaml`,
-rewires hooks, and restarts the authorizer if it is already running.
-
-**Cloud trigger:** capabilities in the session warrant still come from the trigger
-config on the control plane. Re-run **`tenuo-admin setup`** when those lists change,
-then `refresh`.
-
-**Live without refresh:** `mode: audit` / `mode: enforce` only (hook blocking posture).
-
-## Preflight and Cloud bindings (`tenuo-claude check`)
-
-`check` validates Python deps, authorizer runtime, hook/MCP wiring, and (when Cloud
-artifacts exist) live control-plane bindings before you run `up`.
-
-With a tenant-admin key in `~/.tenuo/admin.env`, **cloud bindings** compares:
-
-- local holder public key (`.state/holder_key.b64`) vs the Cloud agent's claimed key
-- agent `allowed_triggers` vs the configured trigger id
-- a runtime-key **dry-run trigger fire** (`would_issue=true`)
-
-If any step fails, `check` suggests `tenuo-admin setup`. Day-to-day Cloud workflow:
-
-```bash
-tenuo-claude check && tenuo-claude up
-```
-
-Common failures: [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
-
-## Production wiring
-
-Hooks and the MCP proxy invoke `tenuo-claude` on PATH (PyPI install) or
-`./bin/tenuo-claude` when developing from a git clone. Project files (`tenuo.yaml`,
-`.state/`) live in your governed project directory, not in the package install path.
-Discovery: `tenuo.yaml` in cwd or any parent, or set `TENUO_PROJECT_DIR`.
+---
 
 ## Why hook and MCP proxy
 
-Both check the same warrant against the same authorizer. The interception point
-differs:
+Enforcement has two interception points, both checking the **same warrant against the same authorizer**:
 
-| Path | Role |
-|------|------|
-| MCP proxy | Claude is wired to the proxy, not the downstream server |
-| PreToolUse hook | Claude must honor the allow/deny decision |
+| Path | How it's intercepted |
+|------|----------------------|
+| Native tools (Read, Bash, WebFetch, …) | Claude Code **PreToolUse hook** — Claude must honor the allow/deny it returns |
+| MCP tools | An **MCP proxy** that Claude is wired to *instead of* the downstream server |
 
-You could point `.mcp.json` at the downstream server and rely on the hook alone;
-policy would be the same. We still ship the proxy because if the hook fails or is
-removed, denied MCP calls never reach the server. Native tools have no alternative
-interception point, so the hook is mandatory there.
+Two points exist because the failure modes differ. The native hook is the only interception option for built-in tools, so it's mandatory there. For MCP you *could* point `.mcp.json` at the downstream server and rely on the hook alone — but the proxy means that if the hook is ever removed or fails, denied MCP calls still never reach the server. (The hook also checks `mcp__…` tool names against the same `mcp.enforce` policy, so the two agree.)
 
-For MCP tools the hook also checks `mcp__…` names against the same `mcp.enforce`
-policy the proxy uses.
+## Agent tools vs operator shell
+
+Tenuo governs **model-invoked tool calls** only:
+
+| Path | Who triggers it | Governed? |
+|------|-----------------|-----------|
+| Bash, Read, WebFetch, MCP, subagent spawns | The model, as a tool call | **Yes** |
+| The TUI `!` input-box shell | The operator, by typing | No — not a tool call |
+
+The model cannot invoke `!`. Whatever the cause — prompt injection, hallucination, context drift, a malicious user, a poisoned tool input — any out-of-scope action the *agent* takes flows through a tool call and stays on the governed path, denied identically regardless of cause. `!` is a separate operator affordance the hook never sees.
+
+## Hook exit codes and fail-closed
+
+Claude Code blocks a PreToolUse call only on **exit code 2** or an explicit `deny`. Exit code 1 — including an unhandled traceback — is **non-blocking**, and the call would proceed. So the hook wraps its body in a fail-closed guard: any internal error becomes an explicit deny, never a bare exception. A missing or broken `tenuo.yaml` therefore denies every governed call until it's fixed.
+
+`verify --deep` runs a live canary when `claude` is on PATH (`--no-live` to skip): the test hook writes a marker file before exiting, so verify can tell "hook never ran" apart from "exit 2 didn't block."
+
+## Bash: `shlex` not `regex`
+
+`shlex:` is structure-aware. It rejects pipes, chaining (`&&`/`;`), subshells, and variable/glob expansion that a `regex:.*` would wave through (e.g. `ls && rm -rf /`). But it authorizes the **verb**, not file paths: with `shlex:cat`, `cat /etc/passwd` still passes. Scope the filesystem with `Read`/`Write`/`Edit` (`subpath`), and for a hard lock, drop `Bash` from `enforce` entirely.
 
 ## WebFetch egress
 
-The structured policy compiles to two checks: `UrlSafe` SSRF hygiene on the raw
-`url` (https-only by default, metadata/loopback/encoded-IP blocks), and host
-must match the domain allowlist (`*` wildcards ok).
+A WebFetch policy compiles to two checks:
 
-Examples exercised by `verify`:
+1. **`UrlSafe` SSRF hygiene** on the raw URL string — https-only by default, with loopback, cloud-metadata IPs (`169.254.169.254`), and decimal/hex/octal-encoded IPs blocked.
+2. **Host match** against the `domains` allowlist (`*` matches one label) and/or `cidrs`.
+
+Cases `verify` exercises:
 
 | URL | Result |
 |-----|--------|
@@ -108,78 +55,105 @@ Examples exercised by `verify`:
 | `https://evil.com` | deny (off-allowlist) |
 | `http://api.github.com` | deny (plain http) |
 | `http://169.254.169.254/latest/meta-data/` | deny (metadata) |
-| `http://2130706433/` | deny (decimal-encoded loopback) |
-| `http://0x7f000001/` | deny (hex-encoded loopback) |
+| `http://2130706433/`, `http://0x7f000001/` | deny (encoded loopback) |
 | `https://api.github.com.evil.com/` | deny (suffix spoof) |
 | `https://api.github.com@evil.com/` | deny (userinfo spoof) |
 
-With an approval gate, a call that would otherwise be denied can pause for approver
-sign-off instead; SSRF-hygiene denials are still hard-denied and never reach the gate.
+This is Map-level validation: it checks the string Claude passes, not what DNS resolves to at connect time — DNS rebinding and redirects need complementary controls in the fetching process. With an approval gate, an off-allowlist (but SSRF-safe) URL can pause for sign-off instead of being denied; SSRF-hygiene failures are always hard-denied and never reach the gate. Local minting also supports internal-CIDR egress and custom schemes/ports; Cloud triggers currently enforce the domain allowlist only.
 
-URL validation is on the string Claude passes in. DNS rebinding and redirects at
-connect time need complementary controls in the fetching process. See the
-Map/Territory essay above.
+## Search tools and symlinks
 
-Local minting supports internal-CIDR egress and custom schemes/ports; Cloud
-triggers currently enforce the domain allowlist only.
+`Glob`/`Grep` search roots are constrained exactly like `Read`. A bare `Grep` with no path is checked against the hook's cwd and denied if that's outside the directory. All `subpath` arguments are `realpath()`-resolved before the check, so `ln -s /etc/passwd sandbox/escape.txt` can't smuggle a read out (`verify` plants this case). Races between check and open still need execution-time guards like `path_jail`.
+
+## Subagents
+
+When `subagents:` is declared, you get two layers:
+
+1. **Spawn gate** — `spawn_agent` is a signed capability whose `subagent_type` is constrained to a `oneof` of your declared roles. Undeclared spawns are denied by the warrant, not by a string check in the hook.
+2. **Per-role warrant** — each role runs under the session warrant **attenuated** to its `tools`. The session is the ceiling; attenuation is one-way and cryptographic, so a subagent can only ever do *less*.
+
+Roles must match a real `subagent_type` (`.claude/agents/<name>.md` frontmatter `name:`, or a built-in); `verify` and `status` check this. Omit `subagents:` for flat coverage — spawns are then audited, not gated, and the subagent runs under the full session warrant.
+
+Changing `subagents:` is a policy change: re-run `tenuo-admin setup` (Cloud) or `init` (local). Note one sharp edge: the bundled `Workflow` harness tool tags its inner calls with an `agent_type` that isn't a declared role, so under `subagents:` those inner calls are denied — remove `Workflow` from the audit list or omit `subagents:` if you need it. Requires `tenuo` ≥ 0.1.0b24 and authorizer `0.1.0-beta.24` (pinned in `cli.py`).
+
+## Audit mode (`mode: audit`)
+
+Shadow mode: every call's real allow/deny is still computed against the warrant and written to the receipt log, but **nothing is blocked**. The hook deliberately emits *no* permission decision in this mode — not even "allow" — because an explicit hook-allow would auto-approve calls that Claude's own settings might otherwise prompt on. So observe-only stays observe-only, and Claude's prompts remain in effect.
+
+Roll out by watching `WOULD-DENY` rows in `tenuo-claude audit`, tuning policy, then switching to `mode: enforce`. The hook reads `mode` live (next tool call); the MCP proxy picks it up on the next Claude session.
+
+## Policy refresh (`tenuo-claude refresh`)
+
+After editing warrant-backed policy (`enforce`, `default`, `audit_*`, `subagents`, `mcp`, approval overlay), run `refresh`. It re-mints the session warrant (or re-fires the Cloud trigger), regenerates the gateway config, rewires hooks, and restarts the authorizer if it's running.
+
+- **`mode` change only** (`audit` ↔ `enforce`): no refresh needed — the hook reads it live.
+- **Cloud capability change**: the warrant's capabilities come from the trigger config on the control plane, so re-run `tenuo-admin setup` first, then `refresh`.
+
+### Warrant TTL and refresh
+
+Session warrants have a ~1h TTL; `status` flags `EXPIRED` when one lapses. `tenuo-claude up` refreshes even while the authorizer runs — Cloud re-fires the trigger, local re-mints with the same issuer key — with no container restart (the warrant rides in each request header). Subagent child warrants are re-derived from the fresh session warrant.
+
+## Receipts
+
+`PreToolUse`/`PostToolUse` use match-all hooks; MCP tools are also gated by the proxy. Every governed call is **proof-of-possession-signed and checked by the authorizer**:
+
+- **Enforced** tools — argument-checked; out-of-scope denied.
+- **Audit-allowed** harness tools — logged, not blocked.
+- **Default** — everything else denied (or logged, under `default: audit`).
+
+The hook appends a local JSON line per call to `.state/receipts.jsonl` (`tenuo-claude audit` pretty-prints it; this is a local convenience, not signed):
+
+```json
+{"phase": "pre", "decision": "deny", "claude_tool": "Bash", "governed": true,
+ "args": {"command": "ls && rm -rf /"}, "reason": "Constraint not satisfied"}
+```
+
+In audit mode, denials are recorded as `WOULD-DENY`. Subagent calls carry `agent_type` so the hook enforces the right child warrant (this depends on Claude Code populating `agent_type`). **Signed** receipts — the non-repudiable ones — are emitted by the authorizer and stream to Tenuo Cloud when connected (`signature` + `signing_payload` per event). Measure overhead with `tenuo-claude bench`.
+
+## Production wiring
+
+Hooks are wired to a PATH-independent launcher. In PyPI installs this is usually
+`<python> -m tenuo_claude_code.cli`; in a checkout it may be the absolute
+`bin/tenuo-claude` path. On POSIX, the PreToolUse hook is wrapped in a small
+`/bin/sh` guard so a moved or deleted launcher emits an explicit deny instead of
+silently allowing the tool call.
+
+The MCP proxy uses the same launcher resolution, without the PreToolUse deny
+guard. Project files (`tenuo.yaml`, `.state/`) live in your governed project
+directory, not the package install path. Discovery: `tenuo.yaml` in the cwd or
+any parent, or set `TENUO_PROJECT_DIR`.
+
+## Preflight and Cloud bindings (`tenuo-claude check`)
+
+`check` validates Python deps, the authorizer runtime, and hook/MCP wiring — and, when Cloud artifacts exist and a tenant-admin key is in `~/.tenuo/admin.env`, the live control-plane **bindings**:
+
+- local holder public key (`.state/holder_key.b64`) vs the Cloud agent's claimed key,
+- the agent's `allowed_triggers` vs the configured trigger id,
+- a runtime-key **dry-run trigger fire** (`would_issue=true`).
+
+Any failure suggests `tenuo-admin setup`. Day-to-day Cloud flow is `tenuo-claude check && tenuo-claude up`; common binding failures are in [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 ## Human approval (Cloud)
 
-When a session warrant includes **approval gates**, governed tool calls can return
-`approval-required` (authorizer code `1707`) instead of a hard allow or deny. The
-hook handles this for **any tool** on that path:
+When a warrant includes **approval gates**, a governed call can return `approval-required` (authorizer code `1707`) instead of allow/deny. The hook handles this for any tool on the path:
 
-1. First authorization attempt → `approval-required` with a request hash.
-2. Hook creates a Cloud approval request (holder-signed context attestation).
+1. First authorization → `approval-required` with a request hash.
+2. Hook opens a Cloud approval request (holder-signed context attestation).
 3. Approver responds on their configured notification channel.
-4. Hook re-authorizes with `X-Tenuo-Approvals` carrying Cloud KMS signatures.
+4. Hook re-authorizes with `X-Tenuo-Approvals` carrying the Cloud KMS signatures.
 
-Cloud-only: gates carry approver KMS public keys from the linked approval policy.
-There is no local fallback. Without Cloud, gated calls that would need sign-off
-are denied.
+This is **Cloud-only** — gates carry the approver's KMS public keys from the linked approval policy; there's no local fallback, so without Cloud a gated call that needs sign-off is denied.
 
-Setup (`tenuo-admin setup`):
+Setup (`tenuo-admin setup`): point `cloud.approver_identity_id` at an existing Cloud identity (KMS key + notification routing); `cloud.approver_identity` display-name lookup works too, for demos. Setup creates or reuses a Cloud approval policy, bakes `approval_gates` into the trigger warrant config (with `_policy_id` for offline verification), syncs the local gateway, and reloads the authorizer if it's running so new MCP routes work immediately.
 
-1. `cloud.approver_identity_id` names an existing Cloud identity (KMS key +
-   notification routing). `cloud.approver_identity` display-name lookup is also
-   supported for demos.
-2. Setup creates or reuses a Cloud approval policy and bakes `approval_gates` into
-   the trigger warrant config (including `_policy_id` for offline verification).
-   It also syncs the local gateway and reloads the authorizer when it is already
-   running, so new MCP routes (for example `/verify/delete_deployment`) work
-   immediately.
+Receipts show `PENDING [appr]` while parked, then `ALLOW`/`DENY`. In audit mode the gate is reported only, never blocks. **Live approval blocks the tool call** until the approver responds or it times out — make sure the identity is reachable first, or Claude's hook timeout can expire and look like a deny.
 
-Receipts: `PENDING [appr]` while parked, then `ALLOW`/`DENY`. In audit mode the
-gate is reported only, never blocks.
+Two shipped examples:
 
-**Live approval:** when a gate is configured, the hook blocks on that tool call until
-an approver responds (or times out). Ensure the identity is reachable on its
-notification channel before testing. Claude's hook timeout can expire first and look
-like a deny.
-
-### Example: off-allowlist WebFetch (native hook)
-
-The repo ships `enforce.WebFetch.approval` as a concrete native-hook example. Egress that passes
-SSRF checks but is off the domain allowlist:
-
-| URL | Outcome |
-|-----|---------|
-| allowlisted domain | allowed directly (exempt from gate) |
-| off-allowlist, SSRF-safe | paused for approver sign-off |
-| SSRF / metadata / loopback / plain-http / suffix-spoof | denied (gate not reached) |
-
-### Example: delete_deployment (MCP proxy)
-
-The advanced overlay adds `mcp.enforce.delete_deployment.approval` so the MCP proxy uses the
-same approval workflow as the hook:
-
-| Call | Outcome |
-|------|---------|
-| `target=staging` | allowed directly (exempt from gate) |
-| `target=production` | paused for approver sign-off |
-| unlisted MCP tool | denied (capability not granted) |
-
-Policy shape:
+| Example | Path | Gated → pauses | Exempt / hard-denied |
+|---------|------|----------------|----------------------|
+| Off-allowlist `WebFetch` | native hook | SSRF-safe URL off the domain allowlist | allowlisted domain → allowed; SSRF/metadata → hard-denied |
+| `delete_deployment` | MCP proxy | `target=production` | `target=staging` → allowed; unlisted tool → denied |
 
 ```yaml
 mcp:
@@ -191,112 +165,20 @@ mcp:
           target: "exact:staging"
 ```
 
-Any governed capability can carry an approval gate in the Cloud trigger warrant config the
-same way; the hook and MCP proxy both call `authorize_with_approval` on the gated argument.
-
-To test: `tenuo-claude demo --advanced --live-approval` in the [reference demo](../demo/)
-when approval is configured in policy.
-
-## Search tools and symlinks
-
-`Glob`/`Grep` search roots are constrained like `Read`. A bare `Grep` with no
-path is checked against the hook cwd and denied outside the sandbox. Subpath
-arguments are `realpath()`-resolved before authorization, so
-`ln -s /etc/passwd sandbox/escape.txt` does not smuggle a read out (`verify`
-plants this case). Races between check and open need execution-time guards
-(e.g. `path_jail`).
-
-## Warrant TTL and refresh
-
-Session warrants expire (1h TTL). `status` flags `EXPIRED` when lapsed.
-`tenuo-claude up` refreshes even while the authorizer is running: Cloud
-re-fires the trigger; local re-mints with the same issuer key. No container
-restart: the warrant rides in each request header. Subagent child warrants are
-re-derived from the fresh session warrant.
-
-## Bash: `shlex` not `regex`
-
-`Shlex` is structure-aware: rejects pipes, chaining (`&&`/`;`), subshells, and
-expansion that `regex:.*` would admit (e.g. `ls && rm -rf /`). A command
-allowlist authorizes the verb, not paths. `cat /etc/passwd` can still pass.
-Keep Bash to inert commands; scope filesystem with `Read`/`Write`/`Edit`
-(`subpath`). For a hard sandbox, drop `Bash` from `enforce`.
-
-## Subagents
-
-When `subagents:` is present:
-
-1. **Spawn gate**: `spawn_agent` with `subagent_type` constrained to declared
-   roles. Undeclared spawns are denied by the warrant, not a string check in the hook.
-2. **Per-subagent warrant**: each role runs under the session warrant attenuated
-   to its `tools`. The session is the ceiling; attenuation is one-way and
-   cryptographic.
-
-Omit `subagents:` for flat coverage: spawns are audited, not gated; the subagent
-runs under the session warrant.
-
-Roles must match a real `subagent_type` (`.claude/agents/<name>.md` frontmatter
-`name:` or a built-in). `verify` and `status` validate this.
-
-**Workflow:** bundled as audit-allow in the package harness list (`src/tenuo_claude_code/data/harness_tools.yaml`). With `subagents:` declared, inner tool calls from Workflow agents carry an `agent_type` that is not a declared role; the authorizer denies them. Workflow is effectively unusable in subagent mode unless you remove it from the audit list or omit `subagents:` for flat session coverage.
-
-Changing `subagents:` is a policy change: re-run `tenuo-admin setup` (Cloud) or
-`init` (local). Subagents may drop parent approval gates for tools they no longer
-hold (e.g. a read-only subagent role without `WebFetch`).
-
-Requires `tenuo` 0.1.0b24+ and authorizer `0.1.0-beta.24` (pinned in `cli.py`).
-
-## Receipts
-
-`PreToolUse` / `PostToolUse` use match-all hooks; MCP tools are also gated by the
-proxy. Every governed call is **PoP-signed and checked by the authorizer**. The hook
-also appends a **local JSON line** per call:
-
-- **Enforced** tools: constraint-checked; out-of-scope denied.
-- **Audit-allowed** harness tools: logged, not blocked.
-- **Default-deny** for everything else.
-
-Example local line (`.state/receipts.jsonl`; pretty-printed):
-
-```json
-{"phase": "pre", "decision": "deny", "claude_tool": "Bash", "governed": true,
- "args": {"command": "ls && rm -rf /"}, "reason": "Constraint not satisfied"}
-```
-
-Subagent calls carry `agent_type`; the hook enforces the child warrant when present.
-Spawn is cryptographically gated. In-subagent cap selection depends on Claude Code
-populating `agent_type` (see [README § Security](../README.md#security)). Measure overhead
-with `tenuo-claude bench`.
-
-In audit mode denials are recorded as `WOULD-DENY` without blocking.
-
-**Authority:** `tenuo-claude audit` pretty-prints `.state/receipts.jsonl` (local
-convenience, not signed). **Signed audit receipts** are emitted by the authorizer and
-stream to Tenuo Cloud when connected (`signature` + `signing_payload` on each event).
-See [README § Receipts](../README.md#receipts).
-
-## Hook exit codes and fail-closed
-
-Claude Code blocks PreToolUse only on exit code **2** or an explicit `deny`.
-Exit code **1** (including an unhandled traceback) is non-blocking and the tool
-call proceeds. `_hook` wraps its body in a fail-closed guard: internal errors
-become explicit deny decisions, never bare exceptions.
-
-`verify --deep` runs a live canary when `claude` is on PATH (`--no-live` to skip). The
-test hook writes a marker file before exiting so verify can distinguish "hook
-never ran" from "exit 2 did not block."
+Try it in the [reference demo](../demo/): `tenuo-claude demo --advanced --live-approval` once approval is configured.
 
 ## Tenuo Cloud (extended)
 
-By default `init` mints from a local issuer key. With
-[Cloud](https://cloud.tenuo.ai), warrants are issued by the tenant root via a
-trigger: the pattern most organizations use for production: one audit stream,
-central revocation, admin/runtime key separation, and optional org-wide hook
-deployment via managed settings (policy enforced outside Claude's permission UI).
+By default `init` mints warrants from a **local issuer key**. With [Cloud](https://cloud.tenuo.ai), warrants are issued by your **tenant root** via a trigger — the pattern most orgs use in production: one audit stream, central revocation, admin/runtime key separation, and optional org-wide hook deployment through Claude Code managed settings (policy enforced outside Claude's permission UI).
 
-Admin registers the holder and creates the trigger; runtime only fires
-it. Runtime refuses to start if an admin key is reachable. First trigger fire
-locks to the discovered runtime service account.
+The admin registers the holder and creates the trigger; runtime only *fires* it. Runtime refuses to start if an admin key is reachable, and the first trigger fire locks to the discovered runtime service account.
 
-Revocation: Cloud revokes by warrant id; authorizer pulls SRL within ~30s. Local:
-`tenuo-claude revoke` writes a signed SRL and reloads.
+**Revocation:** Cloud revokes by warrant id and the authorizer pulls the signed revocation list within ~30s. Locally, `tenuo-claude revoke` writes a signed SRL and reloads.
+
+Non-interactive Cloud setup (CI), in one shot:
+
+```bash
+TENUO_CONNECT_TOKEN="tenuo_ct_…" TENUO_ADMIN_KEY="tc_…" tenuo-claude bootstrap --cloud --yes
+```
+
+Pass credentials as flags or one-shot env, not a persistent `export TENUO_ADMIN_KEY` — and unset the admin key before `tenuo-claude up`. Manual step-by-step (equivalent to the wizard): `init --cloud` (writes a `cloud.env.example` to fill in) → put the tenant-admin key in `~/.tenuo/admin.env` → `tenuo-admin setup` → `check && up` → `verify`.

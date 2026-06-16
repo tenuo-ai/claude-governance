@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 import types
 
@@ -224,6 +226,74 @@ def test_write_claude_wiring_mcp_removal_deletes_file_when_empty(monkeypatch, tm
     cli.write_claude_wiring(_make_cfg(mcp=False))
 
     assert not mcp_path.exists()
+
+
+def test_wiring_command_is_absolute_and_path_independent(monkeypatch, tmp_path):
+    """No wiring branch may emit a bare name that depends on the runtime PATH."""
+    monkeypatch.delenv("TENUO_CLAUDE_BIN", raising=False)
+    # No repo launcher (PyPI layout) → falls through to the python -m branch.
+    monkeypatch.setattr(cli, "LAUNCHER", tmp_path / "bin" / "tenuo-claude", raising=False)
+    monkeypatch.setattr(cli, "LAUNCHER_REL", "./bin/tenuo-claude", raising=False)
+
+    cmd, args = cli.wiring_command_parts("_hook")
+
+    assert os.path.isabs(cmd), f"wired command must be absolute, got {cmd!r}"
+    assert cmd != cli.CLI_COMMAND, "must not emit bare `tenuo-claude`"
+    assert cmd == sys.executable
+    assert args == ["-m", "tenuo_claude_code.cli", "_hook"]
+
+
+def test_wiring_command_prefers_executable_launcher(monkeypatch, tmp_path):
+    """A repo ``bin/tenuo-claude`` is used by its ABSOLUTE path, never relative."""
+    monkeypatch.delenv("TENUO_CLAUDE_BIN", raising=False)
+    launcher = tmp_path / "bin" / "tenuo-claude"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("#!/bin/sh\n")
+    launcher.chmod(0o755)
+    monkeypatch.setattr(cli, "LAUNCHER", launcher, raising=False)
+
+    cmd, args = cli.wiring_command_parts("_hook")
+
+    assert cmd == str(launcher.resolve())
+    assert os.path.isabs(cmd)
+    assert args == ["_hook"]
+
+
+def test_hook_wiring_guard_blocks_when_launcher_missing(monkeypatch, tmp_path):
+    """POSIX guard: a vanished launcher must emit deny JSON and exit 2, not allow."""
+    if os.name != "posix":
+        pytest.skip("guard is POSIX-only")
+    monkeypatch.delenv("TENUO_CLAUDE_BIN", raising=False)
+    # Point the launcher at a non-existent path so the runtime `[ -x ... ]` fails.
+    fake = tmp_path / "gone" / "python"
+    monkeypatch.setattr(cli, "wiring_command_parts",
+                        lambda sub: (str(fake), [sub]), raising=False)
+
+    guard = cli.hook_wiring_command_string("_hook")
+    proc = subprocess.run(["/bin/sh", "-c", guard], capture_output=True, text=True)
+
+    assert proc.returncode == 2, "missing launcher must BLOCK (exit 2)"
+    out = json.loads(proc.stdout)
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert out["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+
+
+def test_hook_wiring_guard_execs_real_hook_when_present(monkeypatch, tmp_path):
+    """POSIX guard: when the launcher IS executable, exec it (preserve stdout/exit)."""
+    if os.name != "posix":
+        pytest.skip("guard is POSIX-only")
+    monkeypatch.delenv("TENUO_CLAUDE_BIN", raising=False)
+    launcher = tmp_path / "tenuo-claude"
+    launcher.write_text("#!/bin/sh\necho REAL-HOOK-RAN; exit 0\n")
+    launcher.chmod(0o755)
+    monkeypatch.setattr(cli, "wiring_command_parts",
+                        lambda sub: (str(launcher), [sub]), raising=False)
+
+    guard = cli.hook_wiring_command_string("_hook")
+    proc = subprocess.run(["/bin/sh", "-c", guard], capture_output=True, text=True)
+
+    assert proc.returncode == 0
+    assert "REAL-HOOK-RAN" in proc.stdout
 
 
 def test_root_from_warrant_issuer(monkeypatch):

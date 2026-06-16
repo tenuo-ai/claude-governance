@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
+
+import pytest
 
 from tenuo_claude_code import cli
 
@@ -15,6 +19,106 @@ def test_check_wiring_ok_without_launcher(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "DEMO_DIR", proj, raising=False)
     ok = cli._check_wiring({"mcp": {}}, True)
     assert ok is True
+
+
+def _write_pre_hook(proj, command: str) -> None:
+    """Write a .claude/settings.json with a single PreToolUse hook command."""
+    claude = proj / ".claude"
+    claude.mkdir(parents=True, exist_ok=True)
+    settings = {"hooks": {"PreToolUse": [
+        {"matcher": "*", "hooks": [{"type": "command", "command": command}]}]}}
+    (claude / "settings.json").write_text(json.dumps(settings))
+
+
+def test_check_flags_bare_path_dependent_hook_command(monkeypatch, tmp_path):
+    """A bare `tenuo-claude` wired command must be a CHECK FAILURE, not a no-op.
+
+    A bare name resolves only via the launching shell's PATH; if Claude's shell
+    lacks the venv, the hook never runs and tools proceed ungoverned.
+    """
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    monkeypatch.setattr(cli, "LAUNCHER", proj / "bin" / "tenuo-claude", raising=False)
+    monkeypatch.setattr(cli, "DEMO_DIR", proj, raising=False)
+    # Force the wired command to a bare name so the comparison and resolver both
+    # see PATH-dependent wiring.
+    monkeypatch.setattr(cli, "hook_wiring_command_string",
+                        lambda sub: "tenuo-claude _hook", raising=False)
+    _write_pre_hook(proj, "tenuo-claude _hook")
+
+    ok = cli._check_wiring({"mcp": {}}, True)
+    assert ok is False, "bare PATH-dependent hook command must fail check"
+
+
+def test_check_flags_unresolvable_absolute_hook_command(monkeypatch, tmp_path):
+    """An absolute launcher that no longer exists must fail check."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    monkeypatch.setattr(cli, "LAUNCHER", proj / "bin" / "tenuo-claude", raising=False)
+    monkeypatch.setattr(cli, "DEMO_DIR", proj, raising=False)
+    gone = proj / "gone" / "tenuo-claude"
+    monkeypatch.setattr(cli, "hook_wiring_command_string",
+                        lambda sub: f"{gone} _hook", raising=False)
+    _write_pre_hook(proj, f"{gone} _hook")
+
+    ok = cli._check_wiring({"mcp": {}}, True)
+    assert ok is False, "unresolvable absolute launcher must fail check"
+
+
+def test_check_passes_resolvable_absolute_hook_command(monkeypatch, tmp_path):
+    """An absolute, executable launcher in the wired command passes check."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    monkeypatch.setattr(cli, "LAUNCHER", proj / "bin" / "tenuo-claude", raising=False)
+    monkeypatch.setattr(cli, "DEMO_DIR", proj, raising=False)
+    launcher = proj / "tenuo-claude"
+    launcher.write_text("#!/bin/sh\n")
+    launcher.chmod(0o755)
+    command = f"{launcher} _hook"
+    monkeypatch.setattr(cli, "hook_wiring_command_string",
+                        lambda sub: command, raising=False)
+    _write_pre_hook(proj, command)
+
+    ok = cli._check_wiring({"mcp": {}}, True)
+    assert ok is True
+
+
+def test_check_passes_when_tenuo_hook_is_not_first(monkeypatch, tmp_path):
+    """User hooks before Tenuo should not make preflight report stale wiring."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    monkeypatch.setattr(cli, "LAUNCHER", proj / "bin" / "tenuo-claude", raising=False)
+    monkeypatch.setattr(cli, "DEMO_DIR", proj, raising=False)
+    launcher = proj / "tenuo-claude"
+    launcher.write_text("#!/bin/sh\n")
+    launcher.chmod(0o755)
+    command = f"{launcher} _hook"
+    monkeypatch.setattr(cli, "hook_wiring_command_string",
+                        lambda sub: command, raising=False)
+    claude = proj / ".claude"
+    claude.mkdir(parents=True)
+    settings = {"hooks": {"PreToolUse": [
+        {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo user-hook"}]},
+        {"matcher": "*", "hooks": [{"type": "command", "command": command}]},
+    ]}}
+    (claude / "settings.json").write_text(json.dumps(settings))
+
+    ok = cli._check_wiring({"mcp": {}}, True)
+    assert ok is True
+
+
+def test_hook_launcher_resolves_unwraps_posix_guard(tmp_path):
+    """The resolver unwraps the `/bin/sh -c` guard and probes the exec target."""
+    if os.name != "posix":
+        pytest.skip("guard is POSIX-only")
+    launcher = tmp_path / "py"
+    launcher.write_text("#!/bin/sh\n")
+    launcher.chmod(0o755)
+    sh_cmd = (f"/bin/sh -c 'if [ -x {launcher} ]; then exec {launcher} _hook; "
+              f"else printf x; exit 2; fi'")
+    ok, detail = cli._hook_launcher_resolves(sh_cmd)
+    assert ok is True, detail
+    assert str(launcher) in detail
 
 
 def test_probe_runtime_creds_accepts_tenant_without_srl(monkeypatch):

@@ -136,25 +136,76 @@ def slug(name: str) -> str:
 
 
 def wiring_command_parts(subcommand: str) -> tuple[str, list[str]]:
-    """Stable command for Claude hooks / MCP wiring (portable across machines).
+    """Resolve a PATH-independent command for Claude hooks / MCP wiring.
 
-    Priority: ``TENUO_CLAUDE_BIN`` → repo ``bin/tenuo-claude`` → ``tenuo-claude``
-    on PATH (bare name) → ``tenuo-claude-code`` alias → ``python -m`` fallback.
+    Claude Code launches the wired command in a shell whose PATH may NOT contain
+    our venv (e.g. a `uv run` checkout where the venv is never persistently on
+    PATH). A bare `tenuo-claude` there resolves to command-not-found (exit 127),
+    the hook never runs, and the tool call PROCEEDS UNGOVERNED — a silent
+    fail-open. So we never emit a bare name; every branch yields an *absolute*,
+    PATH-independent invocation.
+
+    Priority:
+      1. ``TENUO_CLAUDE_BIN`` (operator override, used as-is).
+      2. Absolute path to the repo ``bin/tenuo-claude`` when it's executable.
+      3. ``<sys.executable> -m tenuo_claude_code.cli`` — the most robust, works
+         with zero PATH (absolute interpreter + importable module).
+      4. Absolute ``shutil.which("tenuo-claude")`` as a last resort.
     """
     override = os.environ.get("TENUO_CLAUDE_BIN", "").strip()
     if override:
         return override, [subcommand]
-    if LAUNCHER.is_file():
-        return LAUNCHER_REL, [subcommand]
+    if LAUNCHER.is_file() and os.access(LAUNCHER, os.X_OK):
+        return str(LAUNCHER.resolve()), [subcommand]
+    if sys.executable:
+        return sys.executable, ["-m", "tenuo_claude_code.cli", subcommand]
     for name in (CLI_COMMAND, CLI_COMMAND_LEGACY):
-        if shutil.which(name):
-            return name, [subcommand]
-    return sys.executable, ["-m", "tenuo_claude_code.cli", subcommand]
+        found = shutil.which(name)
+        if found:
+            return str(Path(found).resolve()), [subcommand]
+    # No interpreter and nothing on PATH: surface the bare command rather than
+    # silently mis-wire — `check` will flag it as unresolvable.
+    return CLI_COMMAND, [subcommand]
 
 
 def wiring_command_string(subcommand: str) -> str:
     cmd, args = wiring_command_parts(subcommand)
     return shlex.join([cmd, *args])
+
+
+# Exact deny JSON the PreToolUse hook emits; the fail-closed launcher guard
+# reproduces this byte-for-byte so a launch failure BLOCKS instead of allows.
+_GUARD_DENY_JSON = json.dumps({"hookSpecificOutput": {
+    "hookEventName": "PreToolUse", "permissionDecision": "deny",
+    "permissionDecisionReason": "Tenuo hook launcher missing (fail-closed)"}})
+
+
+def hook_wiring_command_string(subcommand: str) -> str:
+    """PreToolUse hook command, wrapped in a fail-closed launcher guard.
+
+    Part 1 (``wiring_command_parts``) makes the wired command PATH-independent,
+    but the resolved launcher can still vanish later (venv moved/deleted). On
+    POSIX we wrap it in a ``/bin/sh -c`` guard: if the launcher is no longer
+    executable at runtime, emit the deny JSON and ``exit 2`` so the tool is
+    BLOCKED rather than allowed; otherwise ``exec`` the real hook so its stdout
+    and exit code are preserved exactly. ``/bin/sh`` is always present on
+    macOS/Linux. On Windows there is no portable ``sh`` here, so we fall back to
+    the absolute command from part 1 alone (``check`` still flags an
+    unresolvable launcher loudly).
+    """
+    cmd, args = wiring_command_parts(subcommand)
+    if os.name != "posix":
+        return shlex.join([cmd, *args])
+    # The launcher to probe: for the `python -m` branch this is the interpreter,
+    # otherwise the resolved binary itself. Both are absolute (part 1).
+    launcher = cmd
+    exec_line = " ".join(shlex.quote(p) for p in (cmd, *args))
+    deny = shlex.quote(_GUARD_DENY_JSON)
+    guard = (
+        f"if [ -x {shlex.quote(launcher)} ]; then exec {exec_line}; "
+        f"else printf '%s' {deny}; exit 2; fi"
+    )
+    return shlex.join(["/bin/sh", "-c", guard])
 
 
 def mcp_wiring(cfg: dict) -> dict | None:
@@ -280,6 +331,47 @@ def is_audit_mode(cfg: dict) -> bool:
     return str(cfg.get("mode", "enforce")).strip().lower() == "audit"
 
 
+def policy_capability_fingerprint(cfg: dict) -> str:
+    """Stable hash of the policy inputs that a Cloud trigger bakes into warrants.
+
+    Covers exactly what `tenuo-admin setup` encodes into the trigger's
+    warrant_config: enforced capabilities + their constraint specs, audit-allow
+    capabilities, MCP-enforced tools, subagent roles, approval gates, and the
+    catch-all default. Used to
+    detect when tenuo.yaml has drifted from the issued warrant — in Cloud mode,
+    capability changes only take effect after re-running `tenuo-admin setup`, so a
+    plain `refresh` silently ignores them.
+
+    Deliberately EXCLUDES local-only knobs that don't change the warrant: `mode`
+    (enforce/audit is a runtime posture) and the sandbox path (passed as fire-time
+    event_data, not baked into the trigger). The raw constraint spec strings carry
+    the `{sandbox}` placeholder verbatim, so they're stable across machines.
+    """
+    import hashlib
+
+    enforce = {}
+    for tool, spec in (cfg.get("enforce", {}) or {}).items():
+        if isinstance(spec, dict):  # WebFetch structured policy
+            enforce[tool] = {k: spec.get(k) for k in
+                             ("domains", "cidrs", "schemes", "ports", "approval")}
+        else:
+            enforce[tool] = str(spec)
+    mcp_enforce = {t: (s if isinstance(s, (str, dict)) else str(s))
+                   for t, s in ((cfg.get("mcp", {}) or {}).get("enforce") or {}).items()}
+    subagents = {r: sorted((v or {}).get("tools", []) or [])
+                 for r, v in (cfg.get("subagents", {}) or {}).items()}
+    payload = {
+        "enforce": enforce,
+        "mcp_enforce": mcp_enforce,
+        "subagents": subagents,
+        "approval": sorted(t for t, _ in approval_entries(cfg)),
+        "audit": sorted(set(audit_map(cfg).values())),
+        "default": default_mode(cfg),
+    }
+    blob = json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode()).hexdigest()[:16]
+
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -353,7 +445,11 @@ def make_constraint(spec: str, sandbox: str):
         return OneOf([v.strip() for v in rest.split(",")])
     if kind == "exact":
         return Exact(rest)
-    raise SystemExit(f"Unknown constraint kind '{kind}' in '{spec}'")
+    raise SystemExit(
+        f"Unknown constraint kind '{kind}' in '{spec}'. "
+        "Valid kinds: subpath, shlex, regex, pattern, oneof, exact "
+        "(or a WebFetch policy with domains/cidrs). "
+        "Syntax: <kind>:<value>, e.g. subpath:{sandbox} or shlex:ls,pwd.")
 
 
 def make_web_constraints(policy: dict, *, approval_gate: bool = False) -> dict:
@@ -897,21 +993,73 @@ def authorize_call(cfg: dict, tool: str, tin: dict, agent_type, roles: dict,
             cfg, tool, tenuo_tool, route, sign_args, body, warrant_b64, live=live)
     else:
         allowed, reason = authorize(tenuo_tool, route, sign_args, body, warrant_b64=warrant_b64)
+    if not allowed and governed:
+        reason = _augment_denial_reason(cfg, tool, reason)
     return allowed, reason, governed, tenuo_tool
 
 
-def write_receipt(entry: dict) -> None:
+def _augment_denial_reason(cfg: dict, tool: str, reason: str) -> str:
+    """Append a clarifying hint to a denial when the policy shape is a common trap.
+
+    Bash uses a `shlex:` allowlist, which authorizes the command *verb*, not file
+    paths — a frequent point of confusion ("I allowed `cat` but it's still denied",
+    or "`cat /etc/passwd` passed"). Surface the verb-vs-path distinction inline so
+    the user doesn't have to go re-read the policy comments.
+    """
+    spec = (cfg.get("enforce", {}) or {}).get(tool)
+    if tool == "Bash" and isinstance(spec, str) and spec.strip().startswith("shlex:"):
+        return (f"{reason} (the Bash allowlist authorizes the command *verb*, not file "
+                "paths — add the verb to the shlex list if it's safe; filesystem scope "
+                "comes from Read/Write/Edit)")
+    return reason
+
+
+def _receipt_fail_marker() -> Path:
+    """Sidecar marker recording that the audit sink is unwritable.
+
+    Persisted (not just an in-process flag) so `status`/`check` — separate
+    processes from the per-call hook — can surface a broken audit trail.
+    """
+    return RECEIPTS.parent / ".receipt_write_failed"
+
+
+def receipt_sink_failure() -> str | None:
+    """Last recorded receipt-write failure detail, or None if the sink is healthy."""
+    try:
+        m = _receipt_fail_marker()
+        return m.read_text().strip() if m.exists() else None
+    except Exception:
+        return None
+
+
+def write_receipt(entry: dict) -> bool:
+    """Append one receipt to the signed decision log. Returns True on success.
+
+    Returns False if the audit sink is unwritable (disk full, bad permissions) and
+    drops a marker so `status`/`check` can surface it — a SILENT gap in the audit
+    trail is the worst failure mode for an audit product. In enforce mode, callers
+    fail closed on a False return when `strict_receipts: true` is set in policy.
+    """
     global _receipt_write_warned
     try:
         ensure_state_dir()
         entry["ts"] = datetime.now(timezone.utc).isoformat()
         with RECEIPTS.open("a") as fh:
             fh.write(json.dumps(entry) + "\n")
+        marker = _receipt_fail_marker()
+        if marker.exists():
+            marker.unlink()  # sink recovered
+        return True
     except Exception as exc:
+        try:
+            _receipt_fail_marker().write_text(f"{datetime.now(timezone.utc).isoformat()} {exc}")
+        except Exception:
+            pass
         if not _receipt_write_warned:
             _receipt_write_warned = True
             print(f"warning: could not write receipt to {RECEIPTS}: {exc}",
                   file=sys.stderr)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -944,7 +1092,7 @@ def cmd_hook(_args) -> None:
         # Enforce mode drives the live approval flow; audit mode only reports.
         allowed, reason, governed, tenuo_tool = (
             authorize_call(cfg, tool, tin, agent_type, roles, live=not audit_only))
-        write_receipt(
+        wrote = write_receipt(
             {"phase": "pre", "decision": "allow" if allowed else "deny",
              "shadow": audit_only, "claude_tool": tool, "tenuo_tool": tenuo_tool,
              "governed": governed, "agent_type": agent_type, "args": tin,
@@ -959,6 +1107,12 @@ def cmd_hook(_args) -> None:
             reason_text = f"Tenuo {kind}: {tool}{scope}{extra}"
         else:
             reason_text = f"Tenuo denied {tool}{scope}: {reason}"
+        # strict_receipts: an allow whose audit receipt couldn't be written is an
+        # ungoverned action in an audit product — fail closed (enforce mode only).
+        if decision == "allow" and not audit_only and not wrote and cfg.get("strict_receipts"):
+            decision = "deny"
+            reason_text = (f"Tenuo denied {tool}{scope}: audit receipt unwritable and "
+                           "strict_receipts is on (fail-closed)")
     except (Exception, SystemExit) as exc:
         # Always leave a signal: a silent failure with no receipt would be zero
         # governance AND zero observability (e.g. authorizer down, missing deps).
@@ -1027,11 +1181,14 @@ def cmd_mcp_proxy(_args) -> None:
                     allowed, reason, _, tenuo_tool = await asyncio.to_thread(
                         authorize_call, cfg, name, tin, None, roles,
                         live=not audit_only)
-                    write_receipt({"phase": "pre", "source": "mcp_proxy",
+                    wrote = write_receipt({"phase": "pre", "source": "mcp_proxy",
                                    "decision": "allow" if allowed else "deny",
                                    "shadow": audit_only, "claude_tool": name,
                                    "tenuo_tool": tenuo_tool,
                                    "args": tin, "reason": reason})
+                    # strict_receipts: don't forward an allowed call we couldn't log.
+                    if allowed and not audit_only and not wrote and cfg.get("strict_receipts"):
+                        allowed, reason = False, "audit receipt unwritable, strict_receipts on (fail-closed)"
                     if not allowed and not audit_only:
                         log(f"DENY {name}: {reason}")
                         return [TextContent(type="text", text=f"Tenuo denied {name}: {reason}")]
@@ -1269,7 +1426,7 @@ def write_claude_wiring(cfg: dict) -> None:
     hooks["PreToolUse"] = _merge_hook_list(
         hooks.get("PreToolUse") or [],
         {"matcher": "*", "hooks": [
-            {"type": "command", "command": wiring_command_string("_hook"),
+            {"type": "command", "command": hook_wiring_command_string("_hook"),
              "timeout": hook_timeout}]},
         "_hook",
     )
@@ -1858,6 +2015,56 @@ def _check_line(ok: bool | None, label: str, detail: str = "", hint: str = "") -
     return ok is not False
 
 
+def _find_hook_command(entries: list, subcommand: str) -> str:
+    """Return the Tenuo-owned hook command from a Claude hook list."""
+    for entry in entries or []:
+        if not isinstance(entry, dict) or not _is_tenuo_hook(entry, subcommand):
+            continue
+        for inner in entry.get("hooks") or []:
+            cmd = inner.get("command", "")
+            if cmd:
+                return cmd
+    return ""
+
+
+def _hook_launcher_resolves(command: str) -> tuple[bool, str]:
+    """Verify the wired PreToolUse command resolves to a runnable launcher.
+
+    Returns ``(ok, detail)``. A bare name (resolves only via the runtime PATH)
+    or an absolute path that isn't executable is NOT ok — Claude would launch
+    nothing, no deny JSON would be emitted, and tool calls would proceed
+    ungoverned. The check is PATH-independent: a relative or bare launcher is
+    treated as a failure even if it happens to be on the current PATH.
+    """
+    if not command:
+        return False, "empty"
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return False, "unparseable command"
+    if not parts:
+        return False, "empty"
+    # Unwrap the POSIX fail-closed guard: `/bin/sh -c '... exec <launcher> ...'`.
+    # The guarded launcher is the first token after `exec` in the script body.
+    launcher = parts[0]
+    if launcher in ("/bin/sh", "sh") and "-c" in parts:
+        body = parts[parts.index("-c") + 1] if parts.index("-c") + 1 < len(parts) else ""
+        try:
+            tokens = shlex.split(body)
+        except ValueError:
+            tokens = []
+        if "exec" in tokens and tokens.index("exec") + 1 < len(tokens):
+            launcher = tokens[tokens.index("exec") + 1]
+        else:
+            return False, "guard missing exec target"
+    p = Path(launcher)
+    if not p.is_absolute():
+        return False, f"PATH-dependent: {launcher!r} (re-wire with `refresh`)"
+    if not (p.is_file() and os.access(p, os.X_OK)):
+        return False, f"not executable: {launcher}"
+    return True, f"resolves: {launcher}"
+
+
 def _check_wiring(cfg: dict | None, ok: bool) -> bool:
     """Validate launcher + generated Claude/MCP wiring."""
     if LAUNCHER.is_file():
@@ -1887,15 +2094,23 @@ def _check_wiring(cfg: dict | None, ok: bool) -> bool:
         try:
             settings = json.loads(hooks.read_text())
             pre = (settings.get("hooks") or {}).get("PreToolUse") or []
-            cmd = ""
-            if pre and pre[0].get("hooks"):
-                cmd = pre[0]["hooks"][0].get("command", "")
-            expect = wiring_command_string("_hook")
+            cmd = _find_hook_command(pre, "_hook")
+            expect = hook_wiring_command_string("_hook")
             drift = cmd != expect
             ok = _check_line(
                 not drift, "hook wiring",
                 "current" if not drift else f"stale (want {expect!r})",
                 "" if not drift else "tenuo-claude refresh") and ok
+            # The deny JSON is only emitted when the hook actually runs; if the
+            # wired command can't resolve to an executable, Claude launches
+            # nothing, no deny is produced, and tool calls proceed ungoverned.
+            # Verify resolvability INDEPENDENT of the wiring we just compared.
+            launcher_ok, launcher_detail = _hook_launcher_resolves(cmd)
+            ok = _check_line(
+                launcher_ok, "hook launcher",
+                launcher_detail,
+                "" if launcher_ok else "tenuo-claude refresh "
+                "(re-wires an absolute, PATH-independent launcher)") and ok
         except (json.JSONDecodeError, IndexError, KeyError):
             ok = _check_line(False, "hook wiring", "unreadable settings.json",
                              "tenuo-claude refresh") and ok
@@ -1929,6 +2144,17 @@ def cmd_check(_args) -> None:
     ok = True
     cloud_bindings_ok = True
     print("Preflight check\n")
+
+    # Fail fast on the most security-relevant misconfiguration: a tenant-admin key
+    # exported into the runtime env. The admin key can mint/modify triggers; it must
+    # live only in ~/.tenuo/admin.env, never where the authorizer/hook can read it.
+    reach = runtime_env()
+    admin_leak = next((v for v in ADMIN_KEY_VARS if reach.get(v)), None)
+    if admin_leak:
+        ok = _check_line(False, "runtime env", f"{admin_leak} is exported",
+                         "unset it; admin key belongs in ~/.tenuo/admin.env only") and ok
+    else:
+        _check_line(True, "runtime env", "no admin key leaked")
 
     py_ok = sys.version_info >= (3, 10)
     ok = _check_line(py_ok, "python", f"{sys.version_info.major}.{sys.version_info.minor}") and ok
@@ -1988,20 +2214,17 @@ def cmd_check(_args) -> None:
             "ok" if perm_ok else "; ".join(perm_issues),
             "" if perm_ok else "run: tenuo-claude refresh") and ok
 
+    sink_fail = receipt_sink_failure()
+    if sink_fail:
+        ok = _check_line(False, "audit sink", f"receipts unwritable — {sink_fail}",
+                         f"fix {RECEIPTS.parent} permissions/disk space") and ok
+
     mode = intended_mode(cfg)
     files = cloud_mode_files()
     _check_line(True, "mode", mode, None)
     if mode == "local" and any(files.values()):
         _check_line(None, "cloud files", "present but mode is local",
                     "remove/rename .state/cloud.env or run: tenuo-claude init --local")
-
-    reach = runtime_env()
-    admin_leak = next((v for v in ADMIN_KEY_VARS if reach.get(v)), None)
-    if admin_leak:
-        ok = _check_line(False, "runtime env", f"{admin_leak} is exported",
-                         "unset it; admin key belongs in ~/.tenuo/admin.env only") and ok
-    else:
-        _check_line(True, "runtime env", "no admin key leaked")
 
     if mode == "cloud" or files["cloud_env"]:
         if not files["cloud_env"]:
@@ -2147,7 +2370,7 @@ def cmd_onboard(args) -> None:
             write_admin_env(admin_key)
             print(f"Wrote {ADMIN_ENV}")
 
-    if not created:
+    if not created and not getattr(args, "skip_preflight", False):
         print("\nRunning preflight…")
         try:
             cmd_check(argparse.Namespace())
@@ -2200,7 +2423,8 @@ def cmd_bootstrap(args) -> None:
     """check → init → up → verify (--local default)."""
     local = getattr(args, "local", True) and not getattr(args, "cloud", False)
     ns = dict(local=True, cloud=False, yes=True,
-              no_scaffold=getattr(args, "no_scaffold", False))
+              no_scaffold=getattr(args, "no_scaffold", False),
+              skip_preflight=True)
     if local:
         cmd_onboard(argparse.Namespace(**ns))
     else:
@@ -2212,6 +2436,7 @@ def cmd_bootstrap(args) -> None:
             approver=getattr(args, "approver", None),
             approver_id=getattr(args, "approver_id", None),
             admin_key=getattr(args, "admin_key", None),
+            skip_preflight=True,
         ))
 
 
@@ -2509,6 +2734,10 @@ def cmd_status(_args) -> None:
               f"cloud: {cp.get('status')} {cp.get('authorizer_id') or ''}")
     else:
         print(f"authorizer  : down (run `tenuo-claude up`)")
+    sink_fail = receipt_sink_failure()
+    if sink_fail:
+        print(f"receipts    : !! AUDIT SINK BROKEN — last error: {sink_fail}")
+        print(f"              fix {RECEIPTS.parent} permissions/space; decisions are going unlogged")
     files = cloud_mode_files()
     if files["cloud_env"] and not files["cloud_state"]:
         print("cloud       : credentials present — run `tenuo-admin setup` then `tenuo-claude up`")
@@ -2909,7 +3138,18 @@ def cmd_bench(args) -> None:
 
 
 def cmd_init(args) -> None:
-    scaffold_example_policy(DEMO_DIR, no_scaffold=getattr(args, "no_scaffold", False))
+    # `init` compiles an EXISTING policy; it no longer writes one by default.
+    # Scaffolding belongs to the first-run path (`onboard`, or `init --scaffold`).
+    # This avoids silently dropping an example policy into a project you're
+    # integrating into. `--no-scaffold` is kept as a hidden no-op for back-compat.
+    if getattr(args, "scaffold", False):
+        scaffold_example_policy(DEMO_DIR)
+    elif not CONFIG_FILE.exists():
+        raise SystemExit(
+            "No tenuo.yaml here — `init` compiles an existing policy, it doesn't write one.\n"
+            "  • guided setup:     tenuo-claude onboard\n"
+            "  • write an example: tenuo-claude init --scaffold\n"
+            "  • or add your own tenuo.yaml, then re-run `init`")
     if getattr(args, "local", False):
         moved = disable_cloud_artifacts()
         if moved:
@@ -2958,7 +3198,22 @@ def cmd_refresh(args) -> None:
     print(f"  gateway  : .state/{GATEWAY.name}")
     print(f"  wiring   : .claude/settings.json, .mcp.json")
     if use_trigger:
-        print("  note     : enforce/audit/subagent changes need `tenuo-admin setup` first")
+        # In Cloud mode, warrant capabilities come from the TRIGGER, not this
+        # refresh. Detect whether the capability-bearing policy actually drifted
+        # from what `tenuo-admin setup` last baked in, and warn LOUDLY only then —
+        # a blanket note on every refresh trained users to ignore it.
+        baked = load_cloud_state().get("policy_fingerprint")
+        current = policy_capability_fingerprint(cfg)
+        if baked and baked != current:
+            print()
+            print("  !! POLICY DRIFT — enforce/audit/mcp/subagent/approval rules changed since the")
+            print("     last `tenuo-admin setup`. Cloud warrants come from the TRIGGER, so this")
+            print("     refresh did NOT apply those changes. They will NOT take effect until you:")
+            print("         tenuo-admin setup")
+        elif not baked:
+            print("  note     : Cloud mode — capability changes (enforce/audit/mcp/subagent/approval)")
+            print("             take effect only after `tenuo-admin setup` (run it once to enable")
+            print("             drift detection on future refreshes).")
 
     if was_running and not getattr(args, "no_restart", False):
         print("Restarting authorizer (reload gateway)…")
@@ -3006,11 +3261,12 @@ def main() -> None:
                         help="re-apply tenuo.yaml (warrant, gateway, hooks) after policy edits")
     pr.add_argument("--no-restart", action="store_true",
                     help="skip authorizer restart (gateway stays stale until down/up)")
-    pi = sub.add_parser("init")
+    pi = sub.add_parser("init", help="compile an existing tenuo.yaml (mint warrant, wire hook + proxy)")
     pi.add_argument("--cloud", action="store_true", help="write tenuo.cloud.yaml (Cloud URL)")
     pi.add_argument("--local", action="store_true", help="move Cloud files aside for local mode")
-    pi.add_argument("--no-scaffold", action="store_true",
-                    help="fail if tenuo.yaml is missing (default: write an example policy)")
+    pi.add_argument("--scaffold", action="store_true",
+                    help="write an example tenuo.yaml if none exists (default: require one)")
+    pi.add_argument("--no-scaffold", action="store_true", help=argparse.SUPPRESS)  # default now; kept for back-compat
     pi.add_argument("--advanced", action="store_true",
                     help="write tenuo.advanced.yaml (human approval overlay; WebFetch example)")
     pi.add_argument("--demo", action="store_true", help=argparse.SUPPRESS)  # deprecated alias

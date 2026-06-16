@@ -29,10 +29,10 @@ jobs:
         run: |
           if [ -n "${PYPI_TOKEN}" ]; then
             echo "Publishing with PYPI_TOKEN secret..."
-            UV_PUBLISH_TOKEN="${PYPI_TOKEN}" uv publish --skip-existing
+            UV_PUBLISH_TOKEN="${PYPI_TOKEN}" uv publish --check-url https://pypi.org/simple/
           else
             echo "No PYPI_TOKEN — using trusted publishing (OIDC)."
             echo "PyPI must list a pending publisher for:"
             echo "  owner=tenuo-ai  repo=claude-governance  workflow=release.yml"
-            uv publish --trusted-publishing always --skip-existing
+            uv publish --trusted-publishing always --check-url https://pypi.org/simple/
           fi

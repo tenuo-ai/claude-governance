@@ -58,7 +58,12 @@ PyPI package: **`tenuo-claude-code`**. Tag `v*` triggers
 [`.github/workflows/release.yml`](.github/workflows/release.yml) (trusted publishing
 or `PYPI_TOKEN` secret).
 
-Bump `version` in `pyproject.toml` and `src/tenuo_claude_code/__init__.py`, then tag.
+Release steps:
+
+1. Bump `version` in `pyproject.toml`, `src/tenuo_claude_code/__init__.py`, and `uv.lock`.
+2. Commit (`Release X.Y.Z`) and push the `vX.Y.Z` tag (this triggers the PyPI publish).
+3. Always publish brief release notes:
+   `gh release create vX.Y.Z --verify-tag --title vX.Y.Z --notes "<one short paragraph or a few bullets>"`.
 
 ## Policy templates
 

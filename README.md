@@ -9,10 +9,13 @@ Claude Code can read files, run shell commands, fetch URLs, and call MCP tools.
 Tenuo lets you write a `tenuo.yaml` policy for which of those calls are allowed,
 then checks every model-invoked tool call before it runs.
 
-Start with the local quickstart below. It writes a starter policy, starts the
-authorizer, wires Claude Code hooks, and runs a self-test. The security model,
-Cloud receipts, approvals, revocation, and rollout notes come after the working
-path.
+That policy is compiled into a signed, expiring credential called a warrant. A
+local authorizer checks each tool call against it and logs the decision. The
+same policy denies out-of-scope calls regardless of why the model tried them:
+prompt injection, hallucination, poisoned tool output, or an unsafe request.
+
+Start with the local quickstart below. Cloud setup, managed settings, approval
+gates, and rollout notes come after the working path.
 
 ## Quickstart
 

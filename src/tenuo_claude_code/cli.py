@@ -2370,7 +2370,7 @@ def cmd_onboard(args) -> None:
             write_admin_env(admin_key)
             print(f"Wrote {ADMIN_ENV}")
 
-    if not created:
+    if not created and not getattr(args, "skip_preflight", False):
         print("\nRunning preflight…")
         try:
             cmd_check(argparse.Namespace())
@@ -2423,7 +2423,8 @@ def cmd_bootstrap(args) -> None:
     """check → init → up → verify (--local default)."""
     local = getattr(args, "local", True) and not getattr(args, "cloud", False)
     ns = dict(local=True, cloud=False, yes=True,
-              no_scaffold=getattr(args, "no_scaffold", False))
+              no_scaffold=getattr(args, "no_scaffold", False),
+              skip_preflight=True)
     if local:
         cmd_onboard(argparse.Namespace(**ns))
     else:
@@ -2435,6 +2436,7 @@ def cmd_bootstrap(args) -> None:
             approver=getattr(args, "approver", None),
             approver_id=getattr(args, "approver_id", None),
             admin_key=getattr(args, "admin_key", None),
+            skip_preflight=True,
         ))
 
 

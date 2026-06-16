@@ -11,11 +11,11 @@ then checks every model-invoked tool call before it runs.
 
 That policy is compiled into a signed, expiring credential called a warrant. A
 local authorizer checks each tool call against it and logs the decision. The
-same policy denies out-of-scope calls regardless of why the model tried them:
-prompt injection, hallucination, poisoned tool output, or an unsafe request.
+same policy is applied no matter why the model tried the call: prompt injection,
+hallucination, poisoned tool output, or an unsafe request.
 
-Start with the local quickstart below. Cloud setup, managed settings, approval
-gates, and rollout notes come after the working path.
+Start with the local quickstart below. Optional Cloud control-plane setup is in
+[Cloud mode](#cloud-mode).
 
 ## Quickstart
 
@@ -45,9 +45,9 @@ Now open Claude Code in `my-project/`:
 claude
 ```
 
-The agent is governed: `Read ./workspace/notes.txt` is allowed; `Read /etc/passwd`, `Bash(curl …)`, or any tool not listed is denied and logged. Run `tenuo-claude audit` to see the decisions. Edit `tenuo.yaml` to fit your project (see [Policy](#policy)), then `tenuo-claude refresh`.
+The agent is governed: `Read ./workspace/notes.txt` is allowed; `Read /etc/passwd`, `Bash(curl …)`, or any tool not listed is denied and logged. After Claude runs a few tools, run `tenuo-claude audit` to see the decisions. Edit `tenuo.yaml` to fit your project (see [Policy](#policy)), then `tenuo-claude refresh`.
 
-Prefer a fuller, pre-built example with an MCP server and a subagent? See the [reference demo](demo/).
+For an example with MCP and subagents, see the [reference demo](demo/).
 
 | Next | Go to |
 |------|-------|
@@ -120,7 +120,7 @@ Day to day, you mostly need `up` (start), `audit` (review), and `refresh` (after
 | `check` | Preflight: dependencies, wiring, audit-sink health, leaked admin keys, and (Cloud) control-plane bindings. |
 | `status` | Warrant, mode, audit-sink health, and Cloud summary. |
 | `install-authorizer` | Install the native authorizer to `~/.tenuo/bin` (no Docker, no Cargo). |
-| `bench [--json]` | Measure per-call overhead (PoP sign, authorizer round-trip, full hook path) — the numbers behind the latency claims, on your hardware. |
+| `bench [--json]` | Measure per-call overhead on your machine (PoP sign, authorizer round-trip, full hook path). |
 | `revoke` | Revoke the current session warrant. |
 
 The warrant is short-lived (~1h TTL); `up` refreshes it. The authorizer listens on `127.0.0.1:9090` — change it with `TENUO_AUTHORIZER_PORT` before `bootstrap`. Generated files (don't commit): `.state/` (keys, warrant, credentials), `.claude/settings.json` (hooks), `.mcp.json` (MCP wiring).
@@ -143,10 +143,10 @@ The authorizer (a small local service, ~1–3 ms/call) verifies the warrant's si
 Local mode is enough to evaluate Tenuo on one project. Connect [cloud.tenuo.ai](https://cloud.tenuo.ai) for organization-scale governance:
 
 - **Tenant-root warrants** — sessions chain to your org root, not a key on the laptop.
-- **Signed receipts** — one non-repudiable allow/deny/approval audit stream (Ed25519 over CBOR).
+- **Signed receipts** — one verifiable allow/deny/approval audit stream (Ed25519 over CBOR).
 - **Fleet revocation** — revoke a warrant id; authorizers pick it up within ~30s.
 - **Human approval gates** — specific calls pause for a person instead of allow/deny ([below](#human-approval-cloud)).
-- **Managed rollout** — push the hooks via Claude Code managed settings so engineers can't disable enforcement locally.
+- **Managed rollout** — push hook/MCP wiring through Claude Code managed settings instead of per-project local settings.
 
 ### Setup
 
@@ -190,7 +190,7 @@ Tenuo runs **alongside** Claude Code permissions; it doesn't replace managed set
 | Expiry | Until edited | ~1h session TTL; `up` refreshes |
 | Revocation | Edit rules (live sessions may keep allowances) | Revoke warrant id → ~30s fleet sync (Cloud) |
 | Evidence | Optional hook logs | Local JSONL; signed receipt stream in Cloud |
-| Org deployment | Per-user settings, locally editable | Managed-settings hooks + shared policy; not user-editable |
+| Org deployment | Per-user settings, locally editable | Managed-settings hooks + shared policy |
 
 Admins can also block the bypass flag entirely in managed settings (`disableBypassPermissionsMode`).
 
@@ -205,7 +205,7 @@ Admins can also block the bypass flag entirely in managed settings (`disableBypa
  "args":{"file_path":"/etc/passwd"},"reason":"Constraint not satisfied"}
 ```
 
-Connected to Cloud, the authorizer also emits **signed** receipts to your tenant — the non-repudiable record for compliance and fleet audit.
+Connected to Cloud, the authorizer also emits **signed** receipts to your tenant — the verifiable record for compliance and fleet audit.
 
 **Rolling out to a team.** Keep `tenuo.yaml` in version control, push the hook/MCP wiring through Claude Code **managed settings** (not per-developer `settings.local.json`), and use Cloud for org-root warrants, central audit, and revocation. Start in `mode: audit`, review the `WOULD-DENY` rows, then switch to `enforce`. [Talk to us](https://tenuo.ai/early-access.html) about managed-settings rollout. Report issues: [SECURITY.md](SECURITY.md).
 

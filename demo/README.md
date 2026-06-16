@@ -21,10 +21,12 @@ Then, local-only (no Cloud account):
 ```bash
 cd demo
 tenuo-claude bootstrap
-tenuo-claude demo          # scripted policy tour
+tenuo-claude demo          # scripted authorizer tour
 ```
 
-Open Claude Code in `demo/` (where `tenuo.yaml` lives) to drive it yourself.
+The scripted tour calls the authorizer directly and prints allow/deny decisions.
+To populate `tenuo-claude audit`, open Claude Code in `demo/` (where
+`tenuo.yaml` lives) or run the live Claude examples below.
 
 **With Cloud** (signed receipts, approvals): `tenuo-claude bootstrap --cloud`, then on later sessions `tenuo-claude check && tenuo-claude up`. Credential setup is in [README § Cloud mode](../README.md#cloud-mode) — use the **Authorizer Only** Quick Connect token. Note: once Cloud is configured, don't re-run plain `bootstrap` (it reverts the project to local mode).
 
@@ -43,16 +45,19 @@ Policy overlay templates (Cloud, advanced/approval) live in [`templates/`](../te
 
 ## Live Claude examples
 
-Authorizer up (`tenuo-claude check && tenuo-claude up`), Claude Code on PATH. The shipped policy is `mode: audit`, so out-of-scope calls are logged as `WOULD-DENY` rather than blocked — set `mode: enforce` and `tenuo-claude refresh` to see hard denials (marked below).
+Authorizer up (`tenuo-claude check && tenuo-claude up`), Claude Code on PATH.
+The shipped policy is `mode: audit`, so out-of-scope calls are allowed by
+Claude but logged as `WOULD-DENY`. Set `mode: enforce` and run
+`tenuo-claude refresh` to block them.
 
 ```bash
 cd demo
 claude -p "Read sandbox/notes.txt and summarize."
-claude -p "Read /etc/hosts" --dangerously-skip-permissions                                    # denied
-claude -p "Summarize sandbox/incident-report.md for me." --dangerously-skip-permissions        # embedded out-of-policy instruction; denied the same as any other cause
+claude -p "Read /etc/hosts" --dangerously-skip-permissions                                    # WOULD-DENY in audit mode
+claude -p "Summarize sandbox/incident-report.md for me." --dangerously-skip-permissions        # embedded out-of-policy instruction; WOULD-DENY in audit mode
 claude -p "Use read_file to read sandbox/notes.txt and summarize." --dangerously-skip-permissions
-claude -p "Use read_file to read /etc/passwd." --dangerously-skip-permissions                  # denied
-claude -p "Use delete_deployment to tear down production." --dangerously-skip-permissions       # denied
+claude -p "Use read_file to read /etc/passwd." --dangerously-skip-permissions                  # WOULD-DENY in audit mode
+claude -p "Use delete_deployment to tear down production." --dangerously-skip-permissions       # WOULD-DENY in audit mode
 claude -p "Use the researcher subagent to run 'ls -la sandbox'." --dangerously-skip-permissions
 ```
 

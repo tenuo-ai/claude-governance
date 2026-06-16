@@ -59,7 +59,9 @@ Cases `verify` exercises:
 | `https://api.github.com.evil.com/` | deny (suffix spoof) |
 | `https://api.github.com@evil.com/` | deny (userinfo spoof) |
 
-This is Map-level validation: it checks the string Claude passes, not what DNS resolves to at connect time — DNS rebinding and redirects need complementary controls in the fetching process. With an approval gate, an off-allowlist (but SSRF-safe) URL can pause for sign-off instead of being denied; SSRF-hygiene failures are always hard-denied and never reach the gate. Local minting also supports internal-CIDR egress and custom schemes/ports; Cloud triggers currently enforce the domain allowlist only.
+This is Map-level validation: it checks the string Claude passes, not what DNS resolves to at connect time — DNS rebinding and redirects need complementary controls in the fetching process. With an approval gate, an off-allowlist (but SSRF-safe) URL can pause for sign-off instead of being denied; SSRF-hygiene failures are always hard-denied and never reach the gate. Cloud triggers enforce the same `url_safe` field set as local minting (domain allowlist, schemes, ports, internal-CIDR egress).
+
+`approval` cannot be combined with `cidrs`: the gate wildcards the host and turns off `block_private`, so a `cidrs:` allowlist would silently widen to every private range (and the gate's exempt is domain-based, not CIDR-aware). Use `domains:` with `approval`, or drop `approval` to hard-enforce the `cidrs` allowlist. The combination is rejected at config load.
 
 ## Search tools and symlinks
 

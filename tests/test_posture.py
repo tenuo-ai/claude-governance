@@ -164,3 +164,52 @@ def test_deny_default_not_affected_by_safety_net(cli_mod, make_cfg, monkeypatch)
     allowed, _, _, cap = cli_mod.authorize_call(cfg, "SomeUnlistedTool", {}, None, {}, live=True)
     assert cap == cli_mod.CATCHALL_DENY     # ungranted catch-all under deny
     assert allowed is True                  # net only applies to approve
+
+
+# --- per-tool human approval on native enforce tools (Cloud HiTL) -----------
+
+def test_governed_map_parses_native_approval(cli_mod, make_cfg):
+    cfg = make_cfg(enforce={"Bash": {"approval": {"threshold": 1, "exempt": "shlex:ls,pwd"}}})
+    g = cli_mod.governed_map(cfg)["Bash"]
+    assert g["cap"] == "run_command" and g["arg"] == "command"
+    assert g["approval"] == {"threshold": 1}     # exempt popped off the approval block
+    assert g["exempt"] == "shlex:ls,pwd"
+
+
+def test_governed_map_rejects_structured_without_approval(cli_mod, make_cfg):
+    # A dict on a non-WebFetch tool must carry an approval block — nothing else.
+    with pytest.raises(SystemExit):
+        cli_mod.governed_map(make_cfg(enforce={"Bash": {"constraint": "shlex:ls"}}))
+
+
+def test_governed_map_rejects_nonstring_exempt(cli_mod, make_cfg):
+    with pytest.raises(SystemExit):
+        cli_mod.governed_map(make_cfg(enforce={"Bash": {"approval": {"exempt": {"x": "y"}}}}))
+
+
+def test_approval_entries_includes_native_tool(cli_mod, make_cfg):
+    cfg = make_cfg(enforce={"Bash": {"approval": {"threshold": 1}}})
+    assert "run_command" in [c for c, _ in cli_mod.approval_entries(cfg)]
+    assert cli_mod.has_approval_gates(cfg)
+
+
+def test_native_approval_relaxes_to_wildcard_under_cloud(cli_mod, make_cfg, monkeypatch):
+    tenuo_core = pytest.importorskip("tenuo_core")
+    pytest.importorskip("tenuo")
+    cfg = make_cfg(enforce={"Bash": {"approval": {"threshold": 1}}})
+    monkeypatch.setattr(cli_mod, "trigger_id", lambda c: "trig_x")   # Cloud present
+    caps = cli_mod.enforced_capabilities(cfg)
+    assert isinstance(caps["run_command"]["command"], tenuo_core.Wildcard)
+
+
+def test_native_approval_not_granted_without_cloud(cli_mod, make_cfg, monkeypatch):
+    pytest.importorskip("tenuo_core")
+    pytest.importorskip("tenuo")
+    cfg = make_cfg(enforce={"Bash": {"approval": {"threshold": 1}}})
+    monkeypatch.setattr(cli_mod, "trigger_id", lambda c: None)       # no Cloud
+    assert "run_command" not in cli_mod.enforced_capabilities(cfg)   # Cloud-only → denied locally
+
+
+def test_posture_advisory_flags_native_approval_without_cloud(cli_mod, make_cfg, bound):
+    cfg = make_cfg(enforce={"Bash": {"approval": {"threshold": 1}}})
+    assert any("requires Tenuo Cloud" in n for n in cli_mod.posture_advisories(cfg))

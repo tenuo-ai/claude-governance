@@ -191,7 +191,9 @@ CI / non-interactive and manual step-by-step setup: [docs/DETAILS.md § Tenuo Cl
 
 ### Human approval (Cloud)
 
-A gated capability returns a third outcome, `approval-required`, instead of allow/deny. The hook opens a Cloud approval request, waits for an approver on their notification channel, then re-authorizes with their signed approval. The repo ships two worked examples (off-allowlist `WebFetch`, and `delete_deployment` with `target=production`). Setup and policy shape: [docs/DETAILS.md § Human approval](docs/DETAILS.md#human-approval-cloud).
+A gated capability returns a third outcome, `approval-required`, instead of allow/deny. The hook opens a Cloud approval request, waits for an approver on their notification channel (Slack, Telegram, console, …), then re-authorizes with their **signed, identity-bound** approval — so the receipt records *who* approved. Add an `approval:` block to **any enforced native tool** (e.g. `Bash`), **any `mcp.enforce` tool**, or `WebFetch`; an optional `exempt:` lets safe argument values skip the gate. `default: approve` gates every unlisted tool.
+
+**Human approval requires Tenuo Cloud — anywhere (native hook, MCP proxy, or catch-all).** The gate lives in the Cloud-issued warrant, so without Cloud an approval-gated tool falls back to **deny** (fail-closed); `tenuo-claude check` warns when a gate is configured but Cloud isn't. Setup and policy shape: [docs/DETAILS.md § Human approval](docs/DETAILS.md#human-approval-cloud).
 
 ![Receipt drill-down: a human approval with the approver identity and request hash](https://raw.githubusercontent.com/tenuo-ai/claude-governance/main/docs/images/cloud-receipt-approval-detail.png)
 

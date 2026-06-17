@@ -221,6 +221,17 @@ def build_warrant_config(cfg: dict, approval_policy_id: str | None = None) -> di
                     "args": {"host": {"exempt": domains_to_exempt_regex(domains)}}}
             else:
                 per_action[cap] = web_to_wire(g["web"])
+        elif g.get("approval"):
+            # Native human-approval gate on this tool's arg: wildcard the arg and
+            # gate it. An Exempt gate map must carry an `exempt`, so without a
+            # user-supplied exempt we use a never-matching sentinel = "always approve".
+            # Needs a Cloud approval policy; without one, leave ungranted (deny).
+            if approval_policy_id:
+                arg = g["arg"]
+                per_action[cap] = {arg: {"_type": "wildcard"}}
+                ex = (to_wire_constraint(g["exempt"], sandbox) if g.get("exempt")
+                      else {"_type": "exact", "_value": tc.CATCHALL_NEVER_EXEMPT})
+                approval_gates[cap] = {"args": {arg: {"exempt": ex}}}
         else:
             per_action[cap] = {g["arg"]: to_wire_constraint(g["spec"], sandbox)}
     gate_approval = bool(approval_policy_id)

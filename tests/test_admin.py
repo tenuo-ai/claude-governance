@@ -387,3 +387,36 @@ def test_build_warrant_config_default_approve_without_policy_falls_back_to_deny(
     wc = admin.build_warrant_config(cfg, None)
     assert admin.tc.CATCHALL_AUDIT not in wc["per_action_constraints"]
     assert "approval_gates" not in wc
+
+
+def test_build_warrant_config_native_tool_approval_gate():
+    # enforce.<native>.approval -> wildcard the arg + gate it on the same arg, with
+    # the user's exempt (safe values skip approval).
+    cfg = {"_sandbox_abs": "/sandbox",
+           "enforce": {"Bash": {"approval": {"threshold": 1, "exempt": "shlex:ls,pwd"}}},
+           "mcp": {}, "default": "deny", "audit": []}
+    wc = admin.build_warrant_config(cfg, "apol_test")
+    assert wc["per_action_constraints"]["run_command"] == {"command": {"_type": "wildcard"}}
+    assert wc["approval_gates"]["run_command"]["args"]["command"]["exempt"] == {
+        "_type": "shlex", "_value": ["ls", "pwd"]}
+    assert wc["approval_gates"]["_policy_id"] == "apol_test"
+
+
+def test_build_warrant_config_native_approval_no_exempt_uses_sentinel():
+    # No exempt -> never-matching sentinel = "always require approval" (an Exempt
+    # gate map must carry an exempt; an empty one no-ops at enforcement).
+    cfg = {"_sandbox_abs": "/sandbox",
+           "enforce": {"Bash": {"approval": {"threshold": 1}}},
+           "mcp": {}, "default": "deny", "audit": []}
+    wc = admin.build_warrant_config(cfg, "apol_test")
+    assert wc["approval_gates"]["run_command"]["args"]["command"]["exempt"] == {
+        "_type": "exact", "_value": admin.tc.CATCHALL_NEVER_EXEMPT}
+
+
+def test_build_warrant_config_native_approval_without_policy_denies():
+    cfg = {"_sandbox_abs": "/sandbox",
+           "enforce": {"Bash": {"approval": {"threshold": 1}}},
+           "mcp": {}, "default": "deny", "audit": []}
+    wc = admin.build_warrant_config(cfg, None)
+    assert "run_command" not in wc["per_action_constraints"]
+    assert "approval_gates" not in wc

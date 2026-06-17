@@ -271,16 +271,19 @@ def posture_advisories(cfg: dict) -> list[str]:
     """Deprecation + degradation notices for the posture model.
 
     Combines the deprecated-key notices recorded at load time with a live advisory
-    when `default: approve` can't be honored (local mode has no approval, so
-    unlisted tools fall back to deny until Cloud is set up). Surfaced from
-    check/refresh/status — never the hook hot path.
+    when an approval gate can't be honored. Human-in-the-loop approval — anywhere:
+    `default: approve`, an `enforce.<tool>.approval` block, `enforce.WebFetch.approval`,
+    or `mcp.enforce.<tool>.approval` — is a Tenuo Cloud feature: the gate lives in the
+    Cloud-issued warrant, so without Cloud those gated tools fall back to DENY.
+    Surfaced from check/refresh/status — never the hook hot path.
     """
     notes = list(cfg.get("_deprecations") or [])
-    if default_mode(cfg) == "approve":
+    if has_approval_gates(cfg):
         creds = cloud_creds(cfg)
         if not (creds.get("url") and creds.get("api_key") and trigger_id(cfg)):
-            notes.append("`default: approve` requires Tenuo Cloud — until "
-                         "`tenuo-admin setup`, unlisted tools fall back to DENY.")
+            notes.append("human-in-the-loop approval requires Tenuo Cloud — the gate "
+                         "lives in the Cloud-issued warrant. Until `tenuo-admin setup`, "
+                         "every approval-gated tool (and `default: approve`) DENIES.")
     return notes
 
 
@@ -448,6 +451,9 @@ def approval_entries(cfg: dict) -> list[tuple[str, dict]]:
     entries: list[tuple[str, dict]] = []
     if appr := webfetch_approval(cfg):
         entries.append(("web_fetch", appr))
+    for g in governed_map(cfg).values():
+        if g.get("approval"):           # native enforce tool with an approval block
+            entries.append((g["cap"], g["approval"]))
     for tool, parsed in mcp_enforce_entries(cfg).items():
         if parsed.get("approval"):
             entries.append((tool, parsed["approval"]))
@@ -748,16 +754,32 @@ def make_web_constraints(policy: dict, *, approval_gate: bool = False) -> dict:
 
 
 def governed_map(cfg: dict) -> dict:
-    """Claude tool -> dict(capability, arg, field, constraint spec/policy)."""
+    """Claude tool -> dict(capability, arg, field, + constraint spec / web policy / approval).
+
+    A native value is a constraint string, or a dict: `WebFetch` takes a web policy
+    (domains/cidrs/approval); any other tool takes an `approval:` block (with an
+    optional `exempt:` constraint string on its arg) for a Cloud human-approval gate
+    — e.g. `Bash: {approval: {threshold: 1, exempt: "shlex:ls,pwd"}}`.
+    """
     out = {}
-    for tool, spec in cfg["enforce"].items():
+    for tool, spec in (cfg.get("enforce") or {}).items():
         if tool not in TOOL_DEFAULTS:
             raise SystemExit(f"enforce: unknown tool '{tool}'")
         cap, arg, field = TOOL_DEFAULTS[tool]
         if isinstance(spec, dict):
-            if tool != "WebFetch":
-                raise SystemExit(f"enforce: structured policy is only for WebFetch, not '{tool}'")
-            out[tool] = {"cap": cap, "arg": arg, "field": field, "web": spec}
+            if tool == "WebFetch":
+                out[tool] = {"cap": cap, "arg": arg, "field": field, "web": spec}
+            elif isinstance(spec.get("approval"), dict):
+                appr = dict(spec["approval"])
+                exempt = appr.pop("exempt", None)   # constraint spec (string) on this tool's arg
+                if exempt is not None and not isinstance(exempt, str):
+                    raise SystemExit(f"enforce.{tool}.approval.exempt must be a constraint string")
+                out[tool] = {"cap": cap, "arg": arg, "field": field,
+                             "approval": appr, "exempt": exempt}
+            else:
+                raise SystemExit(
+                    f"enforce.{tool}: a structured value needs an `approval:` block "
+                    "(only WebFetch takes domains/cidrs).")
         else:
             out[tool] = {"cap": cap, "arg": arg, "field": field, "spec": spec}
     return out
@@ -1545,6 +1567,13 @@ def enforced_capabilities(cfg: dict) -> dict:
             continue
         if "web" in g:
             caps[g["cap"]] = make_web_constraints(g["web"], approval_gate=gate_web)
+        elif g.get("approval"):
+            # Cloud human-approval gate on this tool's arg (mirrors mcp.enforce
+            # approval): the arg relaxes to a wildcard and the gate itself lives in
+            # the Cloud trigger warrant. Local minting has no approval, so the cap
+            # is granted only under a trigger; without Cloud it stays denied.
+            if trigger_id(cfg):
+                caps[g["cap"]] = {g["arg"]: Wildcard()}
         else:
             caps[g["cap"]] = {g["arg"]: make_constraint(g["spec"], sandbox)}
     for mtool, raw in (cfg.get("mcp", {}).get("enforce") or {}).items():

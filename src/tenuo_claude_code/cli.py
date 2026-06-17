@@ -1340,14 +1340,18 @@ def mcp_proxy_decision(allowed: bool, reason: str, audit_only: bool, name: str):
     Observe-only (`audit_only`) never blocks — it always forwards (the caller logs
     WOULD-DENY). Human-in-the-loop is just the deny branch resolving slowly: by the
     time this is called, authorize_call has already blocked on the Cloud approval
-    poll, so `allowed` reflects the approver's decision. We split that branch in
-    two so the agent can tell an approval outcome (pending / timed out / declined —
-    the action did NOT run, and re-trying once approved may succeed) apart from a
-    hard policy deny (the action is simply not permitted).
+    poll, so `allowed` reflects the approver's decision. We split that branch in two
+    so the agent can tell an approval outcome (pending / timed out / declined) from
+    a hard policy deny: all approval outcomes share the "did NOT run" framing and
+    carry the specific reason, so the agent can re-try a pending/timed-out call once
+    approved while treating a declined one as terminal — whereas a hard deny means
+    the action is simply not permitted. The reason prefix that marks the approval
+    family is APPROVAL_PENDING_REASON (matched the same way as elsewhere, via
+    startswith).
     """
     if allowed or audit_only:
         return True, None
-    if reason and APPROVAL_PENDING_REASON in reason:
+    if reason and reason.startswith(APPROVAL_PENDING_REASON):
         return False, f"Tenuo: {name} not run — {reason}"
     return False, f"Tenuo denied {name}: {reason}"
 
@@ -1394,6 +1398,10 @@ def cmd_mcp_proxy(_args) -> None:
                     # only while this call is still open — if the client cancels
                     # (its tool timeout), the await is cancelled and we never
                     # forward, so an approved-but-abandoned call does not execute.
+                    # (Forwarding is what's cancellation-safe; the to_thread worker
+                    # running the poll can't be killed and keeps polling/writing its
+                    # receipt in the background until its own timeout — its result is
+                    # just discarded.)
                     tin = dict(arguments or {})
                     allowed, reason, _, tenuo_tool = await asyncio.to_thread(
                         authorize_call, cfg, name, tin, None, roles,

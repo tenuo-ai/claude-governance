@@ -78,9 +78,9 @@ Roles must match a real `subagent_type` (`.claude/agents/<name>.md` frontmatter 
 
 Changing `subagents:` is a policy change: re-run `tenuo-admin setup` (Cloud) or `init` (local). Note one sharp edge: the bundled `Workflow` harness tool tags its inner calls with an `agent_type` that isn't a declared role, so under `subagents:` those inner calls are denied — remove `Workflow` from the audit list or omit `subagents:` if you need it. Requires `tenuo` ≥ 0.1.0b24 and authorizer `0.1.0-beta.24` (pinned in `cli.py`).
 
-## Audit mode (`mode: audit`)
+## Dry-run mode (`mode: dry-run`)
 
-Shadow mode: every call's real allow/deny is still computed against the warrant and written to the receipt log, but **nothing is blocked**. The hook deliberately emits *no* permission decision in this mode — not even "allow" — because an explicit hook-allow would auto-approve calls that Claude's own settings might otherwise prompt on. So observe-only stays observe-only, and Claude's prompts remain in effect.
+(`mode: audit` is a deprecated alias for `dry-run`.) Shadow mode: every call's real allow/deny is still computed against the warrant and written to the receipt log, but **nothing is blocked**. The hook deliberately emits *no* permission decision in this mode — not even "allow" — because an explicit hook-allow would auto-approve calls that Claude's own settings might otherwise prompt on. So observe-only stays observe-only, and Claude's prompts remain in effect.
 
 Roll out by watching `WOULD-DENY` rows in `tenuo-claude audit`, tuning policy, then switching to `mode: enforce`. The hook reads `mode` live (next tool call); the MCP proxy picks it up on the next Claude session.
 
@@ -100,8 +100,8 @@ Session warrants have a ~1h TTL; `status` flags `EXPIRED` when one lapses. `tenu
 `PreToolUse`/`PostToolUse` use match-all hooks; MCP tools are also gated by the proxy. Every governed call is **proof-of-possession-signed and checked by the authorizer**:
 
 - **Enforced** tools — argument-checked; out-of-scope denied.
-- **Audit-allowed** harness tools — logged, not blocked.
-- **Default** — everything else denied (or logged, under `default: audit`).
+- **Allowed** tools (`allow:`, plus the bundled inert harness tools) — permitted unconstrained, logged.
+- **Default** — everything else denied (or paused for human approval, under `default: approve`).
 
 The hook appends a local JSON line per call to `.state/receipts.jsonl` (`tenuo-claude audit` pretty-prints it; this is a local convenience, not signed):
 

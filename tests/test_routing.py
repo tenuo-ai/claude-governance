@@ -23,8 +23,9 @@ def test_mcp_tool_name(cli_mod, name, expected):
 # --- default_mode / catchall_cap -------------------------------------------
 
 @pytest.mark.parametrize("value,expected", [
-    (None, "deny"), ("deny", "deny"), ("audit", "audit"),
-    ("AUDIT", "audit"), ("nonsense", "deny"),
+    (None, "deny"), ("deny", "deny"), ("approve", "approve"), ("APPROVE", "approve"),
+    ("audit", "deny"), ("allow", "deny"),   # legacy fail-open values collapse to deny
+    ("nonsense", "deny"),
 ])
 def test_default_mode(cli_mod, make_cfg, value, expected):
     cfg = make_cfg(default=value)
@@ -33,7 +34,8 @@ def test_default_mode(cli_mod, make_cfg, value, expected):
 
 def test_catchall_cap(cli_mod, make_cfg):
     assert cli_mod.catchall_cap(make_cfg(default="deny")) == "unlisted"
-    assert cli_mod.catchall_cap(make_cfg(default="audit")) == "audit"
+    assert cli_mod.catchall_cap(make_cfg(default="approve")) == "audit"
+    assert cli_mod.catchall_cap(make_cfg(default="audit")) == "unlisted"  # legacy -> deny
 
 
 # --- audit_map --------------------------------------------------------------
@@ -184,10 +186,13 @@ def test_resolve_tool_catchall_deny(cli_mod, make_cfg):
     assert governed is False
 
 
-def test_resolve_tool_catchall_audit(cli_mod, make_cfg):
-    cfg = make_cfg(default="audit")
-    cap, *_ = cli_mod.resolve_tool(cfg, "SomethingNew", {})
-    assert cap == "audit"             # granted -> allow+log
+def test_resolve_tool_catchall_approve(cli_mod, make_cfg):
+    # default: approve routes unlisted tools to the granted catch-all cap (gated in
+    # the Cloud warrant -> human approval). default: deny routes to ungranted "unlisted".
+    cap, *_ = cli_mod.resolve_tool(make_cfg(default="approve"), "SomethingNew", {})
+    assert cap == "audit"
+    cap, *_ = cli_mod.resolve_tool(make_cfg(default="deny"), "SomethingNew", {})
+    assert cap == "unlisted"
 
 
 def test_resolve_tool_mcp_bare_name(cli_mod, make_cfg, tmp_path):

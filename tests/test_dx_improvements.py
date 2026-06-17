@@ -49,7 +49,7 @@ def test_fingerprint_tracks_subagents_and_default(cli_mod, make_cfg):
                          subagents={"researcher": {"tools": ["Read", "Grep"]}})
     assert cli_mod.policy_capability_fingerprint(base) != cli_mod.policy_capability_fingerprint(with_role)
     assert (cli_mod.policy_capability_fingerprint(make_cfg(default="deny"))
-            != cli_mod.policy_capability_fingerprint(make_cfg(default="audit")))
+            != cli_mod.policy_capability_fingerprint(make_cfg(default="approve")))
 
 
 def test_fingerprint_ignores_mode(cli_mod, make_cfg):

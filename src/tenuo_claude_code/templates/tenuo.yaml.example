@@ -2,10 +2,21 @@ name: your-project
 
 sandbox: ./workspace
 
+# enforce = block out-of-policy calls. dry-run = observe only (log every decision,
+# block nothing) for safe rollout — flip to enforce when the receipts look right.
 mode: enforce
 
+# Tools with argument constraints (may act, but only within scope).
 enforce:
   Read: "subpath:{sandbox}"
   Bash: "shlex:ls,pwd,echo,date"
 
+# Extra tools permitted WITHOUT constraints. The inert Claude harness tools
+# (plan mode, TodoWrite, AskUserQuestion, …) are always permitted; add your own:
+# allow:
+#   - SomeReadOnlyTool
+
+# Fallback for any tool in neither list above:
+#   deny    – block it (the secure default)
+#   approve – require human sign-off (Tenuo Cloud only)
 default: deny

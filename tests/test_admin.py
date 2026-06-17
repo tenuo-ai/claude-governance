@@ -361,3 +361,29 @@ def test_build_warrant_config_mcp_approval_without_policy_skips_gate():
 
     assert "delete_deployment" not in wc["per_action_constraints"]
     assert "approval_gates" not in wc
+
+
+def test_build_warrant_config_default_approve_gates_catchall():
+    # default: approve -> the catch-all cap is GRANTED (so unlisted tools aren't
+    # hard-denied) but carries an approval gate, so they pause for human sign-off.
+    cfg = {"_sandbox_abs": "/sandbox", "enforce": {"Read": "subpath:{sandbox}"},
+           "mcp": {}, "default": "approve", "audit": []}
+    wc = admin.build_warrant_config(cfg, "apol_test")
+    catchall = admin.tc.CATCHALL_AUDIT
+    assert catchall in wc["per_action_constraints"]          # granted (not denied)
+    assert catchall in wc["actions"]
+    # Gate is bound to the `tool` arg with a never-matching exempt (an Exempt gate
+    # map must carry `exempt`; the sentinel makes every real tool require approval).
+    assert wc["per_action_constraints"][catchall] == {"tool": {"_type": "wildcard"}}
+    assert wc["approval_gates"][catchall] == {
+        "args": {"tool": {"exempt": {"_type": "exact", "_value": admin.tc.CATCHALL_NEVER_EXEMPT}}}}
+    assert wc["approval_gates"]["_policy_id"] == "apol_test"
+
+
+def test_build_warrant_config_default_approve_without_policy_falls_back_to_deny():
+    # No Cloud approval policy -> can't gate -> catch-all stays ungranted (deny).
+    cfg = {"_sandbox_abs": "/sandbox", "enforce": {"Read": "subpath:{sandbox}"},
+           "mcp": {}, "default": "approve", "audit": []}
+    wc = admin.build_warrant_config(cfg, None)
+    assert admin.tc.CATCHALL_AUDIT not in wc["per_action_constraints"]
+    assert "approval_gates" not in wc

@@ -239,14 +239,26 @@ def build_warrant_config(cfg: dict, approval_policy_id: str | None = None) -> di
             for ek, es in (parsed.get("exempt_args") or {}).items():
                 gate_args[ek] = {"exempt": to_wire_constraint(es, sandbox)}
             approval_gates[mtool] = {"args": gate_args or {a: {} for a in gated}}
-    # AUDIT-ALLOW capabilities (unconstrained): the hook routes audit-listed
-    # tools to /verify/<cap>, so the warrant must GRANT them or every WebSearch/
-    # TodoWrite/… is denied in enforce mode. Mirrors mint_local_warrant exactly —
-    # including the "audit" catch-all when default: audit (and never "unlisted").
+    # ALLOW capabilities (unconstrained): the hook routes allow-listed tools to
+    # /verify/<cap>, so the warrant must GRANT them or every WebSearch/TodoWrite/…
+    # is denied in enforce mode.
     for cap in tc.audit_map(cfg).values():
         per_action.setdefault(cap, {})
-    if tc.default_mode(cfg) == "audit":
-        per_action.setdefault(tc.CATCHALL_AUDIT, {})
+    # default: approve -> grant the catch-all cap WITH an approval gate, so any
+    # tool not in enforce/allow pauses for human sign-off (Cloud-only; local
+    # warrants never grant the catch-all, so local `approve` falls back to deny).
+    # Needs a linked Cloud approval policy; without one we leave it ungranted (deny).
+    if tc.default_mode(cfg) == "approve" and approval_policy_id:
+        # Bind the gate to the `tool` field (resolve_tool signs it for the catch-all).
+        # An Exempt gate map MUST carry an `exempt` constraint, and there is no
+        # "no-exempt" form — so to require approval for EVERY unlisted tool we set an
+        # exempt that never matches a real tool name (a sentinel). Every real tool
+        # then misses the exemption and pauses for approval. (Even if some tool were
+        # named the sentinel, the runtime fail-closed net denies a catch-all allow
+        # that didn't go through approval, so this can't become a bypass.)
+        per_action.setdefault(tc.CATCHALL_AUDIT, {"tool": {"_type": "wildcard"}})
+        approval_gates.setdefault(tc.CATCHALL_AUDIT, {"args": {"tool": {
+            "exempt": {"_type": "exact", "_value": tc.CATCHALL_NEVER_EXEMPT}}}})
     # Subagent spawn: a signed capability whose subagent_type is constrained to
     # the declared roles. Lets the runtime route the Agent/Task spawn through the
     # authorizer for a root-signed decision (instead of a local-only policy gate).

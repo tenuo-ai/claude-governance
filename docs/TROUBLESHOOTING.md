@@ -206,7 +206,7 @@ tenuo-claude demo
 
 | Change | Command |
 |--------|---------|
-| `mode: audit` ↔ `mode: enforce` only | `tenuo-claude refresh` |
+| `mode: dry-run` ↔ `mode: enforce` only | `tenuo-claude refresh` |
 | `enforce`, `mcp`, `subagents`, approval overlay (Cloud) | `tenuo-admin setup` then `tenuo-claude refresh` or `up` |
 | Local-only project (no Cloud) | `tenuo-claude refresh` |
 

@@ -2,6 +2,11 @@ name: your-project
 
 sandbox: ./workspace
 
+# Session warrant lifetime in seconds. Optional; defaults to 3600 (1h). `up`
+# re-mints before expiry. Enterprise deployments pin this centrally via Claude
+# Code managed settings / MDM; local dev can set it here. Positive integer.
+# ttl_seconds: 3600
+
 # enforce = block out-of-policy calls. dry-run = observe only (log every decision,
 # block nothing) for safe rollout — flip to enforce when the receipts look right.
 mode: enforce

@@ -281,7 +281,7 @@ def build_warrant_config(cfg: dict, approval_policy_id: str | None = None) -> di
         "holder": "${event.agent_id}",
         "actions": sorted(per_action.keys()),
         "per_action_constraints": per_action,
-        "ttl": 3600,
+        "ttl": tc.session_ttl_seconds(cfg),
         # max_depth=1 permits exactly ONE attenuation: the session warrant
         # (depth 0) -> a subagent child (depth 1, terminal). Core enforces this
         # cryptographically on every WarrantStack — a child can't sub-delegate

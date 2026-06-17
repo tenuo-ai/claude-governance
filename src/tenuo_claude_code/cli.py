@@ -292,6 +292,40 @@ def subagent_roles(cfg: dict) -> dict:
     return cfg.get("subagents") or {}
 
 
+# Default session warrant lifetime when `ttl_seconds` is absent (1 hour).
+DEFAULT_SESSION_TTL_SECONDS = 3600
+
+
+def session_ttl_seconds(cfg: dict) -> int:
+    """Session warrant lifetime in seconds from `ttl_seconds`, else the default (1h).
+
+    Single source of truth for both mint paths — local mint (`mint_local_warrant`)
+    and the Cloud trigger config (`admin.build_warrant_config`). Validated in
+    `validate_ttl_seconds` at load time, so by the time this runs the value is a
+    positive int; the bounds check here is defensive (e.g. an in-memory cfg that
+    skipped load_config).
+    """
+    raw = cfg.get("ttl_seconds")
+    if raw is None:
+        return DEFAULT_SESSION_TTL_SECONDS
+    return validate_ttl_seconds(raw)
+
+
+def validate_ttl_seconds(raw) -> int:
+    """Coerce + validate a session `ttl_seconds` value; must be a positive integer.
+
+    Rejects bools (a YAML `true`/`false` is not a duration), non-integers, and
+    non-positive values with the tool's usual `SystemExit` error style. Mirrors how
+    `_normalize_posture_keys` fails loud on a bad `mode`/`default`."""
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise SystemExit(
+            f"Invalid ttl_seconds: {raw!r}. Must be a positive integer (seconds).")
+    if raw <= 0:
+        raise SystemExit(
+            f"Invalid ttl_seconds: {raw}. Must be a positive integer (seconds).")
+    return raw
+
+
 def webfetch_approval(cfg: dict) -> dict | None:
     """`enforce.WebFetch.approval` block if declared, else None (Cloud human-approval gate)."""
     wf = (cfg.get("enforce") or {}).get("WebFetch")
@@ -606,6 +640,8 @@ def load_config() -> dict:
     cfg["audit"] = audit          # internal canonical (read by audit_map, status, …)
     cfg["_deprecations"] = deps
     validate_webfetch_policy(cfg)
+    if cfg.get("ttl_seconds") is not None:
+        validate_ttl_seconds(cfg["ttl_seconds"])
     return cfg
 
 
@@ -1650,7 +1686,7 @@ def mint_local_warrant(cfg: dict, issuer, holder):
     # minting has no approval support, so `default: approve` can't be honored here
     # and falls back to deny (the runtime surfaces that as an advisory). Cloud
     # trigger warrants are where `approve` grants the gated catch-all.
-    return builder.holder(holder.public_key).ttl(3600).mint(issuer)
+    return builder.holder(holder.public_key).ttl(session_ttl_seconds(cfg)).mint(issuer)
 
 
 def remint_session(cfg: dict) -> str:

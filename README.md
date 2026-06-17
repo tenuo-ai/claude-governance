@@ -64,6 +64,7 @@ For an example with MCP and subagents, see the [reference demo](demo/).
 ```yaml
 name: acme-backend
 sandbox: ./workspace        # a directory; {sandbox} expands to its absolute path
+ttl_seconds: 3600           # optional: session warrant lifetime (default 3600 = 1h)
 mode: enforce               # block out-of-scope calls. 'audit' = log only, don't block
 
 enforce:
@@ -114,6 +115,7 @@ The keys above are the `tenuo.yaml` DSL's convenient subset. The underlying tenu
 - **`allow:`** lists extra tools permitted without constraints (the inert Claude harness tools — plan mode, TodoWrite, AskUserQuestion, … — are always permitted; `allow_bundled: false` opts out).
 - **`default:`** is the fallback for any tool in neither `enforce` nor `allow`: **`deny`** blocks it (recommended) or **`approve`** requires human sign-off (Tenuo Cloud). There is no allow-everything fallback — enforce never fails open; use `mode: dry-run` to observe instead.
 - **`subagents:`** declares roles; spawning is gated to those roles, and each runs under the session warrant **attenuated** to its `tools` (it can only ever do less than the session). [Details](docs/DETAILS.md#subagents).
+- **`ttl_seconds:`** sets the session warrant lifetime in seconds (positive integer; default `3600` = 1h). `up` re-mints before expiry. Enterprise rollouts pin it centrally through Claude Code managed settings / MDM (the policy file is what managed settings pins); local dev sets it directly. A shorter TTL shrinks the blast radius of a leaked warrant.
 
 Ready-made policies: [examples/policies/](examples/policies/). After any edit, run `tenuo-claude refresh`.
 
@@ -136,7 +138,7 @@ Day to day, you mostly need `up` (start), `audit` (review), and `refresh` (after
 | `bench [--json]` | Measure per-call overhead on your machine (PoP sign, authorizer round-trip, full hook path). |
 | `revoke` | Revoke the current session warrant. |
 
-The warrant is short-lived (~1h TTL); `up` refreshes it. The authorizer listens on `127.0.0.1:9090`; change it with `TENUO_AUTHORIZER_PORT` before `bootstrap`. Generated files (don't commit): `.state/` (keys, warrant, credentials), `.claude/settings.json` (hooks), `.mcp.json` (MCP wiring).
+The warrant is short-lived (1h TTL by default, configurable via `ttl_seconds:` in `tenuo.yaml`); `up` refreshes it. The authorizer listens on `127.0.0.1:9090`; change it with `TENUO_AUTHORIZER_PORT` before `bootstrap`. Generated files (don't commit): `.state/` (keys, warrant, credentials), `.claude/settings.json` (hooks), `.mcp.json` (MCP wiring).
 
 Working from a git clone instead of PyPI? See [Build from source](#build-from-source).
 
@@ -206,7 +208,7 @@ Tenuo runs **alongside** Claude Code permissions; it doesn't replace managed set
 | Form | Allow/ask/deny rules in settings | Signed, expiring capability token; Cloud chains to your org root |
 | Enforcement point | Claude's permission UI | PreToolUse hook + MCP proxy, checked by the authorizer |
 | `--dangerously-skip-permissions` | Skips the prompts | Does not disable installed Tenuo hook/proxy checks |
-| Expiry | Until edited | ~1h session TTL; `up` refreshes |
+| Expiry | Until edited | Session TTL (1h default, set via `ttl_seconds:`); `up` refreshes |
 | Revocation | Edit rules (live sessions may keep allowances) | Revoke warrant id → ~30s fleet sync (Cloud) |
 | Evidence | Optional hook logs | Local JSONL; signed receipt stream in Cloud |
 | Org deployment | Per-user settings, locally editable | Managed-settings hooks + shared policy |

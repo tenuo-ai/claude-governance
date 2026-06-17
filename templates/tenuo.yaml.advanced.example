@@ -21,6 +21,14 @@
 #   tenuo-claude init --advanced --approver "<Cloud identity display name>"
 # Or copy to tenuo.advanced.yaml and re-run `tenuo-admin setup`.
 
+# Session warrant lifetime in seconds. Optional; defaults to 3600 (1h). `up`
+# re-mints before expiry. Enterprise deployments pin this centrally via Claude
+# Code managed settings / MDM (this policy file is exactly what managed settings
+# pins); local dev can set it directly. Must be a positive integer. A shorter TTL
+# tightens the blast radius of a leaked warrant at the cost of more frequent
+# re-mints.
+ttl_seconds: 3600
+
 cloud:
   # Prefer the stable id. Display names are accepted for demos but can be renamed
   # or duplicated.

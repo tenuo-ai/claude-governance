@@ -117,6 +117,21 @@ def test_build_warrant_config_command_exec_tools():
     assert pac["run_command"]["command"]["_type"] == "shlex"
 
 
+def test_build_warrant_config_ttl_defaults_to_3600():
+    """Absent `ttl_seconds` -> the Cloud trigger warrant keeps the 1h default."""
+    cfg = {"_sandbox_abs": "/sandbox", "enforce": {}, "mcp": {}, "default": "deny", "audit": []}
+    wc = admin.build_warrant_config(cfg, None)
+    assert wc["ttl"] == 3600
+
+
+def test_build_warrant_config_ttl_uses_configured_value():
+    """A configured `ttl_seconds` flows through to the Cloud warrant config."""
+    cfg = {"_sandbox_abs": "/sandbox", "enforce": {}, "mcp": {},
+           "default": "deny", "audit": [], "ttl_seconds": 900}
+    wc = admin.build_warrant_config(cfg, None)
+    assert wc["ttl"] == 900
+
+
 def test_resolve_approver_identity_by_id(monkeypatch):
     def fake_cloud_api(method, url, api_key, path, body=None):
         assert (method, path) == ("GET", "/v1/identities")

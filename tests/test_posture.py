@@ -84,6 +84,60 @@ def test_normalize_clean_policy_has_no_deprecations(cli_mod):
     assert cli_mod._normalize_posture_keys({"mode": "enforce", "default": "approve"}) == []
 
 
+# --- ttl_seconds: configurable session warrant lifetime ---------------------
+
+def test_session_ttl_defaults_to_3600(cli_mod, make_cfg):
+    assert cli_mod.session_ttl_seconds(make_cfg()) == cli_mod.DEFAULT_SESSION_TTL_SECONDS == 3600
+
+
+def test_session_ttl_uses_configured_value(cli_mod, make_cfg):
+    assert cli_mod.session_ttl_seconds(make_cfg(ttl_seconds=900)) == 900
+
+
+@pytest.mark.parametrize("bad", [0, -1, -3600, 3.5, "3600", True, False, None])
+def test_validate_ttl_seconds_rejects_invalid(cli_mod, bad):
+    # 0/negatives (non-positive), 3.5 (non-int), "3600" (str), True/False (bool is
+    # not a duration), None (missing) all fail loud — never silently coerced.
+    with pytest.raises(SystemExit, match="ttl_seconds"):
+        cli_mod.validate_ttl_seconds(bad)
+
+
+def test_validate_ttl_seconds_accepts_positive_int(cli_mod):
+    assert cli_mod.validate_ttl_seconds(900) == 900
+
+
+def test_load_config_rejects_invalid_ttl(cli_mod, tmp_path, monkeypatch):
+    _write_policy(monkeypatch, tmp_path, "name: t\nttl_seconds: 0\n")
+    with pytest.raises(SystemExit, match="ttl_seconds"):
+        cli_mod.load_config()
+
+
+def test_load_config_accepts_custom_ttl(cli_mod, tmp_path, monkeypatch):
+    _write_policy(monkeypatch, tmp_path, "name: t\nttl_seconds: 1800\n")
+    cfg = cli_mod.load_config()
+    assert cli_mod.session_ttl_seconds(cfg) == 1800
+
+
+def test_mint_local_warrant_default_ttl(cli_mod, make_cfg):
+    """Absent `ttl_seconds` -> the minted session warrant carries the 1h default."""
+    from tenuo import SigningKey
+
+    cfg = make_cfg(enforce={"Read": "subpath:{sandbox}"})
+    issuer, holder = SigningKey.generate(), SigningKey.generate()
+    w = cli_mod.mint_local_warrant(cfg, issuer, holder)
+    assert w.ttl_seconds() == 3600
+
+
+def test_mint_local_warrant_custom_ttl(cli_mod, make_cfg):
+    """A configured `ttl_seconds` flows through to `.ttl(...)` on the minted warrant."""
+    from tenuo import SigningKey
+
+    cfg = make_cfg(enforce={"Read": "subpath:{sandbox}"}, ttl_seconds=900)
+    issuer, holder = SigningKey.generate(), SigningKey.generate()
+    w = cli_mod.mint_local_warrant(cfg, issuer, holder)
+    assert w.ttl_seconds() == 900
+
+
 # --- load_config: allow / allow_bundled + legacy audit* aliases -------------
 
 def _write_policy(monkeypatch, tmp_path, body: str):

@@ -1331,6 +1331,27 @@ def cmd_post(_args) -> None:
                    "outcome_preview": json.dumps(resp)[:240] if resp is not None else ""})
 
 
+def mcp_proxy_decision(allowed: bool, reason: str, audit_only: bool, name: str):
+    """Map an authorize_call result to a proxy action. Returns (forward, message).
+
+    `forward=True` → pass the call to the downstream MCP server; `message` is None.
+    `forward=False` → return `message` to the client as an MCP error; do NOT forward.
+
+    Observe-only (`audit_only`) never blocks — it always forwards (the caller logs
+    WOULD-DENY). Human-in-the-loop is just the deny branch resolving slowly: by the
+    time this is called, authorize_call has already blocked on the Cloud approval
+    poll, so `allowed` reflects the approver's decision. We split that branch in
+    two so the agent can tell an approval outcome (pending / timed out / declined —
+    the action did NOT run, and re-trying once approved may succeed) apart from a
+    hard policy deny (the action is simply not permitted).
+    """
+    if allowed or audit_only:
+        return True, None
+    if reason and APPROVAL_PENDING_REASON in reason:
+        return False, f"Tenuo: {name} not run — {reason}"
+    return False, f"Tenuo denied {name}: {reason}"
+
+
 def cmd_mcp_proxy(_args) -> None:
     import asyncio
 
@@ -1365,6 +1386,14 @@ def cmd_mcp_proxy(_args) -> None:
 
                 @proxy.call_tool()
                 async def _ct(name: str, arguments: dict):
+                    # HiTL note: authorize_call routes governed calls through
+                    # authorize_with_approval, so when the warrant carries an
+                    # approval gate this BLOCKS on the Cloud approval poll (in a
+                    # worker thread) and returns the approver's decision. The
+                    # downstream forward below runs only AFTER that resolves and
+                    # only while this call is still open — if the client cancels
+                    # (its tool timeout), the await is cancelled and we never
+                    # forward, so an approved-but-abandoned call does not execute.
                     tin = dict(arguments or {})
                     allowed, reason, _, tenuo_tool = await asyncio.to_thread(
                         authorize_call, cfg, name, tin, None, roles,
@@ -1377,9 +1406,10 @@ def cmd_mcp_proxy(_args) -> None:
                     # strict_receipts: don't forward an allowed call we couldn't log.
                     if allowed and not audit_only and not wrote and cfg.get("strict_receipts"):
                         allowed, reason = False, "audit receipt unwritable, strict_receipts on (fail-closed)"
-                    if not allowed and not audit_only:
+                    forward, message = mcp_proxy_decision(allowed, reason, audit_only, name)
+                    if not forward:
                         log(f"DENY {name}: {reason}")
-                        return [TextContent(type="text", text=f"Tenuo denied {name}: {reason}")]
+                        return [TextContent(type="text", text=message)]
                     if not allowed:
                         log(f"WOULD-DENY {name} (observe-only, forwarding): {reason}")
                     return (await down.call_tool(name, tin)).content

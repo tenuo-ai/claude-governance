@@ -5,15 +5,21 @@
 name: claude-code-demo
 
 # Enforcement posture. `enforce` (default) blocks out-of-scope calls. This is
-# what the README quickstart demonstrates. Set `mode: audit` for OBSERVE-ONLY
+# what the README quickstart demonstrates. Set `mode: dry-run` for OBSERVE-ONLY
 # rollout: every call's real allow/deny is still computed and written to the
 # signed receipt (so you see what WOULD be denied), but nothing is blocked. The
 # hook reads this live (effective on the next tool call, no re-mint); the MCP
 # proxy picks it up on the next Claude session.
-mode: audit
+mode: enforce
 
 # Files Claude may touch. {sandbox} below expands to this absolute path.
 sandbox: ./sandbox
+
+# Session warrant lifetime in seconds. Optional; defaults to 3600 (1h). `up`
+# re-mints before expiry. Enterprise deployments pin this centrally via Claude
+# Code managed settings / MDM (the policy file is what managed settings pins);
+# local dev can just set it here. Must be a positive integer.
+# ttl_seconds: 3600
 
 # Optional Tenuo Cloud (root-signed warrants, signed audit stream). Not required
 # for local mode. Tool overlay: `tenuo-claude init --cloud` → tenuo.cloud.yaml.
@@ -68,14 +74,15 @@ enforce:
 
 # Harness-inert tools (Task*, plan mode, AskUserQuestion, …) ship in the
 # bundled package list (`src/tenuo_claude_code/data/harness_tools.yaml`) and
-# merge at load time. Add site-specific audit-allows:
-# audit_extra:
+# merge at load time. Add site-specific permitted tools (unconstrained) here:
+# allow:
 #   - MyCustomHarnessTool
-# audit_bundled: false   # disable bundled list (not recommended)
+# allow_bundled: false   # disable bundled list (not recommended)
 
-# DEFAULT for everything else. Any unknown/future tool: deny, with a signed
-# receipt. Only the enforced + audit lists above are permitted. Set to "audit"
-# to log-and-allow unknown tools instead (less safe).
+# DEFAULT for everything else — any tool in neither `enforce` nor `allow`. Only
+# `deny` (block, with a signed receipt — the secure default) and `approve`
+# (require human sign-off; Tenuo Cloud only) are valid. There is no allow-all
+# fallback: enforce never fails open. Use `mode: dry-run` to observe instead.
 default: deny
 
 # Subagents (Claude Code's `Agent` tool). Two layers of control:

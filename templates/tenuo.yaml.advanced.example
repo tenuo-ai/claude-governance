@@ -1,8 +1,15 @@
-# Optional policy overlay for human approval on governed tool calls (Cloud).
+# Optional policy overlay for human approval on governed tool calls.
 # Shipped examples:
 #   * off-allowlist WebFetch (native hook path)
+#   * Bash with a safe-verb exempt (any native enforce tool can take an approval block)
 #   * delete_deployment with staging exempt (MCP proxy path)
+#   * default: approve — blanket human approval for ANY unlisted tool (catch-all)
 # See README § Human approval.
+#
+# HUMAN-IN-THE-LOOP APPROVAL REQUIRES TENUO CLOUD — ANYWHERE (native hook, MCP
+# proxy, or catch-all). The gate lives in the Cloud-issued warrant and binds each
+# approval to a signed identity. Without Cloud, every approval-gated tool DENIES
+# (fail-closed); `tenuo-claude check` warns when a gate is set but Cloud isn't.
 #
 # PREREQUISITE (Tenuo Cloud):
 #   1. Notification channel: https://docs.tenuo.ai/guides/adding-channels
@@ -14,6 +21,14 @@
 #   tenuo-claude init --advanced --approver "<Cloud identity display name>"
 # Or copy to tenuo.advanced.yaml and re-run `tenuo-admin setup`.
 
+# Session warrant lifetime in seconds. Optional; defaults to 3600 (1h). `up`
+# re-mints before expiry. Enterprise deployments pin this centrally via Claude
+# Code managed settings / MDM (this policy file is exactly what managed settings
+# pins); local dev can set it directly. Must be a positive integer. A shorter TTL
+# tightens the blast radius of a leaked warrant at the cost of more frequent
+# re-mints.
+ttl_seconds: 3600
+
 cloud:
   # Prefer the stable id. Display names are accepted for demos but can be renamed
   # or duplicated.
@@ -24,6 +39,12 @@ enforce:
   WebFetch:
     approval:
       threshold: 1
+  # Any native tool can require human approval, not just WebFetch. The tool's arg
+  # relaxes to a wildcard and is gated; `exempt` lets safe values skip the gate.
+  Bash:
+    approval:
+      threshold: 1
+      exempt: "shlex:ls,pwd,git"   # these commands auto-allow; anything else → approval
 
 mcp:
   enforce:
@@ -32,3 +53,9 @@ mcp:
         threshold: 1
         exempt:
           target: "exact:staging"
+
+# Catch-all human approval: any tool in NEITHER `enforce` nor `allow` pauses for
+# sign-off instead of being denied. Fail-closed — if the approver denies or
+# doesn't respond, the call is denied; an unlisted tool is never allowed without
+# an actual approval. (Cloud-only; locally `approve` falls back to deny.)
+default: approve

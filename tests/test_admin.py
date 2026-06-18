@@ -117,6 +117,21 @@ def test_build_warrant_config_command_exec_tools():
     assert pac["run_command"]["command"]["_type"] == "shlex"
 
 
+def test_build_warrant_config_ttl_defaults_to_3600():
+    """Absent `ttl_seconds` -> the Cloud trigger warrant keeps the 1h default."""
+    cfg = {"_sandbox_abs": "/sandbox", "enforce": {}, "mcp": {}, "default": "deny", "audit": []}
+    wc = admin.build_warrant_config(cfg, None)
+    assert wc["ttl"] == 3600
+
+
+def test_build_warrant_config_ttl_uses_configured_value():
+    """A configured `ttl_seconds` flows through to the Cloud warrant config."""
+    cfg = {"_sandbox_abs": "/sandbox", "enforce": {}, "mcp": {},
+           "default": "deny", "audit": [], "ttl_seconds": 900}
+    wc = admin.build_warrant_config(cfg, None)
+    assert wc["ttl"] == 900
+
+
 def test_resolve_approver_identity_by_id(monkeypatch):
     def fake_cloud_api(method, url, api_key, path, body=None):
         assert (method, path) == ("GET", "/v1/identities")
@@ -360,4 +375,62 @@ def test_build_warrant_config_mcp_approval_without_policy_skips_gate():
     wc = admin.build_warrant_config(cfg, None)
 
     assert "delete_deployment" not in wc["per_action_constraints"]
+    assert "approval_gates" not in wc
+
+
+def test_build_warrant_config_default_approve_gates_catchall():
+    # default: approve -> the catch-all cap is GRANTED (so unlisted tools aren't
+    # hard-denied) but carries an approval gate, so they pause for human sign-off.
+    cfg = {"_sandbox_abs": "/sandbox", "enforce": {"Read": "subpath:{sandbox}"},
+           "mcp": {}, "default": "approve", "audit": []}
+    wc = admin.build_warrant_config(cfg, "apol_test")
+    catchall = admin.tc.CATCHALL_AUDIT
+    assert catchall in wc["per_action_constraints"]          # granted (not denied)
+    assert catchall in wc["actions"]
+    # Whole-tool gate (args: None) requires approval for every unlisted call. The cap
+    # wildcards `tool` only so the approval's request_hash binds per tool name.
+    assert wc["per_action_constraints"][catchall] == {"tool": {"_type": "wildcard"}}
+    assert wc["approval_gates"][catchall] == {"args": None}
+    assert wc["approval_gates"]["_policy_id"] == "apol_test"
+
+
+def test_build_warrant_config_default_approve_without_policy_falls_back_to_deny():
+    # No Cloud approval policy -> can't gate -> catch-all stays ungranted (deny).
+    cfg = {"_sandbox_abs": "/sandbox", "enforce": {"Read": "subpath:{sandbox}"},
+           "mcp": {}, "default": "approve", "audit": []}
+    wc = admin.build_warrant_config(cfg, None)
+    assert admin.tc.CATCHALL_AUDIT not in wc["per_action_constraints"]
+    assert "approval_gates" not in wc
+
+
+def test_build_warrant_config_native_tool_approval_gate():
+    # enforce.<native>.approval -> wildcard the arg + gate it on the same arg, with
+    # the user's exempt (safe values skip approval).
+    cfg = {"_sandbox_abs": "/sandbox",
+           "enforce": {"Bash": {"approval": {"threshold": 1, "exempt": "shlex:ls,pwd"}}},
+           "mcp": {}, "default": "deny", "audit": []}
+    wc = admin.build_warrant_config(cfg, "apol_test")
+    assert wc["per_action_constraints"]["run_command"] == {"command": {"_type": "wildcard"}}
+    assert wc["approval_gates"]["run_command"]["args"]["command"]["exempt"] == {
+        "_type": "shlex", "_value": ["ls", "pwd"]}
+    assert wc["approval_gates"]["_policy_id"] == "apol_test"
+
+
+def test_build_warrant_config_native_approval_no_exempt_uses_whole_tool_gate():
+    # No exempt -> whole-tool gate (args: None) = tenuo-core's first-class "every
+    # invocation requires approval", rather than a never-matching exempt sentinel.
+    cfg = {"_sandbox_abs": "/sandbox",
+           "enforce": {"Bash": {"approval": {"threshold": 1}}},
+           "mcp": {}, "default": "deny", "audit": []}
+    wc = admin.build_warrant_config(cfg, "apol_test")
+    assert wc["per_action_constraints"]["run_command"] == {"command": {"_type": "wildcard"}}
+    assert wc["approval_gates"]["run_command"] == {"args": None}
+
+
+def test_build_warrant_config_native_approval_without_policy_denies():
+    cfg = {"_sandbox_abs": "/sandbox",
+           "enforce": {"Bash": {"approval": {"threshold": 1}}},
+           "mcp": {}, "default": "deny", "audit": []}
+    wc = admin.build_warrant_config(cfg, None)
+    assert "run_command" not in wc["per_action_constraints"]
     assert "approval_gates" not in wc

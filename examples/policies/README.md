@@ -9,7 +9,7 @@ then tune sandbox paths, domains, and tool lists.
 |----------|----------|
 | [read-only-research.yaml](read-only-research.yaml) | Read/search only; read-only subagent |
 | [enforce-with-mcp.yaml](enforce-with-mcp.yaml) | Sandbox + inert Bash + scoped MCP tools |
-| [audit-rollout.yaml](audit-rollout.yaml) | Observe-only rollout (`mode: audit`) before enforce |
+| [dry-run-rollout.yaml](dry-run-rollout.yaml) | Observe-only rollout (`mode: dry-run`) before enforce |
 
 Minimal starter (no subagents/MCP): [tenuo.yaml.example](../../templates/tenuo.yaml.example).
 

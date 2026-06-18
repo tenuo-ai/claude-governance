@@ -221,6 +221,22 @@ def build_warrant_config(cfg: dict, approval_policy_id: str | None = None) -> di
                     "args": {"host": {"exempt": domains_to_exempt_regex(domains)}}}
             else:
                 per_action[cap] = web_to_wire(g["web"])
+        elif g.get("approval"):
+            # Native human-approval gate. The arg relaxes to a wildcard (the
+            # capability grants the call) and approval is enforced by the gate.
+            # With a user `exempt:`, gate the arg with an Exempt constraint (approve
+            # unless the arg matches the exemption). Without one, use a whole-tool
+            # gate (args: None) — tenuo-core's first-class "every invocation requires
+            # approval" — rather than a never-matching exempt sentinel.
+            # Needs a Cloud approval policy; without one, leave ungranted (deny).
+            if approval_policy_id:
+                arg = g["arg"]
+                per_action[cap] = {arg: {"_type": "wildcard"}}
+                if g.get("exempt"):
+                    approval_gates[cap] = {"args": {arg: {
+                        "exempt": to_wire_constraint(g["exempt"], sandbox)}}}
+                else:
+                    approval_gates[cap] = {"args": None}
         else:
             per_action[cap] = {g["arg"]: to_wire_constraint(g["spec"], sandbox)}
     gate_approval = bool(approval_policy_id)
@@ -239,14 +255,23 @@ def build_warrant_config(cfg: dict, approval_policy_id: str | None = None) -> di
             for ek, es in (parsed.get("exempt_args") or {}).items():
                 gate_args[ek] = {"exempt": to_wire_constraint(es, sandbox)}
             approval_gates[mtool] = {"args": gate_args or {a: {} for a in gated}}
-    # AUDIT-ALLOW capabilities (unconstrained): the hook routes audit-listed
-    # tools to /verify/<cap>, so the warrant must GRANT them or every WebSearch/
-    # TodoWrite/… is denied in enforce mode. Mirrors mint_local_warrant exactly —
-    # including the "audit" catch-all when default: audit (and never "unlisted").
+    # ALLOW capabilities (unconstrained): the hook routes allow-listed tools to
+    # /verify/<cap>, so the warrant must GRANT them or every WebSearch/TodoWrite/…
+    # is denied in enforce mode.
     for cap in tc.audit_map(cfg).values():
         per_action.setdefault(cap, {})
-    if tc.default_mode(cfg) == "audit":
-        per_action.setdefault(tc.CATCHALL_AUDIT, {})
+    # default: approve -> grant the catch-all cap WITH an approval gate, so any
+    # tool not in enforce/allow pauses for human sign-off (Cloud-only; local
+    # warrants never grant the catch-all, so local `approve` falls back to deny).
+    # Needs a linked Cloud approval policy; without one we leave it ungranted (deny).
+    if tc.default_mode(cfg) == "approve" and approval_policy_id:
+        # Whole-tool gate (args: None) = tenuo-core's first-class "every invocation
+        # requires approval", so every unlisted tool pauses for sign-off. The cap
+        # wildcards `tool` (resolve_tool signs the tool name) purely so the approval's
+        # request_hash binds per tool name — approving one unlisted tool must not
+        # auto-approve another — not to make the gate fire.
+        per_action.setdefault(tc.CATCHALL_AUDIT, {"tool": {"_type": "wildcard"}})
+        approval_gates.setdefault(tc.CATCHALL_AUDIT, {"args": None})
     # Subagent spawn: a signed capability whose subagent_type is constrained to
     # the declared roles. Lets the runtime route the Agent/Task spawn through the
     # authorizer for a root-signed decision (instead of a local-only policy gate).
@@ -258,7 +283,7 @@ def build_warrant_config(cfg: dict, approval_policy_id: str | None = None) -> di
         "holder": "${event.agent_id}",
         "actions": sorted(per_action.keys()),
         "per_action_constraints": per_action,
-        "ttl": 3600,
+        "ttl": tc.session_ttl_seconds(cfg),
         # max_depth=1 permits exactly ONE attenuation: the session warrant
         # (depth 0) -> a subagent child (depth 1, terminal). Core enforces this
         # cryptographically on every WarrantStack — a child can't sub-delegate

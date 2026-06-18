@@ -65,7 +65,7 @@ For an example with MCP and subagents, see the [reference demo](demo/).
 name: acme-backend
 sandbox: ./workspace        # a directory; {sandbox} expands to its absolute path
 ttl_seconds: 3600           # optional: session warrant lifetime (default 3600 = 1h)
-mode: enforce               # block out-of-scope calls. 'audit' = log only, don't block
+mode: enforce               # block out-of-scope calls. 'dry-run' = log only, don't block
 
 enforce:
   Read:  "subpath:{sandbox}"

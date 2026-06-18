@@ -230,7 +230,7 @@ def test_native_approval_relaxes_to_wildcard_under_cloud(cli_mod, make_cfg, monk
     tenuo_core = pytest.importorskip("tenuo_core")
     pytest.importorskip("tenuo")
     cfg = make_cfg(enforce={"Bash": {"approval": {"threshold": 1}}})
-    monkeypatch.setattr(cli_mod, "trigger_id", lambda c: "trig_x")   # Cloud present
+    monkeypatch.setattr(cli_mod, "use_cloud_trigger", lambda c: True)   # Cloud issuing
     caps = cli_mod.enforced_capabilities(cfg)
     assert isinstance(caps["run_command"]["command"], tenuo_core.Wildcard)
 
@@ -239,8 +239,21 @@ def test_native_approval_not_granted_without_cloud(cli_mod, make_cfg, monkeypatc
     pytest.importorskip("tenuo_core")
     pytest.importorskip("tenuo")
     cfg = make_cfg(enforce={"Bash": {"approval": {"threshold": 1}}})
-    monkeypatch.setattr(cli_mod, "trigger_id", lambda c: None)       # no Cloud
+    monkeypatch.setattr(cli_mod, "use_cloud_trigger", lambda c: False)  # no Cloud
     assert "run_command" not in cli_mod.enforced_capabilities(cfg)   # Cloud-only → denied locally
+
+
+def test_native_approval_not_relaxed_when_only_stale_trigger_id(cli_mod, make_cfg, monkeypatch):
+    # A stale trigger_id with no creds must NOT relax the constraint: the warrant
+    # would be minted locally (no approval gate), so a wildcard grant would be
+    # fail-open. use_cloud_trigger requires creds, so the cap stays denied.
+    pytest.importorskip("tenuo_core")
+    pytest.importorskip("tenuo")
+    cfg = make_cfg(enforce={"Bash": {"approval": {"threshold": 1}}})
+    monkeypatch.setattr(cli_mod, "trigger_id", lambda c: "trig_stale")   # lingering state
+    monkeypatch.setattr(cli_mod, "cloud_creds", lambda c: {"url": None, "api_key": None})
+    assert cli_mod.use_cloud_trigger(cfg) is False
+    assert "run_command" not in cli_mod.enforced_capabilities(cfg)
 
 
 def test_posture_advisory_flags_native_approval_without_cloud(cli_mod, make_cfg, bound):

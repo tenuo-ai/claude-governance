@@ -1587,7 +1587,11 @@ def enforced_capabilities(cfg: dict) -> dict:
     from tenuo_core import Wildcard
 
     sandbox = cfg["_sandbox_abs"]
-    gate_web = bool(webfetch_approval(cfg) and trigger_id(cfg))
+    # Relax an approval-gated tool's constraints ONLY when a Cloud trigger will
+    # actually carry the gate (use_cloud_trigger, not trigger_id alone). A stale
+    # trigger_id with no creds would otherwise mint the wildcard locally with no gate
+    # (fail-open). Evaluated lazily, only when an approval gate is actually present.
+    gate_web = bool(webfetch_approval(cfg) and use_cloud_trigger(cfg))
     caps: dict = {}
     for g in governed_map(cfg).values():
         if g["cap"] in caps:
@@ -1599,7 +1603,7 @@ def enforced_capabilities(cfg: dict) -> dict:
             # approval): the arg relaxes to a wildcard and the gate itself lives in
             # the Cloud trigger warrant. Local minting has no approval, so the cap
             # is granted only under a trigger; without Cloud it stays denied.
-            if trigger_id(cfg):
+            if use_cloud_trigger(cfg):
                 caps[g["cap"]] = {g["arg"]: Wildcard()}
         else:
             caps[g["cap"]] = {g["arg"]: make_constraint(g["spec"], sandbox)}
@@ -1610,7 +1614,7 @@ def enforced_capabilities(cfg: dict) -> dict:
         cons = parsed["constraints"]
         if cons:
             caps[mtool] = {a: make_constraint(spec, sandbox) for a, spec in cons.items()}
-        elif parsed.get("approval") and trigger_id(cfg):
+        elif parsed.get("approval") and use_cloud_trigger(cfg):
             gated = list((parsed.get("exempt_args") or {}).keys()) or [mcp_default_arg(mtool)]
             caps[mtool] = {a: Wildcard() for a in gated}
     roles = subagent_roles(cfg)
@@ -1736,7 +1740,7 @@ def refresh_policy(cfg: dict | None = None) -> str:
     """
     cfg = cfg or load_config()
     creds = cloud_creds(cfg)
-    use_trigger = bool(creds["url"] and creds["api_key"] and trigger_id(cfg))
+    use_trigger = use_cloud_trigger(cfg)
 
     write_claude_wiring(cfg)
     write_gateway(cfg, enforced_capabilities(cfg))
@@ -2844,6 +2848,23 @@ def trigger_id(cfg: dict) -> str | None:
     return (cfg.get("cloud") or {}).get("trigger") or load_cloud_state().get("trigger_id")
 
 
+def use_cloud_trigger(cfg: dict) -> bool:
+    """True only when a Cloud trigger can actually issue a warrant right now: creds
+    (URL + API key) AND a configured trigger.
+
+    A `trigger_id()` alone is NOT sufficient — it can linger in a stale
+    `.state/cloud_state.json` after the creds/profile are gone, leaving the project
+    effectively local. Anything that relaxes constraints "because the Cloud trigger
+    carries the gate" must key off this, not `trigger_id()`: otherwise an
+    approval-gated tool relaxes to a wildcard and then gets minted LOCALLY with no
+    approval gate (fail-open). The decision to fire a trigger uses the same predicate.
+    """
+    if not trigger_id(cfg):
+        return False
+    creds = cloud_creds(cfg)
+    return bool(creds.get("url") and creds.get("api_key"))
+
+
 def fire_session_warrant(cfg: dict, creds: dict) -> tuple[str, str]:
     """Fire the configured trigger -> (warrant_b64, tenant_root_hex). Runtime key."""
     tid = trigger_id(cfg)
@@ -2968,7 +2989,7 @@ def cmd_install_authorizer(args) -> None:
 def cmd_up(_args) -> None:
     cfg = load_config()
     creds = cloud_creds(cfg)
-    use_trigger = bool(creds["url"] and creds["api_key"] and trigger_id(cfg))
+    use_trigger = use_cloud_trigger(cfg)
 
     if not WARRANT.exists() and not use_trigger:
         raise SystemExit("Run `tenuo-claude init` first.")
@@ -3575,7 +3596,7 @@ def cmd_init(args) -> None:
 def cmd_refresh(args) -> None:
     cfg = load_config()
     creds = cloud_creds(cfg)
-    use_trigger = bool(creds["url"] and creds["api_key"] and trigger_id(cfg))
+    use_trigger = use_cloud_trigger(cfg)
     was_running = authorizer_running(cfg)
 
     wid = refresh_policy(cfg)

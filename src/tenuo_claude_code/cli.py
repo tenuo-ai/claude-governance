@@ -1326,18 +1326,11 @@ def authorize_call(cfg: dict, tool: str, tin: dict, agent_type, roles: dict,
             cfg, tool, tenuo_tool, route, sign_args, body, warrant_b64, live=live)
     else:
         allowed, reason = authorize(tenuo_tool, route, sign_args, body, warrant_b64=warrant_b64)
-    # DEFENSE-IN-DEPTH for `default: approve`. The warrant's whole-tool gate is the
-    # primary control — tenuo-core requires approval for every catch-all invocation.
-    # This net is a redundant client-side check: under `approve` the ONLY allowed
-    # path is an actual human approval (reason == "approved"), so if the authorizer
-    # ever returned a plain allow for the catch-all without an approval having
-    # happened, we still refuse to trust it. Worst case is "every unlisted tool
-    # denied" (safe), never fail-open.
-    if (allowed and tenuo_tool == CATCHALL_AUDIT and not skip_approval_gate
-            and default_mode(cfg) == "approve"
-            and "approved" not in (reason or "").lower()):
-        allowed, reason = False, ("unlisted tool requires human approval (default: approve) "
-                                  "but no approval occurred — failing closed")
+    # `default: approve` fails closed in the warrant, not here: the catch-all carries
+    # a whole-tool approval gate, so tenuo-core requires a signed human approval for
+    # every unlisted call (and the cap is granted only alongside that gate; locally
+    # it's never granted, so approve falls back to deny). The authorizer is the
+    # boundary — we don't re-derive its decision client-side.
     if not allowed and governed:
         reason = _augment_denial_reason(cfg, tool, reason)
     return allowed, reason, governed, tenuo_tool

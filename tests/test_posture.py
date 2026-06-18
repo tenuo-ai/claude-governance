@@ -181,43 +181,22 @@ def test_load_config_legacy_default_audit_becomes_deny(cli_mod, tmp_path, monkey
     assert any("no longer supported" in d for d in cfg["_deprecations"])
 
 
-# --- default: approve fails CLOSED (never fail-open) -------------------------
+# --- default: approve defers fail-closed enforcement to core ----------------
+# The fail-closed guarantee is the warrant's whole-tool approval gate — tenuo-core
+# requires a signed human approval for every catch-all invocation, and the cap is
+# granted only alongside that gate (locally it's never granted, so approve falls
+# back to deny). The plugin no longer re-derives that decision at runtime. The gate
+# wire shape is asserted in test_admin (…default_approve_gates_catchall) and the
+# enforcement in tenuo-core; here we only assert the routing the plugin still owns.
 
-def test_approve_fails_closed_on_plain_allow(cli_mod, make_cfg, monkeypatch):
-    # If the authorizer returns a plain allow for the catch-all WITHOUT an approval
-    # (e.g. a gate that no-ops at enforcement), the runtime must deny it.
-    cfg = make_cfg(default="approve")
-    monkeypatch.setattr(cli_mod, "authorize_with_approval", lambda *a, **k: (True, "authorized"))
-    allowed, reason, _, cap = cli_mod.authorize_call(cfg, "SomeUnlistedTool", {}, None, {}, live=True)
-    assert cap == cli_mod.CATCHALL_AUDIT
-    assert allowed is False
-    assert "failing closed" in reason
-
-
-def test_approve_allows_only_when_actually_approved(cli_mod, make_cfg, monkeypatch):
-    cfg = make_cfg(default="approve")
-    monkeypatch.setattr(cli_mod, "authorize_with_approval", lambda *a, **k: (True, "approved"))
-    allowed, _, _, cap = cli_mod.authorize_call(cfg, "SomeUnlistedTool", {}, None, {}, live=True)
-    assert cap == cli_mod.CATCHALL_AUDIT
-    assert allowed is True
+def test_approve_routes_unlisted_to_gated_catchall(cli_mod, make_cfg):
+    cap, route, *_ = cli_mod.resolve_tool(make_cfg(default="approve"), "SomeUnlistedTool", {})
+    assert cap == cli_mod.CATCHALL_AUDIT and route == "/gate"
 
 
-def test_approve_safety_net_scoped_to_catchall(cli_mod, make_cfg, monkeypatch):
-    # The net must NOT fire for an enforced/governed tool — only the catch-all.
-    cfg = make_cfg(default="approve", enforce={"Read": "subpath:{sandbox}"})
-    monkeypatch.setattr(cli_mod, "authorize_with_approval", lambda *a, **k: (True, "authorized"))
-    allowed, _, _, cap = cli_mod.authorize_call(
-        cfg, "Read", {"file_path": "/sandbox/x"}, None, {}, live=True)
-    assert cap != cli_mod.CATCHALL_AUDIT
-    assert allowed is True
-
-
-def test_deny_default_not_affected_by_safety_net(cli_mod, make_cfg, monkeypatch):
-    cfg = make_cfg(default="deny")
-    monkeypatch.setattr(cli_mod, "authorize_with_approval", lambda *a, **k: (True, "authorized"))
-    allowed, _, _, cap = cli_mod.authorize_call(cfg, "SomeUnlistedTool", {}, None, {}, live=True)
-    assert cap == cli_mod.CATCHALL_DENY     # ungranted catch-all under deny
-    assert allowed is True                  # net only applies to approve
+def test_deny_routes_unlisted_to_ungranted_catchall(cli_mod, make_cfg):
+    cap, *_ = cli_mod.resolve_tool(make_cfg(default="deny"), "SomeUnlistedTool", {})
+    assert cap == cli_mod.CATCHALL_DENY
 
 
 # --- per-tool human approval on native enforce tools (Cloud HiTL) -----------

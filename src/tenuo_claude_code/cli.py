@@ -146,10 +146,6 @@ def claude_tool_for_cap(cap: str) -> str:
 # signed DENY receipt (used when default: deny).
 CATCHALL_AUDIT = "audit"
 CATCHALL_DENY = "unlisted"
-# Sentinel exempt value for the `default: approve` catch-all gate: an Exempt gate
-# must carry an `exempt` constraint, so to require approval for EVERY unlisted tool
-# we exempt only a value no real tool name equals. See build_warrant_config.
-CATCHALL_NEVER_EXEMPT = "__tenuo_never_exempt_sentinel__"
 
 
 def slug(name: str) -> str:
@@ -1221,8 +1217,10 @@ def resolve_tool(cfg: dict, tool_name: str, tool_input: dict):
             args[field] = val
         return bare, f"/verify/{bare}", args, args, True
 
-    # Catch-all. Under `default: approve` we sign the `tool` field so the
-    # authorizer can bind the approval gate to it (an arg-less gate no-ops); the
+    # Catch-all. Under `default: approve` the catch-all carries a whole-tool gate
+    # (every unlisted call requires approval), so we don't need to sign `tool` to
+    # make the gate fire. We sign it anyway so the approval's request_hash binds per
+    # tool name — approving one unlisted tool must not auto-approve another — and the
     # signed args must match what the /gate route extracts. Under `deny` the cap is
     # ungranted, so no args are checked (route extracts none) — keep sign_args empty.
     if default_mode(cfg) == "approve":
@@ -1328,13 +1326,13 @@ def authorize_call(cfg: dict, tool: str, tin: dict, agent_type, roles: dict,
             cfg, tool, tenuo_tool, route, sign_args, body, warrant_b64, live=live)
     else:
         allowed, reason = authorize(tenuo_tool, route, sign_args, body, warrant_b64=warrant_b64)
-    # FAIL-CLOSED SAFETY NET for `default: approve`. An unlisted tool routes to the
-    # catch-all capability; under `approve` the ONLY allowed path is an actual human
-    # approval (reason == "approved"). If the authorizer ever returns a plain allow
-    # for the catch-all without an approval having happened — e.g. a gate that
-    # validates at setup but no-ops at enforcement — we must NOT trust it. Deny.
-    # This makes `approve` fail closed regardless of authorizer-side gate behavior:
-    # worst case is "every unlisted tool denied" (safe), never fail-open.
+    # DEFENSE-IN-DEPTH for `default: approve`. The warrant's whole-tool gate is the
+    # primary control — tenuo-core requires approval for every catch-all invocation.
+    # This net is a redundant client-side check: under `approve` the ONLY allowed
+    # path is an actual human approval (reason == "approved"), so if the authorizer
+    # ever returned a plain allow for the catch-all without an approval having
+    # happened, we still refuse to trust it. Worst case is "every unlisted tool
+    # denied" (safe), never fail-open.
     if (allowed and tenuo_tool == CATCHALL_AUDIT and not skip_approval_gate
             and default_mode(cfg) == "approve"
             and "approved" not in (reason or "").lower()):
@@ -1655,8 +1653,9 @@ def write_gateway(cfg: dict, enforced_caps: dict) -> None:
     # capability (declared as a tool either way so the route compiles).
     catchall = catchall_cap(cfg)
     tools.setdefault(catchall, {"description": catchall, "constraints": {}})
-    # Under `default: approve` the catch-all carries an approval gate bound to the
-    # `tool` field, so the /gate route must extract it (an arg-less gate no-ops).
+    # Under `default: approve` the catch-all carries a whole-tool approval gate. The
+    # gate fires regardless of args, but the /gate route still extracts `tool` so the
+    # approval's request_hash binds per tool name (resolve_tool signs the same field).
     gate_constraints = ({"tool": {"from": "body", "path": "tool", "required": True}}
                         if default_mode(cfg) == "approve" else {})
     routes.append({"pattern": "/gate", "method": ["POST"], "tool": catchall,

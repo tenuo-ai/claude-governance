@@ -387,11 +387,10 @@ def test_build_warrant_config_default_approve_gates_catchall():
     catchall = admin.tc.CATCHALL_AUDIT
     assert catchall in wc["per_action_constraints"]          # granted (not denied)
     assert catchall in wc["actions"]
-    # Gate is bound to the `tool` arg with a never-matching exempt (an Exempt gate
-    # map must carry `exempt`; the sentinel makes every real tool require approval).
+    # Whole-tool gate (args: None) requires approval for every unlisted call. The cap
+    # wildcards `tool` only so the approval's request_hash binds per tool name.
     assert wc["per_action_constraints"][catchall] == {"tool": {"_type": "wildcard"}}
-    assert wc["approval_gates"][catchall] == {
-        "args": {"tool": {"exempt": {"_type": "exact", "_value": admin.tc.CATCHALL_NEVER_EXEMPT}}}}
+    assert wc["approval_gates"][catchall] == {"args": None}
     assert wc["approval_gates"]["_policy_id"] == "apol_test"
 
 
@@ -417,15 +416,15 @@ def test_build_warrant_config_native_tool_approval_gate():
     assert wc["approval_gates"]["_policy_id"] == "apol_test"
 
 
-def test_build_warrant_config_native_approval_no_exempt_uses_sentinel():
-    # No exempt -> never-matching sentinel = "always require approval" (an Exempt
-    # gate map must carry an exempt; an empty one no-ops at enforcement).
+def test_build_warrant_config_native_approval_no_exempt_uses_whole_tool_gate():
+    # No exempt -> whole-tool gate (args: None) = tenuo-core's first-class "every
+    # invocation requires approval", rather than a never-matching exempt sentinel.
     cfg = {"_sandbox_abs": "/sandbox",
            "enforce": {"Bash": {"approval": {"threshold": 1}}},
            "mcp": {}, "default": "deny", "audit": []}
     wc = admin.build_warrant_config(cfg, "apol_test")
-    assert wc["approval_gates"]["run_command"]["args"]["command"]["exempt"] == {
-        "_type": "exact", "_value": admin.tc.CATCHALL_NEVER_EXEMPT}
+    assert wc["per_action_constraints"]["run_command"] == {"command": {"_type": "wildcard"}}
+    assert wc["approval_gates"]["run_command"] == {"args": None}
 
 
 def test_build_warrant_config_native_approval_without_policy_denies():

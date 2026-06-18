@@ -222,16 +222,21 @@ def build_warrant_config(cfg: dict, approval_policy_id: str | None = None) -> di
             else:
                 per_action[cap] = web_to_wire(g["web"])
         elif g.get("approval"):
-            # Native human-approval gate on this tool's arg: wildcard the arg and
-            # gate it. An Exempt gate map must carry an `exempt`, so without a
-            # user-supplied exempt we use a never-matching sentinel = "always approve".
+            # Native human-approval gate. The arg relaxes to a wildcard (the
+            # capability grants the call) and approval is enforced by the gate.
+            # With a user `exempt:`, gate the arg with an Exempt constraint (approve
+            # unless the arg matches the exemption). Without one, use a whole-tool
+            # gate (args: None) — tenuo-core's first-class "every invocation requires
+            # approval" — rather than a never-matching exempt sentinel.
             # Needs a Cloud approval policy; without one, leave ungranted (deny).
             if approval_policy_id:
                 arg = g["arg"]
                 per_action[cap] = {arg: {"_type": "wildcard"}}
-                ex = (to_wire_constraint(g["exempt"], sandbox) if g.get("exempt")
-                      else {"_type": "exact", "_value": tc.CATCHALL_NEVER_EXEMPT})
-                approval_gates[cap] = {"args": {arg: {"exempt": ex}}}
+                if g.get("exempt"):
+                    approval_gates[cap] = {"args": {arg: {
+                        "exempt": to_wire_constraint(g["exempt"], sandbox)}}}
+                else:
+                    approval_gates[cap] = {"args": None}
         else:
             per_action[cap] = {g["arg"]: to_wire_constraint(g["spec"], sandbox)}
     gate_approval = bool(approval_policy_id)
@@ -260,16 +265,13 @@ def build_warrant_config(cfg: dict, approval_policy_id: str | None = None) -> di
     # warrants never grant the catch-all, so local `approve` falls back to deny).
     # Needs a linked Cloud approval policy; without one we leave it ungranted (deny).
     if tc.default_mode(cfg) == "approve" and approval_policy_id:
-        # Bind the gate to the `tool` field (resolve_tool signs it for the catch-all).
-        # An Exempt gate map MUST carry an `exempt` constraint, and there is no
-        # "no-exempt" form — so to require approval for EVERY unlisted tool we set an
-        # exempt that never matches a real tool name (a sentinel). Every real tool
-        # then misses the exemption and pauses for approval. (Even if some tool were
-        # named the sentinel, the runtime fail-closed net denies a catch-all allow
-        # that didn't go through approval, so this can't become a bypass.)
+        # Whole-tool gate (args: None) = tenuo-core's first-class "every invocation
+        # requires approval", so every unlisted tool pauses for sign-off. The cap
+        # wildcards `tool` (resolve_tool signs the tool name) purely so the approval's
+        # request_hash binds per tool name — approving one unlisted tool must not
+        # auto-approve another — not to make the gate fire.
         per_action.setdefault(tc.CATCHALL_AUDIT, {"tool": {"_type": "wildcard"}})
-        approval_gates.setdefault(tc.CATCHALL_AUDIT, {"args": {"tool": {
-            "exempt": {"_type": "exact", "_value": tc.CATCHALL_NEVER_EXEMPT}}}})
+        approval_gates.setdefault(tc.CATCHALL_AUDIT, {"args": None})
     # Subagent spawn: a signed capability whose subagent_type is constrained to
     # the declared roles. Lets the runtime route the Agent/Task spawn through the
     # authorizer for a root-signed decision (instead of a local-only policy gate).

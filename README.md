@@ -73,7 +73,6 @@ enforce:
   Bash:  "shlex:ls,pwd,echo,cat,grep"
   WebFetch:
     domains: ["api.github.com", "*.githubusercontent.com"]
-    cidrs:   ["10.0.0.0/8"]   # optional: also allow hosts in these IP ranges
 
 default: deny               # anything not listed above is denied
 
@@ -107,12 +106,14 @@ The keys above are the `tenuo.yaml` DSL's convenient subset. The underlying tenu
 
 `{sandbox}` is a convenience variable for the directory in `sandbox:`; you can point `subpath:` at any path. Tools you don't list aren't governed individually; they're caught by `default`.
 
+For internal egress, `WebFetch` also accepts `cidrs:` to allow hosts by IP range (e.g. `cidrs: ["10.0.0.0/8"]` alongside `domains:`). It's off by default and reaches past public domains and SSRF private-network defaults, so add it deliberately.
+
 **Command-execution tools.** `Bash`, `PowerShell`, and `Monitor` all execute commands and are each governed independently (their own constraint on the `command` argument). `Monitor` runs the same shell commands as `Bash` in the background; `PowerShell` is a different dialect, so prefer `oneof`/`pattern`/`regex` over `shlex` (which parses POSIX syntax) for it. If your team enables `PowerShell` or `Monitor` in Claude Code, list them under `enforce:` too. Left unlisted they fall to `default: deny` and are blocked. Never put a shell in `allow:` — that grants it **unconstrained**; governed shells belong under `enforce:`.
 
 **MCP tool arguments.** Under `mcp.enforce:`, a bare constraint string targets the `path` argument. To constrain a differently-named argument use `arg: NAME` + `constraint:`, and to constrain several at once use `args: {NAME: constraint, …}`. This works for any downstream MCP tool and any constraint kind, locally and on Cloud. Tools you don't list are still allowed/denied by `default` and can be human-approval gated (`approval:`); they just aren't argument-constrained.
 
 - **`mode: enforce`** blocks denied calls. **`mode: dry-run`** computes and logs the same decisions but blocks nothing; use it to roll out a policy, then switch to `enforce`. (`mode: audit` is a deprecated alias for `dry-run`.)
-- **`allow:`** lists extra tools permitted without constraints (the inert Claude harness tools — plan mode, TodoWrite, AskUserQuestion, … — are always permitted; `allow_bundled: false` opts out).
+- **`allow:`** lists extra tools permitted without constraints. Inert Claude harness tools (plan mode, TodoWrite, AskUserQuestion, …) are bundled in by default; set `allow_bundled: false` to opt out.
 - **`default:`** is the fallback for any tool in neither `enforce` nor `allow`: **`deny`** blocks it (recommended) or **`approve`** requires human sign-off (Tenuo Cloud). There is no allow-everything fallback — enforce never fails open; use `mode: dry-run` to observe instead.
 - **`subagents:`** declares roles; spawning is gated to those roles, and each runs under the session warrant **attenuated** to its `tools` (it can only ever do less than the session). [Details](docs/DETAILS.md#subagents).
 - **`ttl_seconds:`** sets the session warrant lifetime in seconds (positive integer; default `3600` = 1h). `up` re-mints before expiry. Enterprise rollouts pin it centrally through Claude Code managed settings / MDM (the policy file is what managed settings pins); local dev sets it directly. A shorter TTL shrinks the blast radius of a leaked warrant.
@@ -130,7 +131,7 @@ Day to day, you mostly need `up` (start), `audit` (review), and `refresh` (after
 | `init` | Compile an **existing** `tenuo.yaml`: mint the warrant, wire the PreToolUse hook and MCP proxy. Pass `--scaffold` to write an example if none exists (it no longer does so automatically). |
 | `up` / `down` | Start / stop the authorizer (auto-selects Docker or native; `--native` to force). |
 | `refresh` | Recompile after editing `tenuo.yaml` (restarts the authorizer if running). In Cloud mode, warns if capability rules drifted from the last `tenuo-admin setup`. |
-| `verify [--deep]` | Self-test the live policy against the authorizer (no Claude session needed). `--deep` adds an SSRF / encoded-IP matrix, extra Bash deny cases, and a live PreToolUse exit-code harness: a reproducible artifact for security review. |
+| `verify [--deep]` | Self-test the live policy against the authorizer (no Claude session needed). `--deep` adds an SSRF / encoded-IP matrix and extra Bash deny cases — a reproducible artifact for security review; when the local Claude CLI can load project settings, it also runs a live PreToolUse exit-code harness. |
 | `audit [--tail N]` | Show the decision log (`.state/receipts.jsonl`). |
 | `check` | Preflight: dependencies, wiring, audit-sink health, leaked admin keys, and (Cloud) control-plane bindings. |
 | `status` | Warrant, mode, audit-sink health, and Cloud summary. |
@@ -176,7 +177,7 @@ Two keys, kept apart; the runtime never sees the admin key:
 
 ```bash
 mkdir my-project && cd my-project
-tenuo-claude bootstrap --cloud      # wizard prompts for the runtime token, then sets up + verifies
+tenuo-claude bootstrap --cloud      # runtime token from --connect-token/env, or prompts if missing; then sets up + verifies
 ```
 
 Every session after that:

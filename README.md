@@ -6,7 +6,7 @@
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 Claude Code can read files, run shell commands, fetch URLs, and call MCP tools.
-Tenuo lets you write a `tenuo.yaml` policy for which of those calls are allowed,
+[Tenuo](https://github.com/tenuo-ai/tenuo) lets you write a `tenuo.yaml` policy for which of those calls are allowed,
 then checks every model-invoked tool call before it runs.
 
 That policy is compiled into a signed, expiring credential called a warrant. A

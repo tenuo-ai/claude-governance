@@ -23,7 +23,7 @@ from typing import Callable
 
 import certifi
 
-DEFAULT_IMAGE = "tenuo/authorizer:0.1.0-beta.24"
+DEFAULT_IMAGE = "tenuo/authorizer:0.2.0"
 DEFAULT_AUTHORIZER_PORT = 9090
 AUTHORIZER_PORT_ENV = "TENUO_AUTHORIZER_PORT"
 LEGACY_AUTHORIZER_PORT_ENV = "PORT"

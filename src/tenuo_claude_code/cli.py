@@ -2916,6 +2916,11 @@ def authorizer_running(cfg: dict) -> bool:
     backend = art.read_runtime_backend(mount)
     if backend == "native" or art.native_pid_path(mount).is_file():
         return art.native_running(mount, resolve_authz_url())
+    # No native state recorded, so any authorizer we manage would be the Docker
+    # container. On a host without Docker (e.g. macOS/WSL on the native backend)
+    # nothing we manage is running — report that instead of hard-failing.
+    if shutil.which("docker") is None:
+        return False
     r = docker("inspect", "-f", "{{.State.Running}}", container_name(cfg))
     return r.returncode == 0 and r.stdout.strip() == "true"
 

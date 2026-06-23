@@ -12,8 +12,12 @@ permissions:
 
 jobs:
   build-and-test:
-    name: Build & smoke test
-    runs-on: ubuntu-latest
+    name: Build & smoke test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -38,6 +42,10 @@ jobs:
           test "$expected" = "$actual"
 
       - name: check passes without repo launcher (PyPI layout)
+        # Preflight needs a backend (Docker or the native binary). Linux runners
+        # ship Docker for free; the macOS backend lifecycle is covered by the
+        # enforcement job, which installs the native authorizer.
+        if: runner.os == 'Linux'
         run: |
           proj=$(mktemp -d)
           cp templates/tenuo.yaml.example "$proj/tenuo.yaml"
@@ -58,16 +66,20 @@ jobs:
       - name: Upload dist artifacts
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v4.6.2
         with:
-          name: dist
+          name: dist-${{ matrix.os }}
           path: dist/
           if-no-files-found: error
 
   enforcement:
-    name: Enforcement self-test (live authorizer)
-    runs-on: ubuntu-latest
+    name: Enforcement self-test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     # Proves the leash end to end: mints a local warrant, starts the native
-    # tenuo-authorizer binary (from the tenuo core crate on crates.io), and runs
-    # `verify`. No Docker required.
+    # tenuo-authorizer binary (prebuilt release, else built from the crate), and
+    # runs `verify`. No Docker required.
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -111,3 +123,75 @@ jobs:
       - name: down (stop authorizer)
         if: always()
         run: uv run tenuo-claude down || true
+
+  enforcement-wsl:
+    name: Enforcement self-test (Windows / WSL)
+    runs-on: windows-latest
+    # The supported Windows path is WSL (see README). This runs the full
+    # lifecycle — sync, unit tests, bootstrap, live verify — inside a real WSL
+    # Ubuntu distro, mirroring how a Windows developer actually uses the tool.
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up WSL (Ubuntu)
+        uses: Vampire/setup-wsl@v3
+        with:
+          distribution: Ubuntu-24.04
+          additional-packages: curl ca-certificates
+
+      - name: Copy checkout into the WSL filesystem
+        shell: wsl-bash {0}
+        run: |
+          set -euxo pipefail
+          # wsl-bash doesn't reliably export GITHUB_WORKSPACE; fall back to the
+          # working directory (setup-wsl runs steps in the checkout). Build/run on
+          # the ext4 home, not the slow/noexec /mnt mount, but exercise the same tree.
+          ws="${GITHUB_WORKSPACE:-}"
+          if [ -n "$ws" ]; then ws="$(wslpath -u "$ws")"; else ws="$PWD"; fi
+          ls -la "$ws"
+          mkdir -p "$HOME/repo"
+          cp -r "$ws/." "$HOME/repo/"
+          test -f "$HOME/repo/pyproject.toml"
+
+      - name: Install uv (in WSL)
+        shell: wsl-bash {0}
+        run: |
+          set -euxo pipefail
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+
+      - name: Sync + unit tests (in WSL)
+        shell: wsl-bash {0}
+        run: |
+          set -euxo pipefail
+          export PATH="$HOME/.local/bin:$PATH"
+          cd "$HOME/repo"
+          uv sync --frozen
+          uv run --with pytest pytest
+
+      - name: bootstrap + verify against the live authorizer (in WSL)
+        shell: wsl-bash {0}
+        run: |
+          set -euxo pipefail
+          export PATH="$HOME/.local/bin:$HOME/.tenuo/bin:$PATH"
+          cd "$HOME/repo"
+          uv run tenuo-claude install-authorizer
+          proj="$HOME/governed"
+          mkdir -p "$proj"
+          TENUO_PROJECT_DIR="$proj" uv run tenuo-claude bootstrap
+          test -f "$proj/tenuo.yaml"
+          test -f "$proj/.state/warrant.b64"
+          test -f "$proj/.claude/settings.json"
+          TENUO_PROJECT_DIR="$proj" uv run tenuo-claude verify
+
+      - name: Authorizer logs on failure (in WSL)
+        if: failure()
+        shell: wsl-bash {0}
+        run: cat "$HOME/governed/.state/authorizer.log" 2>/dev/null || true
+
+      - name: down (in WSL)
+        if: always()
+        shell: wsl-bash {0}
+        run: |
+          export PATH="$HOME/.local/bin:$HOME/.tenuo/bin:$PATH"
+          cd "$HOME/repo"
+          TENUO_PROJECT_DIR="$HOME/governed" uv run tenuo-claude down || true

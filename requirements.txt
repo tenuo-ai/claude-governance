@@ -1,7 +1,9 @@
 # Tenuo for Claude Code — runtime dependencies.
 #
-# The authorizer itself is NOT a Python dependency: it runs as a container
-# (tenuo/authorizer, pinned in src/tenuo_claude_code/cli.py, started by `tenuo-claude up`).
+# The authorizer itself is NOT a Python dependency. `tenuo-claude up` runs it as a
+# Docker container (tenuo/authorizer) when Docker is available, otherwise as a
+# native host binary it installs automatically. The image/binary is pinned in
+# src/tenuo_claude_code/cli.py.
 # These are only what the CLI / hooks / MCP proxy import.
 #
 # `tenuo` is pinned in lockstep with the authorizer image tag

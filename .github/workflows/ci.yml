@@ -143,9 +143,15 @@ jobs:
         shell: wsl-bash {0}
         run: |
           set -euxo pipefail
-          # Build/run on the ext4 home, not the slow /mnt 9p mount (which also
-          # can't mark files executable), but exercise the same source tree.
-          cp -r "$(wslpath -u "$GITHUB_WORKSPACE")" "$HOME/repo"
+          # wsl-bash doesn't reliably export GITHUB_WORKSPACE; fall back to the
+          # working directory (setup-wsl runs steps in the checkout). Build/run on
+          # the ext4 home, not the slow/noexec /mnt mount, but exercise the same tree.
+          ws="${GITHUB_WORKSPACE:-}"
+          if [ -n "$ws" ]; then ws="$(wslpath -u "$ws")"; else ws="$PWD"; fi
+          ls -la "$ws"
+          mkdir -p "$HOME/repo"
+          cp -r "$ws/." "$HOME/repo/"
+          test -f "$HOME/repo/pyproject.toml"
 
       - name: Install uv (in WSL)
         shell: wsl-bash {0}

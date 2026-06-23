@@ -112,7 +112,7 @@ def test_install_authorizer_skips_when_current(tmp_path, monkeypatch):
     managed.parent.mkdir()
     managed.write_bytes(b"fake")
     with mock.patch.object(art, "managed_binary_path", return_value=managed):
-        with mock.patch.object(art, "query_binary_version", return_value="0.1.0-beta.24+authz.1"):
+        with mock.patch.object(art, "query_binary_version", return_value="0.2.0+authz.1"):
             with mock.patch.object(art, "download_release_binary") as dl:
                 result = art.install_authorizer(force=False)
                 assert result == managed
@@ -174,7 +174,7 @@ def test_install_authorizer_cmd_without_project(tmp_path, monkeypatch):
     fake.parent.mkdir()
     fake.write_bytes(b"fake")
     monkeypatch.setattr(art, "install_authorizer", lambda *a, **kw: fake)
-    monkeypatch.setattr(art, "query_binary_version", lambda p: "0.1.0-beta.24+authz.1")
+    monkeypatch.setattr(art, "query_binary_version", lambda p: "0.2.0+authz.1")
     cli.main()
 
 

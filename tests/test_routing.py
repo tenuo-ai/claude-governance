@@ -320,3 +320,18 @@ def test_resolve_tool_mcp_delete_deployment_target(cli_mod, make_cfg):
     assert route == "/verify/delete_deployment"
     assert sign_args == {"target": "production"}
     assert governed is True
+
+
+def test_authorizer_running_false_without_docker(cli_mod, monkeypatch, tmp_path):
+    """Docker-less host (macOS/WSL on the native backend): with no native state
+    recorded, report not-running rather than hard-failing on a missing `docker`."""
+    monkeypatch.setattr(cli_mod, "authorizer_mount_dir", lambda: tmp_path)
+    monkeypatch.setattr(cli_mod.art, "read_runtime_backend", lambda _m: None)
+    monkeypatch.setattr(cli_mod.art, "native_pid_path", lambda _m: tmp_path / "absent.pid")
+    monkeypatch.setattr(cli_mod.shutil, "which", lambda _name: None)
+
+    def _no_docker(*_a):
+        raise AssertionError("docker must not be invoked when Docker is absent")
+    monkeypatch.setattr(cli_mod, "docker", _no_docker)
+
+    assert cli_mod.authorizer_running({"name": "x"}) is False

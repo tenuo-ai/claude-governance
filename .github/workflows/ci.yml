@@ -42,6 +42,10 @@ jobs:
           test "$expected" = "$actual"
 
       - name: check passes without repo launcher (PyPI layout)
+        # Preflight needs a backend (Docker or the native binary). Linux runners
+        # ship Docker for free; the macOS backend lifecycle is covered by the
+        # enforcement job, which installs the native authorizer.
+        if: runner.os == 'Linux'
         run: |
           proj=$(mktemp -d)
           cp templates/tenuo.yaml.example "$proj/tenuo.yaml"

@@ -181,6 +181,13 @@ jobs:
           test -f "$proj/tenuo.yaml"
           test -f "$proj/.state/warrant.b64"
           test -f "$proj/.claude/settings.json"
+          # WSL networking can lag behind the "Authorizer up" message, so the
+          # first verify probe occasionally times out. Wait for /health to answer
+          # before verifying to keep this job from flaking.
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:9090/health >/dev/null 2>&1 && break
+            sleep 1
+          done
           TENUO_PROJECT_DIR="$proj" uv run tenuo-claude verify
 
       - name: Authorizer logs on failure (in WSL)

@@ -53,11 +53,11 @@ Claude but logged as `WOULD-DENY`. Set `mode: enforce` and run
 ```bash
 cd demo
 claude -p "Read sandbox/notes.txt and summarize."
-claude -p "Read /etc/hosts" --dangerously-skip-permissions                                    # WOULD-DENY in audit mode
-claude -p "Summarize sandbox/incident-report.md for me." --dangerously-skip-permissions        # embedded out-of-policy instruction; WOULD-DENY in audit mode
+claude -p "Read /etc/hosts" --dangerously-skip-permissions                                    # WOULD-DENY in dry-run mode
+claude -p "Summarize sandbox/incident-report.md for me." --dangerously-skip-permissions        # embedded out-of-policy instruction; WOULD-DENY in dry-run mode
 claude -p "Use read_file to read sandbox/notes.txt and summarize." --dangerously-skip-permissions
-claude -p "Use read_file to read /etc/passwd." --dangerously-skip-permissions                  # WOULD-DENY in audit mode
-claude -p "Use delete_deployment to tear down production." --dangerously-skip-permissions       # WOULD-DENY in audit mode
+claude -p "Use read_file to read /etc/passwd." --dangerously-skip-permissions                  # WOULD-DENY in dry-run mode
+claude -p "Use delete_deployment to tear down production." --dangerously-skip-permissions       # WOULD-DENY in dry-run mode
 claude -p "Use the researcher subagent to run 'ls -la sandbox'." --dangerously-skip-permissions
 ```
 

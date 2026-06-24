@@ -114,7 +114,7 @@ The hook appends a local JSON line per call to `.state/receipts.jsonl` (`tenuo-c
  "args": {"command": "ls && rm -rf /"}, "reason": "Constraint not satisfied"}
 ```
 
-In audit mode, denials are recorded as `WOULD-DENY`. Subagent calls carry `agent_type` so the hook enforces the right child warrant (this depends on Claude Code populating `agent_type`). **Signed** receipts (the non-repudiable ones) are emitted by the authorizer and stream to Tenuo Cloud when connected (`signature` + `signing_payload` per event). Measure overhead with `tenuo-claude bench`.
+In dry-run mode, denials are recorded as `WOULD-DENY`. Subagent calls carry `agent_type` so the hook enforces the right child warrant (this depends on Claude Code populating `agent_type`). **Signed** receipts (the non-repudiable ones) are emitted by the authorizer and stream to Tenuo Cloud when connected (`signature` + `signing_payload` per event). Measure overhead with `tenuo-claude bench`.
 
 ## Production wiring
 
@@ -160,7 +160,7 @@ Setting up approvals spans two places: you create the **approver** in the Tenuo 
 4. **Gate something:** add an `approval:` block to a tool (example below) or set `default: approve`, then run `tenuo-claude refresh`.
 5. **Test end to end:** `tenuo-claude demo --advanced --live-approval`.
 
-Receipts show `PENDING [appr]` while parked, then `ALLOW`/`DENY`. In audit mode the gate is reported only, never blocks. **Live approval blocks the tool call** until the approver responds or it times out, so make sure the identity is reachable first, or Claude's hook timeout can expire and look like a deny.
+Receipts show `PENDING [appr]` while parked, then `ALLOW`/`DENY`. In dry-run mode the gate is reported only, never blocks. **Live approval blocks the tool call** until the approver responds or it times out, so make sure the identity is reachable first, or Claude's hook timeout can expire and look like a deny.
 
 Two shipped examples:
 

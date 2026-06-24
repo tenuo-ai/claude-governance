@@ -204,7 +204,7 @@ authorizer, place the **root-owned break-glass marker** to keep managed mode wor
 on loopback TCP in the interim:
 
 ```bash
-sudo install -m 0644 -o root /dev/null /etc/tenuo/allow_insecure_tcp
+sudo install -m 0600 -o root /dev/null /etc/tenuo/allow_insecure_tcp
 ```
 
 That falls back to loopback TCP, which **cannot authenticate the responder**, so

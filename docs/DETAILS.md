@@ -76,7 +76,7 @@ When `subagents:` is declared, you get two layers:
 
 Roles must match a real `subagent_type` (`.claude/agents/<name>.md` frontmatter `name:`, or a built-in); `verify` and `status` check this. Omit `subagents:` for flat coverage — spawns are then audited, not gated, and the subagent runs under the full session warrant.
 
-Changing `subagents:` is a policy change: re-run `tenuo-admin setup` (Cloud) or `init` (local). Note one sharp edge: the bundled `Workflow` harness tool tags its inner calls with an `agent_type` that isn't a declared role, so under `subagents:` those inner calls are denied — remove `Workflow` from the audit list or omit `subagents:` if you need it. Requires `tenuo` ≥ 0.2.0 and authorizer `0.2.0-authz.3` (pinned in `cli.py`).
+Changing `subagents:` is a policy change: re-run `tenuo-admin setup` (Cloud) or `init` (local). Note one sharp edge: the bundled `Workflow` harness tool tags its inner calls with an `agent_type` that isn't a declared role, so under `subagents:` those inner calls are denied — remove `Workflow` from the `allow:` list or omit `subagents:` if you need it. Requires `tenuo` ≥ 0.2.0 and authorizer `0.2.0-authz.3` (pinned in `cli.py`).
 
 ## Dry-run mode (`mode: dry-run`)
 
@@ -84,9 +84,9 @@ Changing `subagents:` is a policy change: re-run `tenuo-admin setup` (Cloud) or 
 
 Roll out by watching `WOULD-DENY` rows in `tenuo-claude audit`, tuning policy, then switching to `mode: enforce`. The hook reads `mode` live (next tool call); the MCP proxy picks it up on the next Claude session.
 
-`mode:` is a **global** switch and `default:` is the **catch-all for unlisted tools** only; they are independent. In `mode: dry-run` nothing is enforced (even tools listed under `enforce:`), so `default:` has no effect until you switch back to `mode: enforce`. Do not confuse the two: there is no `default: dry-run`. The permissive catch-all is `default: allow` (allow plus log unlisted tools), which only matters in `mode: enforce`.
+`mode:` is a **global** switch and `default:` is the **catch-all for unlisted tools** only; they are independent. In `mode: dry-run` nothing is enforced (even tools listed under `enforce:`), so `default:` has no effect until you switch back to `mode: enforce`. Do not confuse the two: there is no `default: dry-run`. There is also no permissive catch-all: `default:` is either `deny` (block unlisted, fail-closed) or `approve` (route unlisted to a Cloud human-approval gate). To permit specific tools unconstrained, list them under `allow:`.
 
-`mode: audit` is a deprecated alias for `mode: dry-run` (and `default: audit` for `default: allow`); both still work, and `tenuo-claude check` / `status` flag them so you can migrate. Any *unrecognized* `mode:` or `default:` value (a typo, or putting `allow` on `mode:` when you meant `default:`) falls back to the safe default (`enforce` / `deny`) and is surfaced as a `posture` warning rather than silently changing behavior.
+`mode: audit` is a deprecated alias for `mode: dry-run`; it still works and `tenuo-claude check` / `status` flag it so you can migrate. `default: allow` / `default: audit` are no longer supported (enforce must not fail open): they collapse to `default: deny` and are surfaced as a posture warning. Any other *unrecognized* `mode:` or `default:` value (a typo, or putting `allow` on `mode:` when you meant `default:`) likewise falls back to the safe default (`enforce` / `deny`) rather than silently changing behavior.
 
 ## Policy refresh (`tenuo-claude refresh`)
 
@@ -104,8 +104,8 @@ Session warrants have a ~1h TTL; `status` flags `EXPIRED` when one lapses. `tenu
 `PreToolUse`/`PostToolUse` use match-all hooks; MCP tools are also gated by the proxy. Every governed call is **proof-of-possession-signed and checked by the authorizer**:
 
 - **Enforced** tools — argument-checked; out-of-scope denied.
-- **Audit-allowed** harness tools — logged, not blocked.
-- **Default** — everything else denied (or logged, under `default: allow`).
+- **Allowed** tools (the `allow:` permit-list and bundled harness tools) — permitted unconstrained, logged, not blocked.
+- **Default** — everything else denied (`default: deny`), or routed to a Cloud human-approval gate (`default: approve`).
 
 The hook appends a local JSON line per call to `.state/receipts.jsonl` (`tenuo-claude audit` pretty-prints it; this is a local convenience, not signed):
 

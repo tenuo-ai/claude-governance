@@ -72,15 +72,22 @@ sudo install -d -m 0755 -o root /etc/tenuo /etc/tenuo/gateway
 sudo install -m 0600 -o root authorizer.env /etc/tenuo/authorizer.env
 sudo install -m 0644 -o root .state/gateway.yaml /etc/tenuo/gateway/gateway.yaml  # routes (no keys)
 
-# Linux (Docker-backed authorizer):
-sudo groupadd --system tenuo 2>/dev/null || true   # only if generated with --socket-group tenuo
-sudo usermod -aG tenuo "$DEVELOPER_USER"           # repeat via MDM/user provisioning
+# Linux (Docker-backed authorizer) — default path:
 sudo cp tenuo-authorizer.service /etc/systemd/system/
 sudo systemctl enable --now tenuo-authorizer
 
 # macOS (NATIVE authorizer — see note below):
 sudo cp com.tenuo.authorizer.plist /Library/LaunchDaemons/
 sudo launchctl load /Library/LaunchDaemons/com.tenuo.authorizer.plist
+```
+
+Only if you generated with `--socket-group tenuo` (hardened, group-connectable
+`0660` socket), create the group and add each developer **before** starting the
+service above:
+
+```bash
+sudo groupadd --system tenuo 2>/dev/null || true
+sudo usermod -aG tenuo "$DEVELOPER_USER"   # repeat via MDM / user provisioning
 ```
 
 Before deploying, replace the loud placeholders in the service/env files:

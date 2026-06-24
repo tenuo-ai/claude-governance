@@ -238,10 +238,13 @@ flagged there rather than silently applied.
 `mode:` and `default:` are different switches. `mode:` is global:
 `mode: dry-run` logs but blocks nothing, even tools listed under `enforce:`
 (the old `mode: audit` is an alias). `default:` is only the catch-all for
-unlisted tools: `default: allow` logs-and-allows them, `default: deny` blocks
-them (the old `default: audit` is an alias for `allow`). In `mode: dry-run`,
-`default:` has no effect because nothing is enforced. To stop blocking
-everything while still logging, set `mode: dry-run`, not `default: allow`.
+unlisted tools: `default: deny` blocks them (fail-closed), `default: approve`
+routes them to a Cloud human-approval gate. `default: allow` / `default: audit`
+are no longer supported (enforce must not fail open) and collapse to `deny`. In
+`mode: dry-run`, `default:` has no effect because nothing is enforced. To stop
+blocking everything while still logging, set `mode: dry-run` (there is no
+permissive default); to permit specific tools unconstrained, list them under
+`allow:`.
 
 ---
 

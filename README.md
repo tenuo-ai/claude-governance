@@ -183,11 +183,13 @@ Two keys, kept apart; the runtime never sees the admin key:
 mkdir my-project && cd my-project
 # First Cloud setup needs BOTH keys from the table above: the runtime Quick Connect
 # token (fires the warrant) AND the tenant-admin key in ~/.tenuo/admin.env (the
-# `tenuo-admin setup` step that publishes + signs the template).
+# `tenuo-admin setup` step that publishes the trigger).
 tenuo-claude bootstrap --cloud      # runtime token from --connect-token/env (prompts if missing); runs setup, then verifies
 ```
 
 > First-time Cloud setup requires **both** credentials: the runtime token and the tenant-admin key. Every session after that needs only the runtime token.
+
+Cloud includes a **Claude Code Governance Starter** warrant template for the recommended shape. You do not create a trigger from it by hand: `tenuo-admin setup` compiles this project's `tenuo.yaml`, MCP rules, holder, and approval policy into the Cloud trigger.
 
 Every session after that:
 
@@ -206,6 +208,8 @@ CI / non-interactive and manual step-by-step setup: [docs/DETAILS.md § Tenuo Cl
 A gated capability returns a third outcome, `approval-required`, instead of allow/deny. The hook opens a Cloud approval request, waits for an approver on their notification channel (Slack, Telegram, console, …), then re-authorizes with their **signed, identity-bound** approval, so the receipt records *who* approved. Add an `approval:` block to **any enforced native tool** (e.g. `Bash`), **any `mcp.enforce` tool**, or `WebFetch`; an optional `exempt:` lets safe argument values skip the gate. `default: approve` gates every unlisted tool.
 
 **Human approval requires Tenuo Cloud, anywhere (native hook, MCP proxy, or catch-all).** The gate lives in the Cloud-issued warrant, so without Cloud an approval-gated tool falls back to **deny** (fail-closed); `tenuo-claude check` warns when a gate is configured but Cloud isn't. First time setting this up? Follow the step-by-step [approval setup runbook](docs/DETAILS.md#approval-setup-runbook) (the approver identity and its notification channel are created in the Tenuo Cloud console). Policy shape and mechanics: [docs/DETAILS.md § Human approval](docs/DETAILS.md#human-approval-cloud).
+
+For MCP, approval and constraints use the concrete capability names in `mcp.enforce` (for example `mcp__server__tool` on the Claude hook path). Unlisted MCP tools follow `default`.
 
 ![Receipt drill-down: a human approval with the approver identity and request hash](https://raw.githubusercontent.com/tenuo-ai/claude-governance/main/docs/images/cloud-receipt-approval-detail.png)
 

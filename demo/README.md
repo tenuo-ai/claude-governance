@@ -22,7 +22,7 @@ That is all the local demo needs. No Tenuo account, no keys, no tenant root: `bo
 
 A brand-new tenant has no signing keys yet, and warrants cannot be issued until an active **root key** exists. So do the one-time Cloud onboarding first, then bootstrap:
 
-1. Create your account at [cloud.tenuo.ai](https://cloud.tenuo.ai) and complete the dashboard's **Infrastructure** onboarding. It provisions your KMS-backed key hierarchy: a **root key** (your tenant trust anchor) and an **issuer key**. Private key material stays in KMS; you only ever see public keys. This step is required, not optional.
+1. Create your account at [cloud.tenuo.ai](https://cloud.tenuo.ai) and complete the dashboard's **Infrastructure** onboarding. It provisions your KMS-backed signing infrastructure: at minimum an active **root key**, which is the tenant trust anchor used for Cloud-issued Claude warrants. Some Cloud flows also create child issuer/notary keys for the broader key hierarchy and approvals. Private key material stays in KMS; you only ever see public keys. This step is required, not optional.
 2. Grab two API keys, kept apart (the runtime never sees the admin key):
 
    | Key | From | Goes in |
@@ -30,7 +30,8 @@ A brand-new tenant has no signing keys yet, and warrants cannot be issued until 
    | **Runtime** (`tenuo_ct_…`) | Agents → Quick Connect → **Authorizer Only** | `.state/cloud.env` |
    | **Tenant-admin** (`tc_…`) | Settings → API Keys → Create (admin role) | `~/.tenuo/admin.env` |
 
-3. Run `tenuo-claude bootstrap --cloud` (first run needs both keys; later sessions need only the runtime token). Full reference: [README § Cloud mode](../README.md#cloud-mode).
+3. Run `tenuo-claude bootstrap --cloud` (first run needs both keys; later sessions need only the runtime token). Behind the scenes, `tenuo-admin setup` registers this project's holder agent, creates or updates a Cloud trigger from `tenuo.yaml`, binds the holder agent to that trigger, and fires it once to mint a root-signed session warrant. Cloud's Claude Code starter template is guidance for this shape; the project trigger is still compiled from local policy. Full reference: [README § Cloud mode](../README.md#cloud-mode).
+4. For the live approval demo, create an approver identity in Cloud first (Dashboard → Channels → Identity Bindings, or the equivalent Approvals/identity flow), give it a notification channel such as Slack, Telegram, or console, and copy its identity id. The CLI can bind an existing approver into this project's approval policy, but it does not create the human identity or channel for you.
 
 ## Run it
 
@@ -52,7 +53,7 @@ The scripted tour calls the authorizer directly and prints allow/deny decisions.
 To populate `tenuo-claude audit`, open Claude Code in `demo/` (where
 `tenuo.yaml` lives) or run the live Claude examples below.
 
-**With Cloud** (signed receipts, approvals): `tenuo-claude bootstrap --cloud`, then on later sessions `tenuo-claude check && tenuo-claude up`. Credential setup is in [README § Cloud mode](../README.md#cloud-mode); use the **Authorizer Only** Quick Connect token. Note: once Cloud is configured, don't re-run plain `bootstrap` (it reverts the project to local mode).
+**With Cloud** (signed receipts, approvals): `tenuo-claude bootstrap --cloud`, then on later sessions `tenuo-claude check && tenuo-claude up`. For live approvals, use `tenuo-claude bootstrap --cloud --advanced --approver-id <Cloud identity id>` on first setup, or add the advanced overlay later as shown below. Credential setup is in [README § Cloud mode](../README.md#cloud-mode); use the **Authorizer Only** Quick Connect token. Note: once Cloud is configured, don't re-run plain `bootstrap` (it reverts the project to local mode).
 
 ## What's inside
 
@@ -93,7 +94,9 @@ The demo exercises approver sign-off on three paths when approval is configured 
 - **`default: approve`** (catch-all): **any** tool not in `enforce`/`allow` pauses for sign-off instead of being denied.
 
 ```bash
-tenuo-admin setup                              # after adding the advanced overlay
+tenuo-claude init --advanced --approver-id <Cloud identity id>
+tenuo-admin setup                              # creates/updates trigger + approval policy
+tenuo-claude up                                # refreshes the root-signed session warrant
 tenuo-claude demo --advanced --live-approval   # blocks until an approver responds
 ```
 

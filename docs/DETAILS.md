@@ -155,12 +155,14 @@ This is **Cloud-only**: gates carry the approver's KMS public keys from the link
 Setting up approvals spans two places: you create the **approver** in the Tenuo Cloud console, then wire the **gate** with this CLI. The CLI only references an approver identity that already exists in Cloud; it does not create the identity or its notification channel.
 
 1. **Be on Cloud.** Run `tenuo-claude onboard --cloud` (or confirm `tenuo-claude check` is green). Approval has no local fallback; without Cloud a gated call is denied.
-2. **Create the approver in [Tenuo Cloud](https://cloud.tenuo.ai).** Make an identity with a KMS signing key and a notification channel (Slack, Telegram, or console), then copy its identity id. *(This step lives in the Cloud console.)*
-3. **Bind it:** `tenuo-admin setup --approver-id <id>` (or `--approver "<display name>"` for demos). Setup creates or reuses a Cloud approval policy, bakes `approval_gates` into the trigger warrant config (with `_policy_id` for offline verification), syncs the local gateway, and reloads a running authorizer so new MCP routes work immediately.
-4. **Gate something:** add an `approval:` block to a tool (example below) or set `default: approve`, then run `tenuo-claude refresh`.
+2. **Create the approver in [Tenuo Cloud](https://cloud.tenuo.ai).** Use Dashboard → Channels → Identity Bindings (or the equivalent approval identity flow) to make an identity with a KMS signing key and a notification channel (Slack, Telegram, or console), then copy its identity id. *(This step lives in the Cloud console.)*
+3. **Gate something and point it at that approver.** Run `tenuo-claude init --advanced --approver-id <id>` (or `--approver "<display name>"` for demos), then add/adjust an `approval:` block on a tool or set `default: approve`.
+4. **Publish the gate:** run `tenuo-admin setup`. Setup creates or updates the holder agent and Cloud trigger from `tenuo.yaml`, reconciles the agent's `allowed_triggers`, creates or reuses a Cloud approval policy for the approver, bakes `approval_gates` into the trigger warrant config (with `_policy_id` for offline verification), syncs the local gateway, and reloads a running authorizer so new MCP routes work immediately.
 5. **Test end to end:** `tenuo-claude demo --advanced --live-approval`.
 
 Receipts show `PENDING [appr]` while parked, then `ALLOW`/`DENY`. In dry-run mode the gate is reported only, never blocks. **Live approval blocks the tool call** until the approver responds or it times out, so make sure the identity is reachable first, or Claude's hook timeout can expire and look like a deny.
+
+Cloud's Claude Code starter is a warrant template, not a complete trigger. `tenuo-admin setup` supplies the missing project-specific pieces: holder, sandbox paths, concrete native and MCP capabilities, trigger binding, and approval policy id.
 
 Two shipped examples:
 
@@ -185,7 +187,7 @@ Try it in the [reference demo](../demo/): `tenuo-claude demo --advanced --live-a
 
 By default `init` mints warrants from a **local issuer key**. With [Cloud](https://cloud.tenuo.ai), warrants are issued by your **tenant root** via a trigger, the pattern most orgs use in production: one audit stream, central revocation, admin/runtime key separation, and optional org-wide hook deployment through Claude Code managed settings (policy enforced outside Claude's permission UI).
 
-The admin registers the holder and creates the trigger; runtime only *fires* it. Runtime refuses to start if an admin key is reachable, and the first trigger fire locks to the discovered runtime service account.
+The admin registers the holder and creates or updates the trigger; runtime only *fires* it. During setup, the trigger is built from `tenuo.yaml` plus any overlays (`tenuo.cloud.yaml`, `tenuo.advanced.yaml`), then bound to the local holder agent. Cloud's Claude Code starter warrant template documents the recommended shape, but the trigger is project-specific. Runtime refuses to start if an admin key is reachable, and the first trigger fire locks to the discovered runtime service account.
 
 **Revocation:** Cloud revokes by warrant id and the authorizer pulls the signed revocation list within ~30s. Locally, `tenuo-claude revoke` writes a signed SRL and reloads.
 

@@ -34,7 +34,7 @@ To populate `tenuo-claude audit`, open Claude Code in `demo/` (where
 
 | Path | Purpose |
 |------|---------|
-| `tenuo.yaml` | Sample policy. Ships in `mode: enforce` so out-of-scope calls are blocked; switch to `mode: dry-run` to log decisions (`WOULD-DENY`) without blocking |
+| `tenuo.yaml` | Sample policy. Ships in `mode: dry-run` (logs `WOULD-DENY`, blocks nothing) so you can see decisions before enforcing |
 | `sandbox/` | The directory `subpath:` constraints point at. `notes.txt` is in scope; `incident-report.md` carries an embedded out-of-policy instruction |
 | `fake-secrets.env` | Fake credentials, placed **outside** `sandbox/` on purpose — reading it requires escaping the `subpath:` directory, so it's denied |
 | `ops_server.py` | The downstream MCP server. Exposes `read_file` and `list_directory` (granted) plus a simulated `delete_deployment` (not granted → denied). Claude talks to Tenuo's proxy, not this directly |
@@ -46,9 +46,9 @@ Policy overlay templates (Cloud, advanced/approval) live in [`templates/`](../te
 ## Live Claude examples
 
 Authorizer up (`tenuo-claude check && tenuo-claude up`), Claude Code on PATH.
-The shipped policy is `mode: enforce`, so out-of-scope calls are blocked and
-logged as denials. Set `mode: dry-run` and run `tenuo-claude refresh` to
-observe decisions (`WOULD-DENY`) without blocking.
+The shipped policy is `mode: dry-run`, so out-of-scope calls are allowed by
+Claude but logged as `WOULD-DENY`. Set `mode: enforce` and run
+`tenuo-claude refresh` to block them.
 
 ```bash
 cd demo

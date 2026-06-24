@@ -53,6 +53,34 @@ def test_fire_session_warrant_raises_guided_error(monkeypatch, make_cfg):
         cli.fire_session_warrant(cfg, {"url": "https://api.example", "api_key": "rt"})
 
 
+def _fire_with_unresolvable_root(monkeypatch):
+    """Trigger fires OK, but the tenant root can't be resolved except by deriving
+    it from the warrant's own issuer."""
+    monkeypatch.setattr(cli, "cloud_api",
+                        lambda *a, **k: (200, {"warrant": "wb64"}))
+    monkeypatch.setattr(cli, "trigger_id", lambda _cfg: "trig_demo")
+    monkeypatch.setattr(cli, "load_cloud_state", lambda: {"agent_id": "agt_test"})
+    monkeypatch.setattr(cli, "fetch_tenant_root", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "root_from_warrant_issuer", lambda _w: "deadbeefroot")
+
+
+def test_fire_session_warrant_managed_refuses_warrant_derived_root(monkeypatch, make_cfg):
+    """Managed mode must NOT derive its trust anchor from the warrant it is about
+    to trust; with no pinned/authenticated root it fails closed."""
+    _fire_with_unresolvable_root(monkeypatch)
+    cfg = make_cfg(_managed=True)
+    with pytest.raises(SystemExit, match="pins trust to the tenant root"):
+        cli.fire_session_warrant(cfg, {"url": "https://api.example", "api_key": "rt"})
+
+
+def test_fire_session_warrant_unmanaged_allows_warrant_derived_root(monkeypatch, make_cfg):
+    """Unmanaged Cloud mode keeps the (weaker) issuer-derived fallback."""
+    _fire_with_unresolvable_root(monkeypatch)
+    cfg = make_cfg(_managed=False)
+    warrant_b64, root = cli.fire_session_warrant(cfg, {"url": "https://api.example", "api_key": "rt"})
+    assert (warrant_b64, root) == ("wb64", "deadbeefroot")
+
+
 def test_probe_cloud_bindings_ok(monkeypatch, make_cfg):
     cfg = make_cfg(_sandbox_abs="/sandbox")
     calls = []
@@ -247,6 +275,7 @@ def test_cmd_check_reports_cloud_binding_failure(monkeypatch, tmp_path, capsys):
 
     monkeypatch.setattr(cli, "_docker_ok", lambda: (True, "ok"))
     monkeypatch.setattr(cli, "authorizer_running", lambda _cfg: False)
+    monkeypatch.setattr(cli, "_status_json", lambda *a, **k: None)
     monkeypatch.setattr(cli, "check_state_permissions", lambda: (True, []))
     monkeypatch.setattr(cli, "probe_runtime_creds", lambda _c: (True, "ok"))
     monkeypatch.setattr(cli, "read_admin_key", lambda: "admin")
@@ -294,6 +323,7 @@ def test_cmd_check_cloud_bindings_ok(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(cli, "ADMIN_ENV", tmp_path / "admin.env", raising=False)
     monkeypatch.setattr(cli, "LAUNCHER", proj / "bin" / "tenuo-claude", raising=False)
     monkeypatch.setattr(cli, "WARRANT", state / "warrant.b64", raising=False)
+    monkeypatch.setattr(cli, "STATE_JSON", state / "state.json", raising=False)
 
     state.joinpath("cloud.env").write_text(
         'export TENUO_CONTROL_PLANE_URL="https://api.example"\n'
@@ -306,6 +336,7 @@ def test_cmd_check_cloud_bindings_ok(monkeypatch, tmp_path, capsys):
 
     monkeypatch.setattr(cli, "_docker_ok", lambda: (True, "ok"))
     monkeypatch.setattr(cli, "authorizer_running", lambda _cfg: False)
+    monkeypatch.setattr(cli, "_status_json", lambda *a, **k: None)
     monkeypatch.setattr(cli, "check_state_permissions", lambda: (True, []))
     monkeypatch.setattr(cli, "probe_runtime_creds", lambda _c: (True, "ok"))
     monkeypatch.setattr(cli, "read_admin_key", lambda: "admin")
@@ -329,3 +360,102 @@ def test_cmd_check_cloud_bindings_ok(monkeypatch, tmp_path, capsys):
     out = capsys.readouterr().out
     assert "cloud bindings" in out
     assert "dry-run OK" in out
+
+
+def test_cmd_check_reports_managed_socket_authorizer_up(monkeypatch, tmp_path, capsys):
+    """A managed authorizer is a systemd/launchd service the Docker-name runtime check
+    can't see; when the endpoint is Unix and the socket answers, check must report it
+    UP (not falsely 'down')."""
+    proj = tmp_path / "demo"
+    state = proj / ".state"
+    state.mkdir(parents=True)
+    proj.joinpath("tenuo.yaml").write_text(
+        "name: test\nsandbox: ./sandbox\nenforce: {}\ndefault: deny\n")
+    (proj / "sandbox").mkdir()
+
+    monkeypatch.setattr(cli, "DEMO_DIR", proj, raising=False)
+    monkeypatch.setattr(cli, "STATE", state, raising=False)
+    monkeypatch.setattr(cli, "CONFIG_FILE", proj / "tenuo.yaml", raising=False)
+    monkeypatch.setattr(cli, "CLOUD_ENV", state / "cloud.env", raising=False)
+    monkeypatch.setattr(cli, "CLOUD_STATE", state / "cloud_state.json", raising=False)
+    monkeypatch.setattr(cli, "CLOUD_PROFILE", proj / "tenuo.cloud.yaml", raising=False)
+    monkeypatch.setattr(cli, "ADVANCED_PROFILE", proj / "tenuo.advanced.yaml", raising=False)
+    monkeypatch.setattr(cli, "ADMIN_ENV", tmp_path / "admin.env", raising=False)
+    monkeypatch.setattr(cli, "LAUNCHER", proj / "bin" / "tenuo-claude", raising=False)
+    monkeypatch.setattr(cli, "WARRANT", state / "warrant.b64", raising=False)
+    monkeypatch.setattr(cli, "STATE_JSON", state / "state.json", raising=False)
+
+    monkeypatch.setattr(cli, "_docker_ok", lambda: (True, "ok"))
+    # The Docker/local runtime check is blind to the system service: it says "down".
+    monkeypatch.setattr(cli, "authorizer_running", lambda _cfg: False)
+    # But the endpoint is the managed Unix socket, and it answers.
+    monkeypatch.setattr(cli, "authz_endpoint",
+                        lambda: ("unix", "/var/run/tenuo/authorizer.sock"))
+    monkeypatch.setattr(cli, "_status_json", lambda *a, **k: {"version": "0.0.0"})
+    monkeypatch.setattr(cli.art, "read_runtime_meta", lambda *_a, **_k: {})
+    monkeypatch.setattr(cli, "check_state_permissions", lambda: (True, []))
+    monkeypatch.setattr(cli, "intended_mode", lambda _cfg: "local")
+    monkeypatch.setattr(cli, "cloud_mode_files", lambda: {
+        "cloud_env": False, "cloud_state": False, "cloud_profile": False,
+    })
+    monkeypatch.setattr(cli, "load_config", lambda: {
+        "_sandbox_abs": str(proj / "sandbox"),
+        "enforce": {}, "default": "deny", "mcp": {}, "audit": [],
+    })
+
+    with pytest.raises(SystemExit):
+        cli.cmd_check(argparse.Namespace())
+    out = capsys.readouterr().out
+    assert "running authorizer" in out
+    assert "unix:///var/run/tenuo/authorizer.sock" in out
+    assert "authorizer — down" not in out
+
+
+def test_cmd_check_suggests_managed_service_not_up_when_socket_down(monkeypatch, tmp_path, capsys):
+    """When the managed Unix socket is down, 'Suggested next steps' must point at the
+    SYSTEM authorizer service, not `tenuo-claude up` (which only starts a TCP one)."""
+    proj = tmp_path / "demo"
+    state = proj / ".state"
+    state.mkdir(parents=True)
+    proj.joinpath("tenuo.yaml").write_text(
+        "name: test\nsandbox: ./sandbox\nenforce: {}\ndefault: deny\n")
+    (proj / "sandbox").mkdir()
+    # Hooks wired so check reaches the authorizer-liveness suggestion branch.
+    claude = proj / ".claude"
+    claude.mkdir()
+    claude.joinpath("settings.json").write_text("{}")
+
+    monkeypatch.setattr(cli, "DEMO_DIR", proj, raising=False)
+    monkeypatch.setattr(cli, "STATE", state, raising=False)
+    monkeypatch.setattr(cli, "CONFIG_FILE", proj / "tenuo.yaml", raising=False)
+    monkeypatch.setattr(cli, "CLOUD_ENV", state / "cloud.env", raising=False)
+    monkeypatch.setattr(cli, "CLOUD_STATE", state / "cloud_state.json", raising=False)
+    monkeypatch.setattr(cli, "CLOUD_PROFILE", proj / "tenuo.cloud.yaml", raising=False)
+    monkeypatch.setattr(cli, "ADVANCED_PROFILE", proj / "tenuo.advanced.yaml", raising=False)
+    monkeypatch.setattr(cli, "ADMIN_ENV", tmp_path / "admin.env", raising=False)
+    monkeypatch.setattr(cli, "LAUNCHER", proj / "bin" / "tenuo-claude", raising=False)
+    monkeypatch.setattr(cli, "WARRANT", state / "warrant.b64", raising=False)
+    monkeypatch.setattr(cli, "STATE_JSON", state / "state.json", raising=False)
+
+    monkeypatch.setattr(cli, "_docker_ok", lambda: (True, "ok"))
+    monkeypatch.setattr(cli, "authorizer_running", lambda _cfg: False)
+    monkeypatch.setattr(cli, "authz_endpoint",
+                        lambda: ("unix", "/var/run/tenuo/authorizer.sock"))
+    monkeypatch.setattr(cli, "_status_json", lambda *a, **k: None)  # socket down
+    monkeypatch.setattr(cli.art, "read_runtime_meta", lambda *_a, **_k: {})
+    monkeypatch.setattr(cli, "check_state_permissions", lambda: (True, []))
+    monkeypatch.setattr(cli, "intended_mode", lambda _cfg: "local")
+    monkeypatch.setattr(cli, "cloud_mode_files", lambda: {
+        "cloud_env": False, "cloud_state": False, "cloud_profile": False,
+    })
+    monkeypatch.setattr(cli, "load_config", lambda: {
+        "_sandbox_abs": str(proj / "sandbox"),
+        "enforce": {}, "default": "deny", "mcp": {}, "audit": [],
+    })
+
+    with pytest.raises(SystemExit):
+        cli.cmd_check(argparse.Namespace())
+    out = capsys.readouterr().out
+    steps = out.split("Suggested next steps:", 1)[1]
+    assert "systemd/launchd" in steps
+    assert "tenuo-claude up" not in steps

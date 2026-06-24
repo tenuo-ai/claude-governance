@@ -14,7 +14,13 @@ from tenuo_claude_code import authorizer_runtime as art
 
 
 def test_authorizer_crate_version():
+    # A real pre-release identifier is preserved.
     assert art.authorizer_crate_version("tenuo/authorizer:0.1.0-beta.24") == "0.1.0-beta.24"
+    # Docker can't put '+' in a tag, so `+authz.N` build metadata is rendered as
+    # `-authz.N`; the crate version drops it (matching the binary's /status report).
+    assert art.authorizer_crate_version("tenuo/authorizer:0.2.0-authz.2") == "0.2.0"
+    assert art.version_compatible("0.2.0+authz.2",
+                                  art.authorizer_crate_version("tenuo/authorizer:0.2.0-authz.2"))
 
 
 def test_install_hint():
@@ -112,7 +118,7 @@ def test_install_authorizer_skips_when_current(tmp_path, monkeypatch):
     managed.parent.mkdir()
     managed.write_bytes(b"fake")
     with mock.patch.object(art, "managed_binary_path", return_value=managed):
-        with mock.patch.object(art, "query_binary_version", return_value="0.2.0+authz.1"):
+        with mock.patch.object(art, "query_binary_version", return_value="0.2.0+authz.3"):
             with mock.patch.object(art, "download_release_binary") as dl:
                 result = art.install_authorizer(force=False)
                 assert result == managed

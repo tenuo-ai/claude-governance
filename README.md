@@ -102,19 +102,21 @@ mcp:                        # optional: govern a downstream MCP server's tools
 | `domains` / `cidrs` / `schemes` / `ports` | WebFetch | the URL's host must match an allowed domain (`*` matches one label) or CIDR range, **and** pass SSRF hygiene: https-only by default (override with `schemes`), optional `ports` allowlist, with loopback, cloud-metadata IPs, encoded-IP tricks, and spoofed hosts (`api.github.com.evil.com`) blocked. |
 | `oneof:a,b` · `notoneof:a,b` · `exact:v` · `pattern:glob` · `regex:re` · `range:min,max` · `urlpattern:url` · `cidr:n/m` | any tool argument | the value must be in the set / not in the set / equal / glob-match / regex-match / fall in the numeric range (either bound may be blank) / match the URL glob / fall inside the IP range (for any IP-based tool, not just WebFetch). |
 
-The keys above are the `tenuo.yaml` DSL's convenient subset. The underlying tenuo engine supports more (set operations, numeric ranges, negation, boolean composition, and CEL expressions) for programmatic policies — see [tenuo](https://github.com/tenuo-ai/tenuo).
+The keys above are the `tenuo.yaml` DSL's convenient subset. The underlying tenuo engine supports more (set operations, numeric ranges, negation, boolean composition, and CEL expressions) for programmatic policies; see [tenuo](https://github.com/tenuo-ai/tenuo).
 
 `{sandbox}` is a convenience variable for the directory in `sandbox:`; you can point `subpath:` at any path. Tools you don't list aren't governed individually; they're caught by `default`.
 
 For internal egress, `WebFetch` also accepts `cidrs:` to allow hosts by IP range (e.g. `cidrs: ["10.0.0.0/8"]` alongside `domains:`). It's off by default and reaches past public domains and SSRF private-network defaults, so add it deliberately.
 
-**Command-execution tools.** `Bash`, `PowerShell`, and `Monitor` all execute commands and are each governed independently (their own constraint on the `command` argument). `Monitor` runs the same shell commands as `Bash` in the background; `PowerShell` is a different dialect, so prefer `oneof`/`pattern`/`regex` over `shlex` (which parses POSIX syntax) for it. If your team enables `PowerShell` or `Monitor` in Claude Code, list them under `enforce:` too. Left unlisted they fall to `default: deny` and are blocked. Never put a shell in `allow:` — that grants it **unconstrained**; governed shells belong under `enforce:`.
+**Command-execution tools.** `Bash`, `PowerShell`, and `Monitor` all execute commands and are each governed independently (their own constraint on the `command` argument). `Monitor` runs the same shell commands as `Bash` in the background; `PowerShell` is a different dialect, so prefer `oneof`/`pattern`/`regex` over `shlex` (which parses POSIX syntax) for it. If your team enables `PowerShell` or `Monitor` in Claude Code, list them under `enforce:` too. Left unlisted they fall to `default`: `deny` blocks them, but `allow` logs them **unconstrained**, so on `default: allow` give every enabled shell an explicit constraint.
 
 **MCP tool arguments.** Under `mcp.enforce:`, a bare constraint string targets the `path` argument. To constrain a differently-named argument use `arg: NAME` + `constraint:`, and to constrain several at once use `args: {NAME: constraint, …}`. This works for any downstream MCP tool and any constraint kind, locally and on Cloud. Tools you don't list are still allowed/denied by `default` and can be human-approval gated (`approval:`); they just aren't argument-constrained.
 
-- **`mode: enforce`** blocks denied calls. **`mode: dry-run`** computes and logs the same decisions but blocks nothing; use it to roll out a policy, then switch to `enforce`. (`mode: audit` is a deprecated alias for `dry-run`.)
-- **`allow:`** lists extra tools permitted without constraints. Inert Claude harness tools (plan mode, TodoWrite, AskUserQuestion, …) are bundled in by default; set `allow_bundled: false` to opt out.
-- **`default:`** is the fallback for any tool in neither `enforce` nor `allow`: **`deny`** blocks it (recommended) or **`approve`** requires human sign-off (Tenuo Cloud). There is no allow-everything fallback — enforce never fails open; use `mode: dry-run` to observe instead.
+**`mode:` and `default:` are two independent switches.** `mode:` is the global posture for **every** tool; `default:` is only the catch-all for tools you **didn't** list.
+
+- **`mode: enforce`** blocks denied calls. **`mode: dry-run`** computes and logs the same decisions but blocks nothing, even for tools listed under `enforce:`; use it to shadow a policy, then switch to `enforce`. (`mode: audit` is a deprecated alias for `dry-run`.)
+- **`default: deny`** denies any tool not listed (recommended, fail-closed). **`default: allow`** logs-and-allows unlisted tools instead. (`default: audit` is a deprecated alias for `allow`.)
+- In `mode: dry-run` nothing is enforced, so `default:` has no effect until you switch back to `enforce`.
 - **`subagents:`** declares roles; spawning is gated to those roles, and each runs under the session warrant **attenuated** to its `tools` (it can only ever do less than the session). [Details](docs/DETAILS.md#subagents).
 - **`ttl_seconds:`** sets the session warrant lifetime in seconds (positive integer; default `3600` = 1h). `up` re-mints before expiry. Enterprise rollouts pin it centrally through Claude Code managed settings / MDM (the policy file is what managed settings pins); local dev sets it directly. A shorter TTL shrinks the blast radius of a leaked warrant.
 
@@ -139,7 +141,7 @@ Day to day, you mostly need `up` (start), `audit` (review), and `refresh` (after
 | `bench [--json]` | Measure per-call overhead on your machine (PoP sign, authorizer round-trip, full hook path). |
 | `revoke` | Revoke the current session warrant. |
 
-The warrant is short-lived (1h TTL by default, configurable via `ttl_seconds:` in `tenuo.yaml`); `up` refreshes it. The authorizer listens on `127.0.0.1:9090`; change it with `TENUO_AUTHORIZER_PORT` before `bootstrap`. Generated files (don't commit): `.state/` (keys, warrant, credentials), `.claude/settings.json` (hooks), `.mcp.json` (MCP wiring).
+The warrant is short-lived (~1h TTL); `up` refreshes it. In normal local mode, the authorizer listens on `127.0.0.1:9090`; change it with `TENUO_AUTHORIZER_PORT` before `bootstrap`. In managed enterprise mode, the generated system service uses a root-owned Unix socket instead. Generated files (don't commit): `.state/` (keys, warrant, credentials), `.claude/settings.json` (hooks), `.mcp.json` (MCP wiring).
 
 Working from a git clone instead of PyPI? See [Build from source](#build-from-source).
 
@@ -151,6 +153,8 @@ Working from a git clone instead of PyPI? See [Build from source](#build-from-so
 - **MCP tools** → Claude is pointed at a **proxy** that stands in for the downstream MCP server; the proxy authorizes, then forwards only if allowed.
 
 ![Architecture](https://raw.githubusercontent.com/tenuo-ai/claude-governance/main/docs/images/tenuo_claude_code_architecture.png)
+
+The diagram shows the default local/Docker path. Managed enterprise deployments use the same hook/proxy shape, but the system-pinned authorizer is reached over a root-owned Unix socket (native on macOS, Docker-backed on Linux).
 
 The authorizer (a small local service, ~1–3 ms/call) verifies the warrant's signature, proof-of-possession, and expiry, then checks the call's arguments against the warrant's constraints → allow, deny, or (Cloud) approval-required. Full detail in [docs/DETAILS.md](docs/DETAILS.md).
 
@@ -229,7 +233,9 @@ Admins can also block the bypass flag entirely in managed settings (`disableBypa
 
 Connected to Cloud, the authorizer also emits **signed** receipts to your tenant, the verifiable record for compliance and fleet audit.
 
-**Rolling out to a team.** Keep `tenuo.yaml` in version control, push the hook/MCP wiring through Claude Code **managed settings** (not per-developer `settings.local.json`), and use Cloud for org-root warrants, central audit, and revocation. Start in `mode: dry-run`, review the `WOULD-DENY` rows, then switch to `enforce`. [Talk to us](https://tenuo.ai/early-access.html) about managed-settings rollout. Report issues: [SECURITY.md](SECURITY.md).
+**Rolling out to a team.** Keep `tenuo.yaml` in version control, push the hook/MCP wiring through Claude Code **managed settings** (not per-developer `settings.local.json`), and use Cloud for org-root warrants, central audit, and revocation. Generate the pinned artifacts with `tenuo-claude managed-template` (see [examples/managed](examples/managed/) for the rollout checklist, Unix-socket smoke test, and hardened `--socket-group` option). Start in `mode: dry-run`, review the `WOULD-DENY` rows, then switch to `enforce`. [Talk to us](https://tenuo.ai/early-access.html) about managed-settings rollout. Report issues: [SECURITY.md](SECURITY.md).
+
+**Turning it off.** `tenuo-claude disable` removes Tenuo's hook wiring (so Claude Code / Cursor stop calling the authorizer) and stops it, leaving your policy and warrant in place; re-enable with `tenuo-claude up`. `tenuo-claude uninstall` goes further and also deletes `.state/` (warrant, keys, gateway, receipts, Cloud credentials); `tenuo.yaml` is never touched. Use `--keep-state` to unwire without deleting state, or `--yes` to skip the prompt.
 
 ## Build from source
 

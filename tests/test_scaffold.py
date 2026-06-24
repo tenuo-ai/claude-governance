@@ -228,6 +228,95 @@ def test_write_claude_wiring_mcp_removal_deletes_file_when_empty(monkeypatch, tm
     assert not mcp_path.exists()
 
 
+# --- remove_claude_wiring (reverse of write_claude_wiring) -----------------
+
+def test_remove_claude_wiring_round_trips(monkeypatch, tmp_path):
+    """`disable`/`uninstall` must fully reverse a fresh wiring."""
+    _patch_wiring(monkeypatch, tmp_path)
+    cli.write_claude_wiring(_make_cfg(mcp=True))
+    settings_path = tmp_path / ".claude" / "settings.json"
+    mcp_path = tmp_path / ".mcp.json"
+    assert settings_path.exists() and mcp_path.exists()
+
+    changed = cli.remove_claude_wiring()
+
+    assert changed, "should report what it removed"
+    # Both files held only Tenuo entries, so both are deleted.
+    assert not settings_path.exists()
+    assert not mcp_path.exists()
+
+
+def test_remove_claude_wiring_preserves_foreign_config(monkeypatch, tmp_path):
+    """User-owned hooks, permissions, and other MCP servers must survive."""
+    _patch_wiring(monkeypatch, tmp_path)
+    claude_dir = tmp_path / ".claude"
+    claude_dir.mkdir()
+    (claude_dir / "settings.json").write_text(json.dumps({
+        "permissions": {"allow": ["Bash"]},
+        "hooks": {"PreToolUse": [
+            {"matcher": "Bash", "hooks": [{"type": "command", "command": "echo hi"}]}
+        ]},
+    }))
+    mcp_path = tmp_path / ".mcp.json"
+    mcp_path.write_text(json.dumps({"mcpServers": {"other-server": {"command": "x"}}}) + "\n")
+
+    cli.write_claude_wiring(_make_cfg(mcp=True))
+    cli.remove_claude_wiring()
+
+    settings = json.loads((claude_dir / "settings.json").read_text())
+    assert settings["permissions"] == {"allow": ["Bash"]}
+    pre = settings["hooks"]["PreToolUse"]
+    commands = [h["hooks"][0]["command"] for h in pre]
+    assert any("echo hi" in c for c in commands), "user hook was removed"
+    assert not any("_hook" in c for c in commands), "Tenuo hook was not removed"
+    assert "other-server" in json.loads(mcp_path.read_text())["mcpServers"]
+    assert cli.MCP_SERVER_NAME not in json.loads(mcp_path.read_text())["mcpServers"]
+
+
+def test_remove_claude_wiring_noop_when_unwired(monkeypatch, tmp_path):
+    """Nothing wired -> nothing to report, no crash."""
+    _patch_wiring(monkeypatch, tmp_path)
+    assert cli.remove_claude_wiring() == []
+
+
+def _raise_systemexit(*_a, **_k):
+    raise SystemExit("Missing tenuo.yaml")
+
+
+def test_teardown_cfg_recovers_name_from_state(monkeypatch, tmp_path):
+    """With no valid policy, teardown still finds the container name from state.json."""
+    monkeypatch.setattr(cli, "load_config", _raise_systemexit)
+    state_json = tmp_path / "state.json"
+    state_json.write_text(json.dumps({"name": "recovered-proj"}))
+    monkeypatch.setattr(cli, "STATE_JSON", state_json, raising=False)
+
+    assert cli._teardown_cfg()["name"] == "recovered-proj"
+
+
+def test_teardown_cfg_defaults_when_no_state(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "load_config", _raise_systemexit)
+    monkeypatch.setattr(cli, "STATE_JSON", tmp_path / "absent.json", raising=False)
+
+    assert cli._teardown_cfg()["name"] == "tenuo-claude"
+
+
+def test_cmd_disable_unwires_without_valid_policy(monkeypatch, tmp_path):
+    """The repro from the P1 finding: a project with hooks but no tenuo.yaml must
+    still be cleanable — disable removes the wiring rather than bailing."""
+    _patch_wiring(monkeypatch, tmp_path)
+    cli.write_claude_wiring(_make_cfg())
+    settings_path = tmp_path / ".claude" / "settings.json"
+    assert settings_path.exists()
+
+    monkeypatch.setattr(cli, "load_config", _raise_systemexit)
+    monkeypatch.setattr(cli, "STATE_JSON", tmp_path / "absent.json", raising=False)
+    monkeypatch.setattr(cli, "_stop_authorizer", lambda _cfg: False)
+
+    cli.cmd_disable(types.SimpleNamespace())
+
+    assert not settings_path.exists(), "hook wiring should be gone"
+
+
 def test_wiring_command_is_absolute_and_path_independent(monkeypatch, tmp_path):
     """No wiring branch may emit a bare name that depends on the runtime PATH."""
     monkeypatch.delenv("TENUO_CLAUDE_BIN", raising=False)

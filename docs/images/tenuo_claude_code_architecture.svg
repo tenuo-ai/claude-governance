@@ -87,7 +87,7 @@
         <text x="0px" y="0px" style="font-family:'Helvetica-Bold', 'Helvetica';font-weight:700;font-size:15px;fill:rgb(11,18,32);">T<tspan x="8.057px 16.399px " y="0px 0px ">en</tspan>uo <tspan x="47.505px 58.337px " y="0px 0px ">Au</tspan>thorizer</text>
     </g>
     <g transform="matrix(1,0,0,1,584,371)">
-        <text x="0px" y="0px" style="font-family:'Helvetica';font-size:11.5px;fill:rgb(102,112,133);">Docker container<tspan x="86.301px 89.496px " y="0px 0px ">, </tspan>shared by both paths</text>
+        <text x="0px" y="0px" style="font-family:'Helvetica';font-size:11.5px;fill:rgb(102,112,133);">Authorizer service<tspan x="99.301px 102.496px " y="0px 0px ">, </tspan>shared by both paths</text>
     </g>
     <path d="M584,382L772,382" style="fill:none;fill-rule:nonzero;stroke:rgb(228,233,242);stroke-width:1.1px;"/>
     <g transform="matrix(1,0,0,1,584,402)">

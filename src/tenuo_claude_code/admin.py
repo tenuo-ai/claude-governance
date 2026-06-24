@@ -680,6 +680,11 @@ def cmd_setup(_args) -> None:
         print("  warning  : could not read initiator identity from warrant; left allow_api_key on")
 
     tc.save_cloud_state({"holder_pub_hex": holder_hex, "root": root})
+    # Persist the managed bit in CLOUD STATE (not local policy) so enterprise
+    # rollout — not an editable tenuo.yaml — is the authority for managed mode.
+    if getattr(_args, "managed", False):
+        tc.save_cloud_state({"managed": True, "local_policy": "attenuate_only"})
+        print("  managed  : org-managed mode recorded (Cloud authority; local attenuates only)")
     reloaded = tc.sync_runtime_artifacts(cfg, restart_authorizer=tc.authorizer_running(cfg))
     print(f"\nSetup complete. `tenuo-claude up` now fires {tid} for a root-signed session warrant.")
     if reloaded:
@@ -719,7 +724,12 @@ def main() -> None:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd")
     for name in COMMANDS:
-        sub.add_parser(name)
+        p = sub.add_parser(name)
+        if name == "setup":
+            p.add_argument(
+                "--managed", action="store_true",
+                help="mark this project org-managed: Cloud trigger is the sole authority "
+                     "and local policy attenuates only (records managed=true in cloud state)")
     args = parser.parse_args()
     if not args.cmd:
         parser.print_help()

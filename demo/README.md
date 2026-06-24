@@ -8,6 +8,28 @@ This is one illustration of **cause-agnostic enforcement**. The agent might atte
 
 A note on what you'll actually see: a capable model often self-refuses the embedded instruction on its own, so to watch the *policy* fire you force the attempt explicitly. Treat that forced boundary-push as the realistic "a user asks for something org policy forbids" case, exactly what deterministic governance exists to handle.
 
+## Prerequisites
+
+**Local (no account, fastest path):**
+
+- Python 3.10+ and [uv](https://docs.astral.sh/uv/) (or `pip`).
+- For the *live Claude examples*, the `claude` CLI on PATH. The scripted tour (`tenuo-claude demo`) talks to the authorizer directly and does not need Claude.
+- Docker is optional: if it is absent, `up` auto-installs and runs the native authorizer (macOS, Linux, WSL).
+
+That is all the local demo needs. No Tenuo account, no keys, no tenant root: `bootstrap` generates a local issuer key for you.
+
+**Cloud (adds signed receipts, fleet revocation, and human approval):**
+
+1. Create your account at [cloud.tenuo.ai](https://cloud.tenuo.ai). Your tenant's signing **root is provisioned for you**; there is no manual "create a root key" step, and a brand-new tenant works out of the box (the demo runs in unmanaged Cloud mode, which resolves the tenant root automatically).
+2. Grab two keys, kept apart (the runtime never sees the admin key):
+
+   | Key | From | Goes in |
+   |-----|------|---------|
+   | **Runtime** (`tenuo_ct_…`) | Agents → Quick Connect → **Authorizer Only** | `.state/cloud.env` |
+   | **Tenant-admin** (`tc_…`) | Settings → API Keys → Create (admin role) | `~/.tenuo/admin.env` |
+
+3. Run `tenuo-claude bootstrap --cloud` (first run needs both keys; later sessions need only the runtime token). Full reference: [README § Cloud mode](../README.md#cloud-mode).
+
 ## Run it
 
 From a git checkout, set up the venv once from the repo root:

@@ -4,7 +4,7 @@ How `tenuo-claude-code` works under the hood, for when the [README](../README.md
 
 The honest framing for the whole system: Tenuo checks the **arguments of each tool call** against a signed policy at the tool-call boundary. It validates the *string* the model passes (a path, a command, a URL) — it is not a kernel sandbox and does not follow what a URL resolves to at connect time. Trust boundaries: [The Map is not the Territory](https://niyikiza.com/posts/map-territory/).
 
-**Contents:** [Enforcement model](#why-hook-and-mcp-proxy) · [What's in scope](#agent-tools-vs-operator-shell) · [Fail-closed & exit codes](#hook-exit-codes-and-fail-closed) · [Constraints: Bash](#bash-shlex-not-regex) · [Constraints: WebFetch](#webfetch-egress) · [Path constraints & symlinks](#search-tools-and-symlinks) · [Subagents](#subagents) · [Audit mode](#audit-mode-mode-audit) · [Refresh & TTL](#policy-refresh-tenuo-claude-refresh) · [Receipts](#receipts) · [Cloud: check](#preflight-and-cloud-bindings-tenuo-claude-check) · [Cloud: approval](#human-approval-cloud) · [Cloud: extended](#tenuo-cloud-extended)
+**Contents:** [Enforcement model](#why-hook-and-mcp-proxy) · [What's in scope](#agent-tools-vs-operator-shell) · [Fail-closed & exit codes](#hook-exit-codes-and-fail-closed) · [Constraints: Bash](#bash-shlex-not-regex) · [Constraints: WebFetch](#webfetch-egress) · [Path constraints & symlinks](#search-tools-and-symlinks) · [Subagents](#subagents) · [Dry-run mode](#dry-run-mode-mode-dry-run) · [Refresh & TTL](#policy-refresh-tenuo-claude-refresh) · [Receipts](#receipts) · [Cloud: check](#preflight-and-cloud-bindings-tenuo-claude-check) · [Cloud: approval](#human-approval-cloud) · [Cloud: extended](#tenuo-cloud-extended)
 
 ---
 
@@ -76,19 +76,23 @@ When `subagents:` is declared, you get two layers:
 
 Roles must match a real `subagent_type` (`.claude/agents/<name>.md` frontmatter `name:`, or a built-in); `verify` and `status` check this. Omit `subagents:` for flat coverage — spawns are then audited, not gated, and the subagent runs under the full session warrant.
 
-Changing `subagents:` is a policy change: re-run `tenuo-admin setup` (Cloud) or `init` (local). Note one sharp edge: the bundled `Workflow` harness tool tags its inner calls with an `agent_type` that isn't a declared role, so under `subagents:` those inner calls are denied — remove `Workflow` from the audit list or omit `subagents:` if you need it. Requires `tenuo` ≥ 0.1.0b24 and authorizer `0.1.0-beta.24` (pinned in `cli.py`).
+Changing `subagents:` is a policy change: re-run `tenuo-admin setup` (Cloud) or `init` (local). Note one sharp edge: the bundled `Workflow` harness tool tags its inner calls with an `agent_type` that isn't a declared role, so under `subagents:` those inner calls are denied — remove `Workflow` from the audit list or omit `subagents:` if you need it. Requires `tenuo` ≥ 0.2.0 and authorizer `0.2.0-authz.3` (pinned in `cli.py`).
 
-## Audit mode (`mode: audit`)
+## Dry-run mode (`mode: dry-run`)
 
 Shadow mode: every call's real allow/deny is still computed against the warrant and written to the receipt log, but **nothing is blocked**. The hook deliberately emits *no* permission decision in this mode — not even "allow" — because an explicit hook-allow would auto-approve calls that Claude's own settings might otherwise prompt on. So observe-only stays observe-only, and Claude's prompts remain in effect.
 
 Roll out by watching `WOULD-DENY` rows in `tenuo-claude audit`, tuning policy, then switching to `mode: enforce`. The hook reads `mode` live (next tool call); the MCP proxy picks it up on the next Claude session.
 
+`mode:` is a **global** switch and `default:` is the **catch-all for unlisted tools** only; they are independent. In `mode: dry-run` nothing is enforced (even tools listed under `enforce:`), so `default:` has no effect until you switch back to `mode: enforce`. Do not confuse the two: there is no `default: dry-run`. The permissive catch-all is `default: allow` (allow plus log unlisted tools), which only matters in `mode: enforce`.
+
+`mode: audit` is a deprecated alias for `mode: dry-run` (and `default: audit` for `default: allow`); both still work, and `tenuo-claude check` / `status` flag them so you can migrate. Any *unrecognized* `mode:` or `default:` value (a typo, or putting `allow` on `mode:` when you meant `default:`) falls back to the safe default (`enforce` / `deny`) and is surfaced as a `posture` warning rather than silently changing behavior.
+
 ## Policy refresh (`tenuo-claude refresh`)
 
 After editing warrant-backed policy (`enforce`, `default`, `audit_*`, `subagents`, `mcp`, approval overlay), run `refresh`. It re-mints the session warrant (or re-fires the Cloud trigger), regenerates the gateway config, rewires hooks, and restarts the authorizer if it's running.
 
-- **`mode` change only** (`audit` ↔ `enforce`): no refresh needed — the hook reads it live.
+- **`mode` change only** (`dry-run`/`audit` ↔ `enforce`): no refresh is needed for the native hook — it reads the file live. `refresh` is still safe and is the simplest habit, especially if you also govern MCP tools (the proxy sees the new posture on the next Claude session).
 - **Cloud capability change**: the warrant's capabilities come from the trigger config on the control plane, so re-run `tenuo-admin setup` first, then `refresh`.
 
 ### Warrant TTL and refresh
@@ -101,7 +105,7 @@ Session warrants have a ~1h TTL; `status` flags `EXPIRED` when one lapses. `tenu
 
 - **Enforced** tools — argument-checked; out-of-scope denied.
 - **Audit-allowed** harness tools — logged, not blocked.
-- **Default** — everything else denied (or logged, under `default: audit`).
+- **Default** — everything else denied (or logged, under `default: allow`).
 
 The hook appends a local JSON line per call to `.state/receipts.jsonl` (`tenuo-claude audit` pretty-prints it; this is a local convenience, not signed):
 

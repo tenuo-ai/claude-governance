@@ -1,4 +1,4 @@
-# Rollout template: mode audit logs real allow/deny without blocking.
+# Rollout template: mode dry-run logs real allow/deny without blocking.
 # Review WOULD-DENY in receipts or Cloud, tune policy, then set mode: enforce.
 #
 # Copy to tenuo.yaml in your project, then: tenuo-claude init && tenuo-claude up
@@ -7,7 +7,7 @@ name: audit-rollout
 
 sandbox: ./workspace
 
-mode: audit
+mode: dry-run
 
 enforce:
   Read: "subpath:{sandbox}"

@@ -86,17 +86,236 @@ _receipt_write_warned = False  # one-time stderr if .state/receipts.jsonl can't 
 PORT = art.resolve_authorizer_port()
 AUTHZ_URL = f"http://127.0.0.1:{PORT}"
 
+# Default path for the Unix-socket transport (see `authz_endpoint`). A root-owned
+# socket under a root-owned, non-world-writable runtime dir is what lets the hook
+# AUTHENTICATE the authorizer by OS file ownership — something loopback TCP cannot
+# do. The path itself isn't a secret; the safety comes from `_safe_managed_socket`.
+DEFAULT_AUTHZ_SOCKET = "/var/run/tenuo/authorizer.sock"
+# Root-owned marker that lets a managed deployment fall back to loopback TCP (see
+# `_insecure_tcp_breakglass`). Deliberately a file under an admin-only dir, not an
+# env var, so a local user can't re-enable the TCP downgrade.
+BREAKGLASS_TCP_FILE = "/etc/tenuo/allow_insecure_tcp"
+
 
 def resolve_authz_url() -> str:
-    """URL for authorizer client calls. ``state.json`` overrides port env vars."""
-    try:
-        if STATE_JSON.is_file():
-            url = json.loads(STATE_JSON.read_text()).get("authorizer_url")
-            if isinstance(url, str) and url.startswith("http"):
-                return url
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
-        pass
+    """Loopback TCP URL for authorizer client calls. ``state.json`` overrides port env vars.
+
+    This is only the TCP arm of the transport: `authz_endpoint` decides whether a call
+    goes over a Unix socket or TCP, and managed mode normally uses a Unix socket (see
+    below), calling this only for the TCP break-glass path.
+
+    EXCEPTION: under the MDM-pinned managed hook the ``state.json`` override is ignored.
+    It lives in an editable project file (`.state/state.json`), so honoring it would let
+    a developer redirect the managed hook to a user-controlled authorizer. Managed TCP
+    calls always target the pinned loopback address.
+
+    NOTE (residual): loopback TCP cannot AUTHENTICATE the responder — if the system
+    authorizer is down, a user process could bind the same 127.0.0.1 port and answer
+    "allow". That is why managed mode defaults to the Unix-socket transport
+    (`authz_endpoint` / TENUO_AUTHZ_SOCKET) and only falls back to TCP via the
+    root-owned break-glass: a root-owned socket under a root-owned runtime dir can't be
+    replaced by an unprivileged user, and `_safe_managed_socket` refuses anything that
+    doesn't meet those ownership/permission invariants.
+    """
+    if not _managed_enforce_pinned():
+        try:
+            if STATE_JSON.is_file():
+                url = json.loads(STATE_JSON.read_text()).get("authorizer_url")
+                if isinstance(url, str) and url.startswith("http"):
+                    return url
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            pass
     return AUTHZ_URL
+
+
+def _insecure_tcp_breakglass() -> bool:
+    """True only when a ROOT-OWNED break-glass marker opts a managed deployment back
+    onto loopback TCP (e.g. mid-migration, before the socket authorizer is live).
+
+    It is a root-owned file, NOT an env var, on purpose: the managed hook inherits
+    the user's environment, so an env-based escape would let any local user re-enable
+    the unauthenticated-TCP downgrade and defeat the whole point. Only an admin who
+    can write under ``/etc/tenuo`` can flip this. Non-POSIX has no ownership model,
+    so the marker's mere presence counts there.
+
+    Because this intentionally reopens the dangerous transport, the checks are strict
+    (mirroring `_safe_managed_socket`): the marker must be a REGULAR file (not a
+    symlink — else a user could point it at any root-owned file like /etc/hosts and
+    `stat` would follow it), root-owned, not group/world-writable, under a root-owned,
+    non-world-writable directory. Anything else is treated as "no break-glass".
+    """
+    if os.name != "posix":
+        return os.path.exists(BREAKGLASS_TCP_FILE)
+    import stat as _stat
+
+    try:
+        st = os.lstat(BREAKGLASS_TCP_FILE)
+    except OSError:
+        return False
+    if _stat.S_ISLNK(st.st_mode) or not _stat.S_ISREG(st.st_mode):
+        return False
+    if st.st_uid != 0 or (st.st_mode & 0o022):
+        return False
+    parent = os.path.dirname(BREAKGLASS_TCP_FILE) or "/"
+    try:
+        dst = os.stat(parent)
+    except OSError:
+        return False
+    return dst.st_uid == 0 and not (dst.st_mode & 0o022)
+
+
+def authz_endpoint() -> tuple[str, str]:
+    """Resolve how the client reaches the authorizer: ``("unix", socket_path)`` or
+    ``("tcp", url)``.
+
+    Driven by environment so the per-call enforcement path stays config-free; the
+    process entrypoints (`cmd_hook`, `cmd_mcp_proxy`) seed these from `tenuo.yaml`
+    via `apply_transport_env`:
+
+      - ``TENUO_AUTHZ_TRANSPORT``  : ``unix`` | ``tcp``
+      - ``TENUO_AUTHZ_SOCKET``     : socket path (implies unix unless transport=tcp)
+
+    MANAGED (``_managed_enforce_pinned``): the authorizer must be reached over an
+    OS-authenticated Unix socket, FULL STOP. Inherited environment is NOT trusted to
+    pick the transport here — Claude runs hook commands with the user's environment,
+    so honoring ``TENUO_AUTHZ_TRANSPORT=tcp`` would let any local user put managed
+    enforcement back on unauthenticated loopback TCP (where a process that wins the
+    port race can answer "allow"). So managed always selects unix and ignores an
+    inherited ``tcp``; the only way back to TCP is the root-owned break-glass. The
+    socket PATH may still come from the environment because `_safe_managed_socket`
+    independently rejects any socket a non-root user could have created — a hostile
+    path simply fails closed.
+
+    UNMANAGED: the socket transport is strictly opt-in (explicit ``unix``, or a
+    socket path without an explicit ``tcp``); otherwise loopback TCP, unchanged.
+    """
+    transport = os.environ.get("TENUO_AUTHZ_TRANSPORT", "").strip().lower()
+    sock = os.environ.get("TENUO_AUTHZ_SOCKET", "").strip()
+    if _managed_enforce_pinned():
+        if _insecure_tcp_breakglass():
+            return ("tcp", resolve_authz_url())
+        return ("unix", sock or DEFAULT_AUTHZ_SOCKET)
+    if transport == "unix" or (sock and transport != "tcp"):
+        return ("unix", sock or DEFAULT_AUTHZ_SOCKET)
+    return ("tcp", resolve_authz_url())
+
+
+def authz_display() -> str:
+    """Human-readable authorizer endpoint for status/verify output, reflecting the
+    transport actually in use (so a managed socket deployment doesn't misreport the
+    old loopback TCP URL)."""
+    mode, loc = authz_endpoint()
+    return loc if mode == "tcp" else f"unix://{loc}"
+
+
+def apply_transport_env(cfg: dict) -> None:
+    """Seed the transport env from ``authorizer.transport`` / ``authorizer.socket``
+    in tenuo.yaml, once per process, WITHOUT clobbering anything already set.
+
+    This ONLY configures the UNMANAGED (dev) opt-in. In managed mode it is a no-op:
+    the editable policy file is not trusted to choose the transport OR the socket
+    path, so a developer cannot repoint the pinned managed hook at all (not even to a
+    bogus socket that would silently turn enforcement into deny-all). Managed mode
+    instead uses `DEFAULT_AUTHZ_SOCKET` (or a `TENUO_AUTHZ_SOCKET` set by the
+    developer-unwritable MDM hook command), and `_safe_managed_socket` is the backstop.
+    """
+    if _managed_enforce_pinned():
+        return
+    az = cfg.get("authorizer")
+    if not isinstance(az, dict):
+        return
+    if "TENUO_AUTHZ_TRANSPORT" not in os.environ and az.get("transport"):
+        os.environ["TENUO_AUTHZ_TRANSPORT"] = str(az["transport"]).strip().lower()
+    if "TENUO_AUTHZ_SOCKET" not in os.environ and az.get("socket"):
+        os.environ["TENUO_AUTHZ_SOCKET"] = str(az["socket"]).strip()
+
+
+def _safe_managed_socket(path: str, *, managed: bool = True) -> tuple[bool, str]:
+    """Verify a Unix authorizer socket is one only a trusted process could have
+    created, so its decisions can be trusted. Returns ``(ok, reason)``.
+
+    This is the authentication loopback TCP lacks: instead of a secret, we rely on
+    OS file ownership. Nobody outside the trusted set can create or replace a socket
+    inside a directory owned by the trusted set and not group/world-writable, so if
+    the socket and its parent dir pass these checks, the responder is the trusted
+    service — not a process that won a port race. Invariants:
+
+      - the socket exists, is a socket, and is NOT a symlink (no redirect tricks);
+      - the socket is owned by a trusted uid;
+      - the parent dir is owned by a trusted uid and is not group/world-writable.
+
+    The trusted set depends on the threat model. ``managed=True`` (the pinned hook,
+    where the developer is the adversary) trusts ROOT only — plus an optional
+    ``TENUO_AUTHZ_SERVICE_UID`` for a non-root service user. ``managed=False`` (a
+    cooperative dev running their own authorizer) also trusts the CALLING user, so
+    the opt-in dev socket actually works without running as root.
+
+    POSIX only — uid/mode semantics don't apply elsewhere; callers fail closed when
+    `os.name != "posix"`.
+    """
+    import stat as _stat
+
+    sock_uids = {0}
+    dir_uids = {0}
+    svc = os.environ.get("TENUO_AUTHZ_SERVICE_UID", "").strip()
+    if svc.isdigit():
+        sock_uids.add(int(svc))
+    if not managed:
+        # Cooperative dev: a socket the developer owns (in a dir they own) is fine;
+        # there is no privilege boundary to cross. World/group-writable is still out.
+        me = os.getuid()
+        sock_uids.add(me)
+        dir_uids.add(me)
+    try:
+        st = os.lstat(path)
+    except OSError as exc:
+        return False, f"socket unavailable ({exc.strerror or exc})"
+    if _stat.S_ISLNK(st.st_mode):
+        return False, "socket path is a symlink"
+    if not _stat.S_ISSOCK(st.st_mode):
+        return False, "path is not a socket"
+    if st.st_uid not in sock_uids:
+        return False, f"socket owned by uid {st.st_uid}, not trusted (root/service)"
+    parent = os.path.dirname(os.path.realpath(path)) or "/"
+    try:
+        dst = os.stat(parent)
+    except OSError as exc:
+        return False, f"socket dir unavailable ({exc.strerror or exc})"
+    if dst.st_uid not in dir_uids:
+        return False, f"socket dir {parent} not trusted-owned (uid {dst.st_uid})"
+    if dst.st_mode & 0o022:
+        return False, f"socket dir {parent} is group/world-writable"
+    return True, "ok"
+
+
+class _UDSConnection:
+    """Minimal HTTP/1.1-over-Unix-socket client. The authorizer speaks the same
+    HTTP API on a socket as on TCP, so we reuse `http.client` with an AF_UNIX
+    connection rather than introducing a second request format."""
+
+    def __init__(self, socket_path: str, timeout: float):
+        import http.client
+
+        self._path = socket_path
+        self._conn = http.client.HTTPConnection("localhost", timeout=timeout)
+        self._conn.connect = self._connect  # type: ignore[method-assign]
+
+    def _connect(self) -> None:
+        import socket as _socket
+
+        s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        s.settimeout(self._conn.timeout)
+        s.connect(self._path)
+        self._conn.sock = s
+
+    def request(self, method: str, route: str, headers: dict | None = None,
+                data: bytes | None = None) -> tuple[int, bytes]:
+        try:
+            self._conn.request(method, route, body=data, headers=headers or {})
+            resp = self._conn.getresponse()
+            return resp.status, resp.read()
+        finally:
+            self._conn.close()
 
 
 WARRANT_HEADER = "X-Tenuo-Warrant"
@@ -104,7 +323,7 @@ POP_HEADER = "X-Tenuo-PoP"
 # The authorizer ships as a published container image (Docker Hub), pinned in
 # lockstep with the `tenuo` PyPI package. Override with TENUO_AUTHORIZER_IMAGE or
 # an `authorizer.image` key in tenuo.yaml.
-DEFAULT_AUTHZ_IMAGE = "tenuo/authorizer:0.1.0-beta.24"
+DEFAULT_AUTHZ_IMAGE = "tenuo/authorizer:0.2.0-authz.3"
 
 # Claude tool -> (capability, primary arg, Claude input field for that arg)
 #
@@ -242,13 +461,27 @@ def audit_map(cfg: dict) -> dict:
 
 
 def default_mode(cfg: dict) -> str:
-    mode = (cfg.get("default") or "deny").lower()
-    return mode if mode in ("deny", "audit") else "deny"
+    """Internal routing token for the catch-all: ``deny`` or ``audit`` (permissive).
+
+    ``allow`` is the canonical permissive spelling and ``audit`` the deprecated
+    alias; both map to the internal ``audit`` token (allow + signed receipt).
+    Anything unrecognized canonicalizes to ``deny`` (fail-closed); `posture_warnings`
+    surfaces it. Use `default_label` for user-facing display.
+    """
+    mode = (str(cfg.get("default")) if cfg.get("default") is not None else "deny").strip().lower()
+    if mode in ("allow", "audit"):
+        return "audit"
+    return "deny"
+
+
+def default_label(cfg: dict) -> str:
+    """User-facing catch-all posture: ``allow`` (permissive) or ``deny``."""
+    return "allow" if default_mode(cfg) == "audit" else "deny"
 
 
 def catchall_cap(cfg: dict) -> str:
     """Capability the /gate catch-all routes to: the granted 'audit' (under
-    default: audit -> allow + log) or the ungranted 'unlisted' (under default:
+    default: allow -> allow + log) or the ungranted 'unlisted' (under default:
     deny -> the authorizer returns a signed DENY)."""
     return CATCHALL_AUDIT if default_mode(cfg) == "audit" else CATCHALL_DENY
 
@@ -435,15 +668,108 @@ def approval_policy_id(cfg: dict, tenuo_tool: str | None = None) -> str | None:
     return st.get("session_approval_policy_id") or st.get("web_fetch_approval_policy_id")
 
 
+# Policy posture (`mode:` in tenuo.yaml). `dry-run` is the canonical observe-only
+# value; `audit` is the deprecated spelling kept working for back-compat.
+MODE_ENFORCE = "enforce"
+MODE_DRY_RUN = "dry-run"
+_OBSERVE_ALIASES = {"dry-run", "dry_run", "dryrun", "audit"}
+
+
+def policy_mode(cfg: dict) -> str:
+    """Canonical posture: ``MODE_ENFORCE`` or ``MODE_DRY_RUN``.
+
+    Recognizes the canonical ``dry-run`` plus the deprecated ``audit`` alias (and a
+    couple of forgiving spellings). Anything else — including a typo or a value
+    like ``allow`` that belongs on ``default:`` — canonicalizes to ``enforce``
+    (fail-closed), but `posture_warnings` surfaces it so it can't fail silently.
+    """
+    raw = str(cfg.get("mode", MODE_ENFORCE)).strip().lower()
+    if raw in _OBSERVE_ALIASES:
+        return MODE_DRY_RUN
+    return MODE_ENFORCE
+
+
+def _managed_enforce_pinned() -> bool:
+    """True when the MDM-pinned managed hook is running (``TENUO_MANAGED_ENFORCE``).
+
+    The generated ``managed-settings.json`` wires the ``_managed-hook`` entrypoint,
+    which sets this env var. That command lives in Claude Code's highest-precedence,
+    developer-unwritable settings tier, so it is an AUTHORITATIVE managed signal
+    that editable project files (``tenuo.yaml`` / ``.state/cloud_state.json``)
+    cannot forge away. A developer could only ever SET it (forcing enforce), never
+    unset it for the pinned hook, so honoring it can only tighten enforcement.
+    """
+    return os.environ.get("TENUO_MANAGED_ENFORCE", "") not in ("", "0", "false", "False")
+
+
+def managed_mode(cfg: dict) -> bool:
+    """Org-managed Cloud mode: the Cloud trigger is the sole authority and the
+    local policy is overlay/attenuation only.
+
+    Authority signals, strongest first:
+      1. the MDM-pinned managed hook (``TENUO_MANAGED_ENFORCE``) — unforgeable by
+         local edits, so the per-call enforcement path can't be downgraded;
+      2. the resolved `cfg["_managed"]` (set by `load_config`);
+      3. `cloud.managed` in policy or `managed` in `.state/cloud_state.json`
+         (written by `tenuo-admin setup --managed`).
+
+    The flag/state in (2)/(3) is convenience for the cooperative CLI (messaging,
+    fail-closed `up`); the real boundary is (1) plus the authorizer trusting ONLY
+    the Cloud root, so a locally-minted warrant won't verify regardless of this.
+    """
+    if _managed_enforce_pinned():
+        return True
+    if "_managed" in cfg:
+        return bool(cfg["_managed"])
+    return bool((cfg.get("cloud") or {}).get("managed") or load_cloud_state().get("managed"))
+
+
 def is_audit_mode(cfg: dict) -> bool:
-    """Global observe-only posture (`mode: audit` in tenuo.yaml).
+    """Global observe-only posture (`mode: dry-run` in tenuo.yaml).
 
     When on, the hook and MCP proxy still compute the REAL allow/deny against the
     warrant and write it to the signed receipt — but never block. You get the
     full audit trail (including what WOULD be denied) with zero enforcement, for
     safe rollout / shadowing. Flip back with `mode: enforce` (the default).
+
+    Managed Cloud mode pins the posture to enforce: an org that manages the fleet
+    does not let an individual endpoint quietly switch itself to observe-only.
     """
-    return str(cfg.get("mode", "enforce")).strip().lower() == "audit"
+    return policy_mode(cfg) == MODE_DRY_RUN and not managed_mode(cfg)
+
+
+def posture_warnings(cfg: dict) -> list[str]:
+    """Human-readable warnings about the policy's posture vocabulary.
+
+    Catches the silent-failure traps: an unrecognized ``mode:`` (treated as
+    enforce) or an unrecognized ``default:`` (treated as deny), and the deprecated
+    ``audit`` spelling. Surfaced by user-facing commands (`check`, `status`,
+    `refresh`) so a typo or a misplaced value never quietly changes the posture.
+    """
+    out: list[str] = []
+    raw_mode = str(cfg.get("mode", MODE_ENFORCE)).strip().lower()
+    if managed_mode(cfg) and policy_mode(cfg) == MODE_DRY_RUN:
+        out.append("mode: dry-run is pinned to enforce by org-managed Cloud mode "
+                   "(the local observe-only posture is ignored on managed endpoints).")
+    elif raw_mode == "audit":
+        out.append("mode: audit is deprecated, use mode: dry-run (same observe-only behavior).")
+    elif raw_mode not in _OBSERVE_ALIASES and raw_mode != MODE_ENFORCE:
+        hint = " Observe-only is set via `mode: dry-run`." if raw_mode in (
+            "allow", "permit", "off") else ""
+        out.append(
+            f"mode: {raw_mode!r} is not recognized, treated as enforce.{hint}")
+    raw_default = cfg.get("default")
+    if raw_default is not None:
+        rd = str(raw_default).strip().lower()
+        if rd == "audit":
+            out.append("default: audit is deprecated, use default: allow "
+                       "(same allow-and-log behavior for unlisted tools).")
+        elif rd not in ("deny", "allow"):
+            hint = (" To stop blocking everything while still logging, use "
+                    "`mode: dry-run` instead." if rd in ("dry-run", "dry_run") else "")
+            out.append(
+                f"default: {rd!r} is not recognized, treated as deny.{hint}")
+    return out
 
 
 def policy_capability_fingerprint(cfg: dict) -> str:
@@ -525,6 +851,13 @@ def load_config() -> dict:
     cfg["_sandbox_abs"] = str((DEMO_DIR / cfg["sandbox"]).resolve())
     cfg.setdefault("enforce", {})
     cfg.setdefault("mcp", {})
+    # Resolve managed Cloud mode once (policy flag or cloud-setup state) so the
+    # per-call hook path doesn't re-read cloud_state.json on every tool call.
+    try:
+        state_managed = load_cloud_state().get("managed")
+    except Exception:
+        state_managed = None
+    cfg["_managed"] = bool((cfg.get("cloud") or {}).get("managed") or state_managed)
     if cfg.get("audit_bundled", True):
         # Command-execution tools are never harness-inert: auto-audit would grant
         # an unconstrained shell. Defensive guard so a future edit to the shipped
@@ -790,7 +1123,7 @@ def _parse_connect_token(raw: str) -> dict:
         return {"url": ct.endpoint, "api_key": ct.api_key}
     except ImportError as e:
         raise SystemExit(
-            "TENUO_CONNECT_TOKEN requires tenuo_core (install tenuo==0.1.0b24)."
+            "TENUO_CONNECT_TOKEN requires tenuo_core (install tenuo==0.2.0)."
         ) from e
     except Exception as e:
         raise SystemExit(f"Invalid TENUO_CONNECT_TOKEN: {e}") from e
@@ -826,12 +1159,15 @@ def _authorize_attempt(tenuo_tool: str, route: str, sign_args: dict, body,
         }
         if approvals_b64:
             headers[APPROVALS_HEADER] = approvals_b64
-        req = urllib.request.Request(
-            resolve_authz_url() + route, data=json.dumps(body).encode(), headers=headers, method="POST"
-        )
+        data = json.dumps(body).encode()
     except Exception as exc:
         return False, f"enforcement error ({exc})", {}
+
+    mode, loc = authz_endpoint()
+    if mode == "unix":
+        return _authorize_over_uds(loc, route, headers, data)
     try:
+        req = urllib.request.Request(loc + route, data=data, headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=5) as resp:
             rb = json.loads(resp.read().decode() or "{}")
             if resp.status == 200 and rb.get("authorized"):
@@ -843,6 +1179,25 @@ def _authorize_attempt(tenuo_tool: str, route: str, sign_args: dict, body,
             return False, rb.get("message") or rb.get("error") or f"status {exc.code}", rb
         except Exception:
             return False, f"status {exc.code}", {}
+    except Exception as exc:
+        return False, f"authorizer unreachable, denying ({exc})", {}
+
+
+def _authorize_over_uds(socket_path: str, route: str, headers: dict, data: bytes):
+    """Send a signed authorize call over a Unix socket. Fail-closed: an unsafe,
+    missing, or unreachable socket denies. Mirrors the TCP branch's response shape.
+    """
+    if os.name != "posix":
+        return False, "unix authorizer transport requires POSIX", {}
+    ok, why = _safe_managed_socket(socket_path, managed=_managed_enforce_pinned())
+    if not ok:
+        return False, f"refusing untrusted authorizer socket: {why}", {}
+    try:
+        status, raw = _UDSConnection(socket_path, timeout=5).request("POST", route, headers, data)
+        rb = json.loads(raw.decode() or "{}")
+        if status == 200 and rb.get("authorized"):
+            return True, "authorized", rb
+        return False, rb.get("message") or rb.get("error") or f"status {status}", rb
     except Exception as exc:
         return False, f"authorizer unreachable, denying ({exc})", {}
 
@@ -1265,6 +1620,7 @@ def cmd_hook(_args) -> None:
     tool, agent_type, audit_only = "", None, False
     try:
         cfg = load_config()
+        apply_transport_env(cfg)
         audit_only = is_audit_mode(cfg)
         try:
             event = json.loads(sys.stdin.read() or "{}")
@@ -1320,6 +1676,33 @@ def cmd_hook(_args) -> None:
         "permissionDecisionReason": reason_text}}))
 
 
+def cmd_managed_hook(args) -> None:
+    """MDM-pinned PreToolUse entrypoint: identical to ``_hook`` but enforcement is
+    anchored in the managed artifact, not in editable local state.
+
+    Sets ``TENUO_MANAGED_ENFORCE`` so the posture floor applies (managed_mode →
+    never observe-only) even if a developer edited ``tenuo.yaml`` to ``mode:
+    dry-run`` or removed ``cloud.managed`` / the cloud-state flag. The allow/deny
+    itself still comes from the Cloud-root-only authorizer, so with no valid Cloud
+    warrant the call is denied (fail-closed). Wired by `managed_claude_settings`.
+    """
+    os.environ["TENUO_MANAGED_ENFORCE"] = "1"
+    cmd_hook(args)
+
+
+def cmd_managed_mcp_proxy(args) -> None:
+    """MDM-pinned MCP proxy entrypoint: like ``_mcp-proxy`` but enforcement is
+    anchored in the managed artifact, not in editable local state.
+
+    MCP is a primary enforcement surface, so the same downgrade vector as the
+    hook applies: without this, a developer who set ``mode: dry-run`` and dropped
+    the managed flag would make the proxy FORWARD denied MCP calls. Setting
+    ``TENUO_MANAGED_ENFORCE`` forces enforce regardless. Wired by `managed_mcp_config`.
+    """
+    os.environ["TENUO_MANAGED_ENFORCE"] = "1"
+    cmd_mcp_proxy(args)
+
+
 def cmd_post(_args) -> None:
     try:
         event = json.loads(sys.stdin.read() or "{}")
@@ -1366,6 +1749,7 @@ def cmd_mcp_proxy(_args) -> None:
     from mcp.types import TextContent
 
     cfg = load_config()
+    apply_transport_env(cfg)
     mcp_cfg = cfg.get("mcp", {})
     downstream = str((DEMO_DIR / mcp_cfg.get("downstream", "")).resolve())
     enforced = mcp_enforce_entries(cfg)
@@ -1470,6 +1854,45 @@ def enforced_capabilities(cfg: dict) -> dict:
         # drop it (with_tools), so a subagent can't spawn further subagents.
         caps[SPAWN_CAP] = {"subagent_type": OneOf(list(roles.keys()))}
     return caps
+
+
+def warrant_capabilities() -> dict | None:
+    """Capabilities granted by the active session warrant, as {cap: constraints}.
+
+    Returns None when no readable warrant is on disk (so callers can distinguish
+    "warrant grants nothing" from "we can't tell"). The session warrant file holds
+    a single warrant (Cloud-issued in managed mode, locally-minted otherwise);
+    subagent stacks live in separate files.
+    """
+    if not WARRANT.exists():
+        return None
+    try:
+        from tenuo import Warrant
+        return Warrant.from_base64(WARRANT.read_text()).capabilities or {}
+    except Exception:
+        return None
+
+
+def local_widened_tools(cfg: dict, granted: dict | None) -> list[str]:
+    """Tools the LOCAL policy governs that the granted warrant does NOT include.
+
+    Local attenuation may narrow the warrant (govern a subset, tighten
+    constraints) but must never widen it. In managed Cloud mode the warrant is
+    the authority, so any "extra" local tool is inert: the authorizer denies it
+    because no such capability was granted. We surface it so an operator isn't
+    misled into thinking a local edit took effect.
+
+    Comparison is by capability NAME (tool-level); the synthetic /gate catch-all
+    capabilities are excluded since they are routing artifacts, not grants.
+    Constraint-level intersection (narrowing within a shared tool) is a separate,
+    future layer — this is the tool-addition guard.
+    """
+    if granted is None:
+        return []
+    synthetic = {CATCHALL_AUDIT, CATCHALL_DENY}
+    local = (set(enforced_capabilities(cfg).keys())
+             | set(audit_map(cfg).values())) - synthetic
+    return sorted(local - set(granted.keys()))
 
 
 def write_gateway(cfg: dict, enforced_caps: dict) -> None:
@@ -1582,6 +2005,7 @@ def refresh_policy(cfg: dict | None = None) -> str:
     cfg = cfg or load_config()
     creds = cloud_creds(cfg)
     use_trigger = bool(creds["url"] and creds["api_key"] and trigger_id(cfg))
+    _assert_managed_runtime(cfg, use_trigger)
 
     write_claude_wiring(cfg)
     write_gateway(cfg, enforced_capabilities(cfg))
@@ -1691,6 +2115,66 @@ def write_claude_wiring(cfg: dict) -> None:
                 mcp_path.write_text(json.dumps(existing_mcp, indent=2) + "\n")
             else:
                 mcp_path.unlink()
+
+
+def remove_claude_wiring() -> list[str]:
+    """Reverse of ``write_claude_wiring``: strip Tenuo's hooks from
+    ``.claude/settings.json`` and Tenuo's MCP server from ``.mcp.json``.
+
+    Only Tenuo-owned entries are removed; any other hooks, MCP servers, or keys
+    the user added are preserved. Files that become empty are deleted so a later
+    ``init`` starts from a clean slate. Returns a list of human-readable lines
+    describing what changed (empty when nothing was wired).
+    """
+    changed: list[str] = []
+    settings_path = DEMO_DIR / ".claude" / "settings.json"
+    if settings_path.exists():
+        try:
+            settings = json.loads(settings_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            settings = None
+        if isinstance(settings, dict) and isinstance(settings.get("hooks"), dict):
+            hooks = settings["hooks"]
+            removed = False
+            for event, sub in (("PreToolUse", "_hook"), ("PostToolUse", "_post")):
+                entries = hooks.get(event)
+                if not isinstance(entries, list):
+                    continue
+                kept = [h for h in entries if not _is_tenuo_hook(h, sub)]
+                if len(kept) != len(entries):
+                    removed = True
+                if kept:
+                    hooks[event] = kept
+                else:
+                    hooks.pop(event, None)
+            if not hooks:
+                settings.pop("hooks", None)
+            if removed:
+                if settings:
+                    settings_path.write_text(json.dumps(settings, indent=2))
+                    changed.append("unwired Tenuo hooks from .claude/settings.json")
+                else:
+                    settings_path.unlink()
+                    changed.append("removed .claude/settings.json (no other config)")
+
+    mcp_path = DEMO_DIR / ".mcp.json"
+    if mcp_path.exists():
+        try:
+            existing_mcp = json.loads(mcp_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            existing_mcp = None
+        if isinstance(existing_mcp, dict) and \
+                MCP_SERVER_NAME in (existing_mcp.get("mcpServers") or {}):
+            existing_mcp["mcpServers"].pop(MCP_SERVER_NAME, None)
+            if existing_mcp.get("mcpServers") == {}:
+                existing_mcp.pop("mcpServers", None)
+            if existing_mcp:
+                mcp_path.write_text(json.dumps(existing_mcp, indent=2) + "\n")
+                changed.append(f"removed the {MCP_SERVER_NAME} server from .mcp.json")
+            else:
+                mcp_path.unlink()
+                changed.append("removed .mcp.json (no other servers)")
+    return changed
 
 
 def ensure_state_dir() -> None:
@@ -2449,6 +2933,27 @@ def cmd_check(_args) -> None:
     mode = intended_mode(cfg)
     files = cloud_mode_files()
     _check_line(True, "mode", mode, None)
+    if managed_mode(cfg):
+        tid = trigger_id(cfg) or "?"
+        _check_line(True, "enterprise", "managed Cloud (local policy = overlay only)", None)
+        _check_line(True, "authority", f"Cloud trigger {tid}", None)
+        _check_line(True, "trust", "cloud root only", None)
+        if mode != "cloud" and not files["cloud_env"]:
+            ok = _check_line(
+                False, "managed", "cloud.managed set but no Cloud runtime configured",
+                "run `tenuo-admin setup` (managed mode requires a Cloud trigger)") and ok
+        widened = local_widened_tools(cfg, warrant_capabilities())
+        if widened:
+            _check_line(None, "attenuation",
+                        f"local widens Cloud warrant: {', '.join(widened)} (ignored)",
+                        "tenuo-admin setup")
+        else:
+            _check_line(True, "attenuation",
+                        "no extra local tools; constraint-level attenuation not verified", None)
+    _check_line(True, "posture",
+                "dry-run (observe-only)" if is_audit_mode(cfg) else "enforce", None)
+    for w in posture_warnings(cfg):
+        _check_line(None, "posture", w, "edit tenuo.yaml")
     if mode == "local" and any(files.values()):
         _check_line(None, "cloud files", "present but mode is local",
                     "remove/rename .state/cloud.env or run: tenuo-claude init --local")
@@ -2498,13 +3003,18 @@ def cmd_check(_args) -> None:
     elif mode == "local":
         _check_line(None, "warrant", "missing", "run: tenuo-claude init")
 
-    if authorizer_running(run_cfg):
+    # A managed authorizer is a systemd/launchd service reachable only via the Unix
+    # socket — invisible to the Docker-name runtime check. When the endpoint is Unix,
+    # trust a socket answer for liveness and use runtime metadata as detail only.
+    endpoint_mode, endpoint_loc = authz_endpoint()
+    st = _status_json()
+    running = bool(st) if endpoint_mode == "unix" else authorizer_running(run_cfg)
+    if running:
         mount = authorizer_mount_dir()
         meta = art.read_runtime_meta(mount)
         backend = meta.get("backend") or "unknown"
-        st = _status_json()
         running_ver = (st or {}).get("version")
-        ver_detail = f"up ({resolve_authz_url()}) | {backend}"
+        ver_detail = f"up ({authz_display()}) | {backend}"
         if running_ver:
             ver_detail += f" | v{running_ver}"
             if running_ver != pinned_ver:
@@ -2517,6 +3027,9 @@ def cmd_check(_args) -> None:
                 _check_line(True, "running authorizer", ver_detail)
         else:
             _check_line(True, "running authorizer", ver_detail)
+    elif endpoint_mode == "unix":
+        _check_line(None, "authorizer", f"down (unix {endpoint_loc})",
+                    "managed: restart the systemd/launchd service & check socket ownership")
     else:
         img = authorizer_image(run_cfg)
         img_ver = art.authorizer_crate_version(img)
@@ -2532,8 +3045,14 @@ def cmd_check(_args) -> None:
         print("  tenuo-claude init")
     elif mode == "cloud" and not files["cloud_state"]:
         print("  tenuo-admin setup && tenuo-claude up")
-    elif not authorizer_running(run_cfg):
-        print("  tenuo-claude up")
+    elif not running:
+        # Reuse the transport-aware liveness from above: a managed Unix socket is
+        # served by a SYSTEM service, not `tenuo-claude up`.
+        if endpoint_mode == "unix":
+            print("  # managed: (re)install/restart the systemd/launchd authorizer service,")
+            print("  #          then check the socket is root-owned")
+        else:
+            print("  tenuo-claude up")
     elif WARRANT.exists() and not warrant_expired():
         print("  tenuo-claude verify")
         print("  open Claude Code in this directory")
@@ -2668,11 +3187,11 @@ def cmd_bootstrap(args) -> None:
 
 
 def load_cloud_state() -> dict:
-    if CLOUD_STATE.exists():
-        try:
+    try:
+        if CLOUD_STATE.exists():
             return json.loads(CLOUD_STATE.read_text())
-        except Exception:
-            return {}
+    except Exception:
+        return {}
     return {}
 
 
@@ -2698,10 +3217,21 @@ def fire_session_warrant(cfg: dict, creds: dict) -> tuple[str, str]:
                              f"/v1/triggers/{tid}/fire", {"event_data": event})
     if status != 200 or not isinstance(body, dict) or not body.get("warrant"):
         raise SystemExit(trigger_fire_failure_message(status, body, tid))
-    root = (creds.get("root") or fetch_tenant_root(creds["url"], creds["api_key"])
-            or root_from_warrant_issuer(body["warrant"]))
+    # Resolve the trust anchor INDEPENDENTLY of the warrant: a pinned root
+    # (TENUO_TENANT_ROOT) or the authenticated Cloud /tenant lookup. Deriving the
+    # root from the warrant's own issuer would mean "trust whoever signed this",
+    # so it is allowed only in unmanaged Cloud mode (already a weaker trust model)
+    # and never in managed mode, where cloud-root-only is the whole point.
+    root = creds.get("root") or fetch_tenant_root(creds["url"], creds["api_key"])
+    if not root and not managed_mode(cfg):
+        root = root_from_warrant_issuer(body["warrant"])
     if not root:
-        raise SystemExit("Fired warrant but could not resolve tenant root for trust anchor.")
+        msg = "Fired warrant but could not resolve tenant root for trust anchor."
+        if managed_mode(cfg):
+            msg += ("\n  Managed mode pins trust to the tenant root (TENUO_TENANT_ROOT or the\n"
+                    "  authenticated Cloud /tenant lookup) and will NOT derive trust from the\n"
+                    "  warrant itself. Re-run `tenuo-admin setup` to record the tenant root.")
+        raise SystemExit(msg)
     return body["warrant"], root
 
 
@@ -2808,10 +3338,40 @@ def cmd_install_authorizer(args) -> None:
     print("Next: `tenuo-claude up --native`")
 
 
+def _assert_managed_runtime(cfg: dict, use_trigger: bool) -> None:
+    """In managed Cloud mode, authority MUST come from the Cloud trigger (a
+    root-signed warrant). Refuse to fall back to a local issuer / local mint and
+    fail closed, so a missing trigger or unreachable Cloud can never silently
+    downgrade a managed endpoint to self-signed local authority."""
+    if managed_mode(cfg) and not use_trigger:
+        raise SystemExit(
+            "Managed Cloud mode is enabled but no Cloud trigger is configured/reachable.\n"
+            "  Refusing to issue or trust a local warrant (fail-closed): in managed mode all\n"
+            "  authority must chain to the Cloud root. Fix: ensure the runtime token + trigger\n"
+            "  are present (`tenuo-admin setup`), or remove `cloud.managed` for local use.")
+
+
+def _attenuation_notice(cfg: dict) -> list[str]:
+    """Operator-facing lines about local→Cloud attenuation (managed mode).
+
+    Reads the active session warrant and reports any tools the local policy
+    governs that the Cloud warrant does not grant (widening, which is ignored).
+    """
+    widened = local_widened_tools(cfg, warrant_capabilities())
+    if not widened:
+        return []
+    return [
+        f"!! local policy widens the Cloud warrant: {', '.join(widened)}",
+        "   ignored in managed mode (not granted by Cloud — these calls are denied).",
+        "   to govern these tools, update the Cloud trigger: tenuo-admin setup",
+    ]
+
+
 def cmd_up(_args) -> None:
     cfg = load_config()
     creds = cloud_creds(cfg)
     use_trigger = bool(creds["url"] and creds["api_key"] and trigger_id(cfg))
+    _assert_managed_runtime(cfg, use_trigger)
 
     if not WARRANT.exists() and not use_trigger:
         raise SystemExit("Run `tenuo-claude init` first.")
@@ -2851,8 +3411,13 @@ def cmd_up(_args) -> None:
         warrant_b64, root = fire_session_warrant(cfg, creds)
         _record_fired_warrant(warrant_b64)
         denv["TENUO_TRUSTED_KEYS"] = root
-        print(f"Cloud mode (trigger {trigger_id(cfg)}): root-signed session warrant, "
-              f"trust anchor {root[:16]}…")
+        managed = managed_mode(cfg)
+        tag = "Managed Cloud mode" if managed else "Cloud mode"
+        print(f"{tag} (trigger {trigger_id(cfg)}): root-signed session warrant, "
+              f"trust anchor {root[:16]}… (cloud root only)")
+        if managed:
+            for line in _attenuation_notice(cfg):
+                print(f"  {line}")
     elif cloud:
         # Locally-minted warrant: trust the tenant root AND the local issuer.
         root = creds["root"] or fetch_tenant_root(cloud_url, api_key)
@@ -2883,8 +3448,9 @@ def cmd_up(_args) -> None:
     cmd_status(_args)
 
 
-def cmd_down(_args) -> None:
-    cfg = load_config()
+def _stop_authorizer(cfg: dict) -> bool:
+    """Stop the authorizer (native process or Docker container). Returns whether
+    anything was actually running. Shared by `down`, `disable`, and `uninstall`."""
     mount = authorizer_mount_dir()
     stopped = False
     if art.read_runtime_backend(mount) == "native" or art.native_pid_path(mount).is_file():
@@ -2895,15 +3461,110 @@ def cmd_down(_args) -> None:
             docker("rm", "-f", name)
             art.clear_runtime_meta(mount)
             stopped = True
-    if stopped:
-        print("Stopped authorizer.")
+    return stopped
+
+
+def cmd_down(_args) -> None:
+    cfg = load_config()
+    print("Stopped authorizer." if _stop_authorizer(cfg) else "Authorizer not running.")
+
+
+def _teardown_cfg() -> dict:
+    """Minimal config for teardown that works even when `tenuo.yaml` is missing or
+    broken. `disable`/`uninstall` must be able to clean up a half-removed project,
+    so we fall back to the project name recorded in `.state/state.json` (used only
+    to name the Docker container) rather than failing on `load_config`."""
+    try:
+        return load_config()
+    except SystemExit:
+        name = "tenuo-claude"
+        try:
+            if STATE_JSON.is_file():
+                name = json.loads(STATE_JSON.read_text()).get("name", name) or name
+        except (OSError, json.JSONDecodeError, ValueError):
+            pass
+        return {"name": name}
+
+
+def cmd_disable(_args) -> None:
+    """Turn governance off without deleting anything: remove Tenuo's hook wiring
+    so Claude Code / Cursor stop calling the authorizer, then stop it. Policy,
+    warrant, and keys are left in place — re-enable any time with `up` (or
+    re-wire with `init`). Works even if `tenuo.yaml` is missing or broken."""
+    cfg = _teardown_cfg()
+    changes = remove_claude_wiring()
+    stopped = _stop_authorizer(cfg)
+    if changes:
+        for line in changes:
+            print(f"  {line}")
     else:
-        print("Authorizer not running.")
+        print("  no Tenuo wiring found (nothing to unwire)")
+    print("Stopped authorizer." if stopped else "Authorizer was not running.")
+    if managed_mode(cfg):
+        print("Note: this only removes LOCAL wiring. Organization-managed enforcement "
+              "(MDM/managed settings) may still be active, and the next managed hook "
+              "will fail closed until `tenuo-claude up` restores a Cloud warrant.")
+    print("Governance disabled. Re-enable with `tenuo-claude up`, "
+          "or remove everything with `tenuo-claude uninstall`.")
+
+
+def cmd_uninstall(args) -> None:
+    """Full teardown: unwire hooks, stop the authorizer, and (unless --keep-state)
+    delete the local `.state` directory (warrant, signing keys, gateway, receipts,
+    and any Cloud credentials). `tenuo.yaml` is never touched. Works even if
+    `tenuo.yaml` is missing or broken, so a half-removed project can be cleaned up."""
+    cfg = _teardown_cfg()
+    keep_state = getattr(args, "keep_state", False)
+    targets = [] if keep_state else [p for p in (STATE,) if p.exists()]
+    if not getattr(args, "yes", False):
+        print("This will:")
+        print("  • remove Tenuo hooks from .claude/settings.json and .mcp.json")
+        print("  • stop the authorizer")
+        if targets:
+            print(f"  • DELETE {STATE} (warrant, signing keys, gateway, receipts, "
+                  "Cloud credentials)")
+        print("  tenuo.yaml is left untouched.")
+        try:
+            reply = input("Proceed? [y/N] ").strip().lower()
+        except EOFError:
+            reply = ""
+        if reply not in ("y", "yes"):
+            print("Aborted.")
+            return
+    changes = remove_claude_wiring()
+    stopped = _stop_authorizer(cfg)
+    for line in changes:
+        print(f"  {line}")
+    if stopped:
+        print("  stopped authorizer")
+    if keep_state:
+        print("  kept .state (--keep-state)")
+    else:
+        import shutil as _shutil
+        for path in targets:
+            _shutil.rmtree(path, ignore_errors=True)
+            print(f"  deleted {path}")
+    if managed_mode(cfg):
+        print("Note: organization-managed enforcement (MDM/managed settings) is not "
+              "removed by this command and may still be active; with local state gone, "
+              "the next managed hook fails closed until you re-enroll (`up`).")
+    print("Uninstalled. Re-install with `tenuo-claude init` (or `bootstrap`).")
 
 
 def _status_json():
+    mode, loc = authz_endpoint()
     try:
-        with urllib.request.urlopen(resolve_authz_url() + "/status", timeout=3) as resp:
+        if mode == "unix":
+            if os.name != "posix":
+                return None
+            # Reachability probe (diagnostic, not an enforcement decision): match the
+            # strictness of the active context so it doesn't false-pass/-fail.
+            ok, _ = _safe_managed_socket(loc, managed=_managed_enforce_pinned())
+            if not ok:
+                return None
+            status, raw = _UDSConnection(loc, timeout=3).request("GET", "/status")
+            return json.loads(raw.decode()) if status == 200 else None
+        with urllib.request.urlopen(loc + "/status", timeout=3) as resp:
             return json.loads(resp.read().decode())
     except Exception:
         return None
@@ -2926,12 +3587,24 @@ def cmd_status(_args) -> None:
             print(f"  expires   : {w.expires_at()}{flag}")
         except Exception:
             print("  expires   : <unreadable warrant>")
+    if managed_mode(cfg):
+        tid = trigger_id(cfg) or "?"
+        print("enterprise  : managed Cloud — local policy is overlay/attenuation only")
+        print(f"authority   : Cloud trigger {tid} (capability changes require `tenuo-admin setup`)")
+        print("trust       : cloud root only (local issuer not trusted)")
+        print("posture     : enforce (pinned by org)")
+        widened = local_widened_tools(cfg, warrant_capabilities())
+        if widened:
+            print(f"drift       : !! local policy widens Cloud warrant ({', '.join(widened)}); ignored")
+            print("fix         : add these tools to the Cloud trigger (tenuo-admin setup)")
     gov = ", ".join(cfg["enforce"].keys())
     aud = ", ".join(cfg.get("audit", []) or [])
     if is_audit_mode(cfg):
-        print("mode        : AUDIT — observe-only (decisions logged, NOT enforced)")
+        print("mode        : DRY-RUN — observe-only (decisions logged, NOT enforced)")
+    for w in posture_warnings(cfg):
+        print(f"posture     : !! {w}")
     print(f"enforced    : {gov or '<none>'}")
-    print(f"audit-allow : {aud or '<none>'}   | default: {default_mode(cfg)}")
+    print(f"audit-allow : {aud or '<none>'}   | default: {default_label(cfg)}")
     if has_approval_gates(cfg):
         cs = load_cloud_state()
         cloud_cfg = cfg.get("cloud") or {}
@@ -2957,10 +3630,16 @@ def cmd_status(_args) -> None:
         runtime = _authorizer_status_line(cfg)
         ver = s.get("version")
         ver_bit = f" v{ver}" if ver else ""
-        print(f"authorizer  : up ({resolve_authz_url()}) | {runtime}{ver_bit} | "
+        print(f"authorizer  : up ({authz_display()}) | {runtime}{ver_bit} | "
               f"cloud: {cp.get('status')} {cp.get('authorizer_id') or ''}")
     else:
-        print(f"authorizer  : down (run `tenuo-claude up`)")
+        ep_mode, ep_loc = authz_endpoint()
+        if ep_mode == "unix":
+            # Managed socket authorizers are SYSTEM services, not started by `up`.
+            print(f"authorizer  : down (unix {ep_loc}; restart the managed "
+                  f"systemd/launchd service & check socket ownership)")
+        else:
+            print("authorizer  : down (run `tenuo-claude up`)")
     sink_fail = receipt_sink_failure()
     if sink_fail:
         print(f"receipts    : !! AUDIT SINK BROKEN — last error: {sink_fail}")
@@ -3116,9 +3795,19 @@ def check_claude_hook_exit_contract() -> bool:
 
 def cmd_verify(args) -> None:
     """Policy-driven authorizer self-test from tenuo.yaml."""
-    if not _status_json():
-        raise SystemExit("Authorizer not running. Run `tenuo-claude up` first.")
     cfg = load_config()
+    apply_transport_env(cfg)
+    if not _status_json():
+        mode, loc = authz_endpoint()
+        if mode == "unix":
+            # The socket is served by the SYSTEM-managed daemon, not `up` (which only
+            # starts the user-scoped TCP authorizer). Point the admin at the service.
+            raise SystemExit(
+                f"No authorizer on unix socket {loc}. (Re)install/restart the managed "
+                "authorizer service (Linux: `systemctl restart tenuo-authorizer`; macOS: "
+                "`launchctl kickstart -k system/com.tenuo.authorizer`) and verify the socket "
+                "is root-owned under a root-owned dir — not `tenuo-claude up`.")
+        raise SystemExit("Authorizer not running. Run `tenuo-claude up` first.")
     deep = getattr(args, "deep", False)
     probes, _ = build_probes(cfg, deep=deep)
     roles = subagent_roles(cfg)
@@ -3187,6 +3876,24 @@ def cmd_verify(args) -> None:
                 extra.append(
                     f"    {'ok' if allowed else 'XX'} delete_deployment staging -> "
                     f"{'allowed (exempt)' if allowed else reason}")
+
+    mode, loc = authz_endpoint()
+    extra.append("  [transport]")
+    if mode == "unix":
+        managed = managed_mode(cfg)
+        safe, why = _safe_managed_socket(loc, managed=managed)
+        # In managed mode an untrusted socket is a hard failure: the whole point is
+        # to stop trusting an unauthenticated responder. Unmanaged, it's advisory.
+        if managed:
+            ok = ok and safe
+        extra.append(f"    {'ok' if safe else 'XX'} unix socket {loc} -> {why}")
+    else:
+        managed = managed_mode(cfg)
+        # Managed mode on loopback TCP can't authenticate the responder.
+        extra.append(
+            f"    {'!!' if managed else 'ok'} tcp {loc}"
+            + ("  (managed mode should use a unix socket; loopback TCP is unauthenticated)"
+               if managed else ""))
 
     if deep and not getattr(args, "no_live", False):
         ok = ok and check_claude_hook_exit_contract()
@@ -3420,10 +4127,22 @@ def cmd_refresh(args) -> None:
     was_running = authorizer_running(cfg)
 
     wid = refresh_policy(cfg)
-    print("Refreshed from tenuo.yaml:")
+    managed = managed_mode(cfg)
+    print("Refreshed local overlay and wiring:" if managed else "Refreshed from tenuo.yaml:")
     print(f"  warrant  : {wid}")
     print(f"  gateway  : .state/{GATEWAY.name}")
     print(f"  wiring   : .claude/settings.json, .mcp.json")
+    print(f"  posture  : {'dry-run (observe-only)' if is_audit_mode(cfg) else 'enforce'}")
+    for w in posture_warnings(cfg):
+        print(f"  !! {w}")
+    if managed:
+        tid = trigger_id(cfg) or "?"
+        print(f"  authority: unchanged — Cloud trigger {tid} (cloud root only)")
+        print("  note     : managed mode — local capability edits do NOT change Cloud")
+        print("             authority; they only narrow routing/UI. Capability changes")
+        print("             require admin/CI: tenuo-admin setup.")
+        for line in _attenuation_notice(cfg):
+            print(f"  {line}")
     if use_trigger:
         # In Cloud mode, warrant capabilities come from the TRIGGER, not this
         # refresh. Detect whether the capability-bearing policy actually drifted
@@ -3453,16 +4172,352 @@ def cmd_refresh(args) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Managed-mode templates (enterprise / MDM)
+#
+# These artifacts are what make managed Cloud mode enforceable against a
+# non-cooperative developer (threat T6): the `cloud.managed` flag and the
+# CLI's fail-closed behavior are cooperative ergonomics, but only an
+# org-deployed, highest-precedence settings tier plus a system-pinned
+# authorizer trust anchor actually prevent bypass. We GENERATE them (rather
+# than ship static files) because the hook command is machine-specific and
+# must resolve on every endpoint — a hand-written command is the #1 footgun.
+# ---------------------------------------------------------------------------
+
+MANAGED_SETTINGS_NAME = "managed-settings.json"
+MANAGED_MCP_NAME = "managed-mcp.json"
+SYSTEMD_UNIT_NAME = "tenuo-authorizer.service"
+LAUNCHD_PLIST_NAME = "com.tenuo.authorizer.plist"
+AUTHZ_ENV_NAME = "authorizer.env"
+
+# Where Claude Code reads file-based managed settings (outrank user/project/CLI).
+MANAGED_SETTINGS_PATHS = {
+    "macOS": "/Library/Application Support/ClaudeCode/managed-settings.json",
+    "Linux/WSL": "/etc/claude-code/managed-settings.json",
+    "Windows": r"C:\Program Files\ClaudeCode\managed-settings.json",
+}
+
+_ROOT_PLACEHOLDER = "REPLACE_WITH_TENANT_ROOT_HEX"
+_URL_PLACEHOLDER = "REPLACE_WITH_CONTROL_PLANE_URL"
+_NATIVE_BIN_PLACEHOLDER = "REPLACE_WITH_AUTHORIZER_BINARY"
+# Where the gateway config is deployed for a managed host (read-only, no keys).
+_MANAGED_GATEWAY = "/etc/tenuo/gateway"
+
+
+def managed_claude_settings(cfg: dict) -> dict:
+    """Highest-precedence Claude Code ``managed-settings.json`` that pins Tenuo.
+
+    Locks the fleet so a developer cannot remove, replace, or bypass governance:
+      - the Tenuo PreToolUse/PostToolUse hooks are pinned to the exact fail-closed
+        command we wire locally (absolute, ``/bin/sh``-guarded on POSIX);
+      - ``allowManagedHooksOnly`` blocks any user/project hook from loading;
+      - ``permissions.disableBypassPermissionsMode`` kills
+        ``--dangerously-skip-permissions``;
+      - ``allowManagedPermissionRulesOnly`` stops local allow/ask rules from
+        loosening policy;
+      - when an MCP proxy is configured, only the managed Tenuo server is admitted.
+    """
+    hook_timeout = APPROVAL_POLL_SECONDS + 30 if has_approval_gates(cfg) else 30
+    settings: dict = {
+        "hooks": {
+            # `_managed-hook` (not `_hook`): enforcement is anchored here in the
+            # MDM-pinned command, so local `mode: dry-run` / flag edits cannot
+            # downgrade a managed endpoint to observe-only.
+            "PreToolUse": [{"matcher": "*", "hooks": [
+                {"type": "command", "command": hook_wiring_command_string("_managed-hook"),
+                 "timeout": hook_timeout}]}],
+            "PostToolUse": [{"matcher": "*", "hooks": [
+                {"type": "command", "command": wiring_command_string("_post")}]}],
+        },
+        "allowManagedHooksOnly": True,
+        "allowManagedPermissionRulesOnly": True,
+        # Documented as the string "disable" (not a boolean). Both are part of the
+        # ENTERPRISE.md baseline: forbid --dangerously-skip-permissions AND the
+        # auto-accept permission mode, so the agent can't self-approve around hooks.
+        "permissions": {"disableBypassPermissionsMode": "disable",
+                        "disableAutoMode": "disable"},
+    }
+    if mcp_wiring(cfg):
+        settings["allowManagedMcpServersOnly"] = True
+        settings["allowedMcpServers"] = [{"serverName": MCP_SERVER_NAME}]
+    return settings
+
+
+def managed_mcp_config(cfg: dict) -> dict | None:
+    """``managed-mcp.json``: the Tenuo proxy as the admin-deployed MCP server.
+
+    Returns None when the policy declares no downstream MCP server. A deployed
+    managed-mcp.json takes exclusive control of MCP, so the agent can only reach
+    the governed proxy. Unlike `mcp_wiring`, this pins the ``_managed-mcp-proxy``
+    entrypoint so enforcement is anchored in the managed artifact (local
+    ``mode: dry-run`` / flag edits cannot make it forward denied calls).
+    """
+    if not cfg.get("mcp", {}).get("downstream"):
+        return None
+    cmd, args = wiring_command_parts("_managed-mcp-proxy")
+    return {"mcpServers": {MCP_SERVER_NAME: {"command": cmd, "args": args}}}
+
+
+def _template_root(cfg: dict) -> str:
+    """Resolve the tenant CLOUD ROOT for the authorizer trust anchor, offline.
+
+    Never derived from a warrant (see fire_session_warrant). Falls back to a
+    loud placeholder so a misconfigured template fails obviously, not silently.
+    """
+    return (cloud_creds(cfg).get("root") or load_cloud_state().get("root")
+            or _ROOT_PLACEHOLDER)
+
+
+def _authz_docker_argv(cfg: dict) -> list[str]:
+    """``docker`` arguments for a system-managed authorizer.
+
+    The crux of the managed trust model lives here: ``TENUO_TRUSTED_KEYS`` is the
+    tenant CLOUD ROOT *only* — no local issuer is ever appended, so a
+    locally-minted warrant cannot verify. Secrets (the runtime key) come from an
+    ``--env-file`` so they never land in the unit/plist. The pinned image tag is
+    the version floor; do not float to ``:latest``.
+    """
+    url = cloud_creds(cfg).get("url") or _URL_PLACEHOLDER
+    sock_dir = os.path.dirname(DEFAULT_AUTHZ_SOCKET)
+    # Serve on a root-owned Unix socket, NOT loopback TCP: the hook authenticates
+    # the responder by file ownership (see `_safe_managed_socket`), which a port
+    # cannot provide. No `-p` publish: there is no TCP surface to race.
+    #
+    # `-u 0:0` is REQUIRED: the image's default user is uid 1000, but systemd creates
+    # the socket's RuntimeDirectory root-owned 0755, which a non-root container user
+    # cannot write to (it fails with EACCES on socket bind). Forcing root lets the
+    # daemon create the socket AND makes the bind-mounted socket root-owned on the
+    # host — exactly the ownership `_safe_managed_socket(managed=True)` trusts. A
+    # 1000-owned dir would be insecure on a typical workstation where the developer
+    # IS uid 1000 and could replace the socket.
+    #
+    # `--socket-mode 0666`: the socket stays root-OWNED (the trust anchor), but the
+    # unprivileged Claude hook must be able to CONNECT. Connect permission is not the
+    # trust boundary — the authorizer authorizes by warrant/PoP, and only root could
+    # have placed a root-owned socket under the root-owned dir — so 0666 is safe. To
+    # tighten, drop this and pass `--socket-group <gid>` (default 0660) with the
+    # developers in that group instead.
+    return [
+        "run", "--rm", "--name", "tenuo-authorizer",
+        "-u", "0:0",
+        "-v", "/etc/tenuo/gateway:/state:ro",
+        "-v", f"{sock_dir}:{sock_dir}",
+        "--env-file", f"/etc/tenuo/{AUTHZ_ENV_NAME}",
+        "-e", f"TENUO_TRUSTED_KEYS={_template_root(cfg)}",
+        "-e", f"TENUO_CONTROL_PLANE_URL={url}",
+        "-e", f"TENUO_AUTHORIZER_NAME={cfg.get('name', 'tenuo-claude')}",
+        authorizer_image(cfg),
+        "serve", "--config", f"/state/{GATEWAY.name}",
+        "--socket", DEFAULT_AUTHZ_SOCKET, "--socket-mode", "0666",
+    ]
+
+
+def authorizer_env_template(_cfg: dict) -> str:
+    return (
+        "# Tenuo authorizer runtime secrets — root-owned, chmod 0600.\n"
+        "# Use a RUNTIME / service-account key only. NEVER an admin key here\n"
+        "# (separation of duties: the runtime plane only fires triggers / consumes\n"
+        "# warrants).\n"
+        "TENUO_API_KEY=REPLACE_WITH_RUNTIME_KEY\n"
+        "# Or, instead of TENUO_API_KEY, a Quick Connect token:\n"
+        "# TENUO_CONNECT_TOKEN=REPLACE_WITH_CONNECT_TOKEN\n"
+    )
+
+
+def systemd_unit_template(cfg: dict) -> str:
+    docker_cmd = "/usr/bin/docker " + " ".join(shlex.quote(a) for a in _authz_docker_argv(cfg))
+    runtime_dir = os.path.basename(os.path.dirname(DEFAULT_AUTHZ_SOCKET))  # e.g. "tenuo" -> /run/tenuo
+    # RuntimeDirectory creates /run/<dir> (== /var/run/<dir>) owned by root, 0755,
+    # before ExecStart and tears it down on stop — so the socket the hook trusts
+    # always lives under a root-owned, non-world-writable directory.
+    return f"""[Unit]
+Description=Tenuo Authorizer (managed, cloud-root-only)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+RuntimeDirectory={runtime_dir}
+RuntimeDirectoryMode=0755
+ExecStartPre=-/usr/bin/docker rm -f tenuo-authorizer
+ExecStart={docker_cmd}
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
+def _template_native_bin(cfg: dict) -> str:
+    """Path to the native authorizer binary for a host (non-Docker) managed daemon.
+
+    macOS needs this: Docker Desktop runs the container inside a Linux VM, so a UDS
+    the container creates is not a macOS-kernel socket the Claude hook can connect
+    to. A macOS managed rollout must therefore run a NATIVE host authorizer that owns
+    the macOS socket directly. Falls back to a loud placeholder.
+    """
+    return (cfg.get("authorizer") or {}).get("binary") or _NATIVE_BIN_PLACEHOLDER
+
+
+def launchd_plist_template(cfg: dict) -> str:
+    sock_dir = os.path.dirname(DEFAULT_AUTHZ_SOCKET)
+    q = shlex.quote
+    # macOS runs the authorizer NATIVELY (not via Docker): a container UDS lives in
+    # the Linux VM and is unreachable from the macOS host, so a Docker-backed managed
+    # rollout would fail closed. The LaunchDaemon runs as root, so it creates the
+    # socket dir root-owned (0755), sources the root-owned env-file for the runtime
+    # key, and execs the native authorizer with the cloud-root-only trust anchor.
+    env_file = f"/etc/tenuo/{AUTHZ_ENV_NAME}"
+    cfg_path = f"{_MANAGED_GATEWAY}/{GATEWAY.name}"
+    # --socket-mode 0666: root-OWNED socket (the trust anchor) that the unprivileged
+    # hook can still connect to. See _authz_docker_argv for why connect != trust.
+    serve = (f"env TENUO_TRUSTED_KEYS={q(_template_root(cfg))} "
+             f"TENUO_CONTROL_PLANE_URL={q(cloud_creds(cfg).get('url') or _URL_PLACEHOLDER)} "
+             f"TENUO_AUTHORIZER_NAME={q(cfg.get('name', 'tenuo-claude'))} "
+             f"{q(_template_native_bin(cfg))} serve --config {q(cfg_path)} "
+             f"--socket {q(DEFAULT_AUTHZ_SOCKET)} --socket-mode 0666")
+    wrapper = (f"mkdir -p {q(sock_dir)} && chmod 0755 {q(sock_dir)} && "
+               f"set -a && . {q(env_file)} && exec {serve}")
+    argv = ["/bin/sh", "-c", wrapper]
+    args_xml = "\n".join(f"    <string>{a}</string>" for a in argv)
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.tenuo.authorizer</string>
+  <key>ProgramArguments</key>
+  <array>
+{args_xml}
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+</dict>
+</plist>
+"""
+
+
+def _managed_artifacts(cfg: dict, platform: str = "all") -> dict[str, str]:
+    """Ordered {filename: contents} for managed-mode artifacts.
+
+    ``platform`` scopes the OS-specific service unit so a fleet rollout gets only the
+    artifacts it needs: ``linux`` emits the systemd unit (Docker), ``macos`` emits the
+    launchd plist (native authorizer), ``all`` emits both. The settings, MCP and env
+    artifacts are platform-agnostic and always included.
+    """
+    out = {MANAGED_SETTINGS_NAME: json.dumps(managed_claude_settings(cfg), indent=2) + "\n"}
+    mcp = managed_mcp_config(cfg)
+    if mcp:
+        out[MANAGED_MCP_NAME] = json.dumps(mcp, indent=2) + "\n"
+    if platform in ("all", "linux"):
+        out[SYSTEMD_UNIT_NAME] = systemd_unit_template(cfg)
+    if platform in ("all", "macos"):
+        out[LAUNCHD_PLIST_NAME] = launchd_plist_template(cfg)
+    out[AUTHZ_ENV_NAME] = authorizer_env_template(cfg)
+    return out
+
+
+_TARGET_FILES = {
+    "claude-settings": MANAGED_SETTINGS_NAME,
+    "managed-mcp": MANAGED_MCP_NAME,
+    "systemd": SYSTEMD_UNIT_NAME,
+    "launchd": LAUNCHD_PLIST_NAME,
+    "env": AUTHZ_ENV_NAME,
+}
+
+
+def _print_managed_guidance(cfg: dict, artifacts: dict[str, str]) -> None:
+    print("\nDeploy (org-managed; outranks user/project/CLI):")
+    if MANAGED_SETTINGS_NAME in artifacts:
+        print(f"  {MANAGED_SETTINGS_NAME} → one of:")
+        for osname, path in MANAGED_SETTINGS_PATHS.items():
+            print(f"      {osname:10} {path}")
+    if MANAGED_MCP_NAME in artifacts:
+        print(f"  {MANAGED_MCP_NAME} → the ClaudeCode dir alongside managed-settings.json")
+    print(f"  {AUTHZ_ENV_NAME} → /etc/tenuo/{AUTHZ_ENV_NAME}  (root-owned, chmod 0600)")
+    if SYSTEMD_UNIT_NAME in artifacts:
+        print(f"  {SYSTEMD_UNIT_NAME} → /etc/systemd/system/  (Linux: Docker; systemctl enable --now tenuo-authorizer)")
+    if LAUNCHD_PLIST_NAME in artifacts:
+        print(f"  {LAUNCHD_PLIST_NAME} → /Library/LaunchDaemons/  (macOS: NATIVE authorizer; launchctl load)")
+    print(f"  also deploy the generated .state/gateway.yaml to {_MANAGED_GATEWAY}/.")
+    if LAUNCHD_PLIST_NAME in artifacts:
+        print("  macOS runs the authorizer natively, not via Docker: a container Unix socket")
+        print("  lives in the Linux VM and the macOS hook cannot reach it.")
+    if _template_root(cfg) == _ROOT_PLACEHOLDER:
+        print(f"\n!! tenant root unresolved: replace '{_ROOT_PLACEHOLDER}' with the tenant")
+        print("   cloud root hex (tenuo-admin / `status` shows the trust anchor) before deploying.")
+    if LAUNCHD_PLIST_NAME in artifacts:
+        nb = _template_native_bin(cfg)
+        if nb == _NATIVE_BIN_PLACEHOLDER:
+            print(f"\n!! macOS authorizer path unresolved: pass `--authorizer-bin /path/to/tenuo-authorizer`")
+            print(f"   (or set authorizer.binary in tenuo.yaml) so the plist execs a real binary")
+            print(f"   instead of '{_NATIVE_BIN_PLACEHOLDER}'.")
+        else:
+            print(f"\n   macOS authorizer binary: {nb}")
+            print("   (confirm this path exists on the target macs; override with --authorizer-bin).")
+    print("\nNote: managed enforcement also requires the authorizer to be SYSTEM-pinned")
+    print("(the unit/plist above) so a developer cannot run their own permissive one.")
+
+
+def cmd_managed_template(args) -> None:
+    """Generate org-managed (MDM) templates that pin Tenuo governance fleet-wide."""
+    cfg = load_config()
+    if getattr(args, "bin", None):
+        # Pin a uniform fleet-wide launcher path into the hook command.
+        os.environ["TENUO_CLAUDE_BIN"] = args.bin
+    if getattr(args, "authorizer_bin", None):
+        # Bake the native (macOS) authorizer path into the launchd plist so admins
+        # don't hand-edit the placeholder.
+        az = cfg.get("authorizer")
+        if not isinstance(az, dict):
+            az = {}
+            cfg["authorizer"] = az
+        az["binary"] = args.authorizer_bin
+    platform = getattr(args, "platform", "all") or "all"
+    artifacts = _managed_artifacts(cfg, platform)
+    target = getattr(args, "target", "all") or "all"
+    out = getattr(args, "out", None)
+
+    if target != "all":
+        fname = _TARGET_FILES[target]
+        if fname not in artifacts:
+            if target in ("systemd", "launchd"):
+                raise SystemExit(
+                    f"{target}: excluded by --platform {platform} "
+                    f"(systemd is linux, launchd is macos).")
+            raise SystemExit(f"{target}: nothing to generate (no `mcp.downstream` in policy).")
+        if not out:
+            print(artifacts[fname], end="")
+            return
+        selected = {fname: artifacts[fname]}
+    else:
+        selected = artifacts
+
+    out_dir = Path(out or "./tenuo-managed")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for fname, content in selected.items():
+        (out_dir / fname).write_text(content)
+        print(f"wrote {out_dir / fname}")
+    _print_managed_guidance(cfg, selected)
+
+
+# ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
 
 COMMANDS = {
     "init": cmd_init, "refresh": cmd_refresh, "up": cmd_up, "down": cmd_down, "status": cmd_status,
+    "disable": cmd_disable, "uninstall": cmd_uninstall,
     "check": cmd_check, "onboard": cmd_onboard, "bootstrap": cmd_bootstrap,
     "install-authorizer": cmd_install_authorizer,
+    "managed-template": cmd_managed_template,
     "audit": cmd_audit, "revoke": cmd_revoke,
     "verify": cmd_verify, "doctor": cmd_doctor, "demo": cmd_demo, "bench": cmd_bench,
-    "_hook": cmd_hook, "_post": cmd_post, "_mcp-proxy": cmd_mcp_proxy,
+    "_hook": cmd_hook, "_managed-hook": cmd_managed_hook,
+    "_post": cmd_post, "_mcp-proxy": cmd_mcp_proxy,
+    "_managed-mcp-proxy": cmd_managed_mcp_proxy,
 }
 
 
@@ -3470,8 +4525,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog=CLI_COMMAND, description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd")
-    for name in ["down", "status", "check", "revoke", "_hook", "_post", "_mcp-proxy"]:
+    for name in ["down", "status", "check", "revoke",
+                 "_hook", "_managed-hook", "_post", "_mcp-proxy", "_managed-mcp-proxy"]:
         sub.add_parser(name)
+    sub.add_parser("disable",
+                   help="turn governance off (unwire hooks + stop authorizer; keeps policy/state)")
+    pun = sub.add_parser("uninstall",
+                         help="full teardown: unwire hooks, stop authorizer, delete .state")
+    pun.add_argument("--yes", "-y", action="store_true", help="skip the confirmation prompt")
+    pun.add_argument("--keep-state", action="store_true",
+                     help="keep .state (warrant, keys, gateway, receipts); only unwire + stop")
     pu = sub.add_parser("up", help="start the authorizer (Docker or native binary)")
     pu.add_argument("--native", action="store_true",
                     help="run tenuo-authorizer as a host process (no Docker)")
@@ -3484,6 +4547,23 @@ def main() -> None:
         help="install the pinned tenuo-authorizer binary to ~/.tenuo/bin",
     )
     pi_auth.add_argument("--force", action="store_true", help="reinstall even if version matches")
+    pmt = sub.add_parser(
+        "managed-template",
+        help="generate org-managed (MDM) templates that pin governance fleet-wide")
+    pmt.add_argument("--out", metavar="DIR",
+                     help="write all artifacts to DIR (default ./tenuo-managed for `all`)")
+    pmt.add_argument("--target",
+                     choices=["all", "claude-settings", "managed-mcp", "systemd", "launchd", "env"],
+                     default="all",
+                     help="emit one artifact to stdout (default: all, written to --out)")
+    pmt.add_argument("--bin", metavar="PATH",
+                     help="pin a uniform fleet-wide tenuo-claude launcher path in the hook command")
+    pmt.add_argument("--platform", choices=["all", "linux", "macos"], default="all",
+                     help="which OS service artifact to emit: linux (systemd/Docker), "
+                          "macos (launchd/native), or all (default)")
+    pmt.add_argument("--authorizer-bin", metavar="PATH",
+                     help="native authorizer binary path baked into the macOS launchd plist "
+                          "(avoids hand-editing the placeholder)")
     pr = sub.add_parser("refresh",
                         help="re-apply tenuo.yaml (warrant, gateway, hooks) after policy edits")
     pr.add_argument("--no-restart", action="store_true",
@@ -3553,13 +4633,14 @@ def main() -> None:
     if args.cmd != "install-authorizer":
         bind_project_paths(
             sys.modules[__name__],
-            fallback_cwd=args.cmd in ("init", "onboard", "bootstrap"),
+            fallback_cwd=args.cmd in ("init", "onboard", "bootstrap", "disable", "uninstall"),
         )
     # Separation of duties: the runtime/agent plane must never carry an admin
     # credential. Admin actions live in `tenuo-admin`. Skip the internal hook
     # handlers — they have their own fail-closed contract and must emit a deny
     # decision rather than raise (a raised SystemExit would be fail-open).
-    if args.cmd not in ("_hook", "_post", "_mcp-proxy", "onboard", "bootstrap", "install-authorizer"):
+    if args.cmd not in ("_hook", "_managed-hook", "_post", "_mcp-proxy", "_managed-mcp-proxy",
+                        "onboard", "bootstrap", "install-authorizer"):
         assert_no_admin_key()
     COMMANDS[args.cmd](args)
 

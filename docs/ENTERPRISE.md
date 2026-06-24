@@ -196,7 +196,10 @@ The result is a deployment where security owns the policy, the developer can't q
 
 2. **Provision runtime credentials.** Each developer or machine gets an Authorizer-Only runtime token (zero standing privilege: it fires the trigger for a short-lived warrant and cannot modify policy).
 
-3. **Pin Tenuo via managed settings.** Through your MDM or Claude Enterprise admin console, deploy `managed-settings.json` that registers the Tenuo `PreToolUse` hook and the MCP proxy, sets `allowManagedHooksOnly: true`, and sets `permissions.disableBypassPermissionsMode: "disable"` and `permissions.disableAutoMode: "disable"`.
+3. **Pin Tenuo via managed settings.** Generate the pinned artifacts with `tenuo-claude managed-template --platform linux|macos --bin /opt/tenuo/bin/tenuo-claude` (add `--authorizer-bin /opt/tenuo/bin/tenuo-authorizer` for macOS). Through your MDM or Claude Enterprise admin console, deploy `managed-settings.json` and, when `mcp.downstream` is configured, the generated `managed-mcp.json`. The settings register the managed Tenuo `PreToolUse` hook, set `allowManagedHooksOnly: true`, set `allowManagedPermissionRulesOnly: true`, and set `permissions.disableBypassPermissionsMode: "disable"` and `permissions.disableAutoMode: "disable"`.
+
+   Abbreviated shape (use the generated file, because the guarded command contains
+   shell quoting and the exact deny JSON):
 
    ```json
    {
@@ -206,13 +209,14 @@ The result is a deployment where security owns the policy, the developer can't q
            "matcher": "*",
            "hooks": [
              { "type": "command",
-               "command": "/bin/sh -c 'if [ -x /opt/tenuo/bin/tenuo-claude ]; then exec /opt/tenuo/bin/tenuo-claude _hook; else printf %s \"<deny JSON>\"; exit 2; fi'",
+               "command": "/bin/sh -c 'if [ -x /opt/tenuo/bin/tenuo-claude ]; then exec /opt/tenuo/bin/tenuo-claude _managed-hook; else printf %s \"<deny JSON>\"; exit 2; fi'",
                "timeout": 180 }
-           ]
-         }
-       ]
+             ]
+           }
+         ]
      },
      "allowManagedHooksOnly": true,
+     "allowManagedPermissionRulesOnly": true,
      "permissions": {
        "disableBypassPermissionsMode": "disable",
        "disableAutoMode": "disable"
@@ -220,7 +224,7 @@ The result is a deployment where security owns the policy, the developer can't q
    }
    ```
 
-   Pin the hook command exactly as `tenuo-claude init` emits it. On POSIX that is the `/bin/sh -c` guard shown above: if the org-installed launcher is missing or not executable, it prints a deny decision and exits 2, so the tool is blocked rather than silently allowed. (Pinning the bare `tenuo-claude _hook` without this guard loses that fail-closed behavior.) `allowManagedHooksOnly` blocks user and project hooks from shadowing it; the `disable*` flags forbid `--dangerously-skip-permissions` and auto-accept. JSON has no comments, so the deny payload is abbreviated here as `<deny JSON>`.
+   Pin the hook command exactly as `tenuo-claude managed-template` emits it. On POSIX that is the `/bin/sh -c` guard shown above with `_managed-hook`: if the org-installed launcher is missing or not executable, it prints a deny decision and exits 2, so the tool is blocked rather than silently allowed. (Pinning bare `tenuo-claude _hook` loses both the fail-closed launcher guard and the managed posture floor.) `allowManagedHooksOnly` blocks user and project hooks from shadowing it; `allowManagedPermissionRulesOnly` stops local permission rules from loosening policy; the `disable*` flags forbid `--dangerously-skip-permissions` and auto-accept. JSON has no comments, so the deny payload is abbreviated here as `<deny JSON>`.
 
 4. **Route consequential tools through the gateway.** Point Claude's MCP access at the org-run gateway (Tenuo authorizer inline), and ensure downstream systems require gateway-mediated, warrant-bearing calls.
 

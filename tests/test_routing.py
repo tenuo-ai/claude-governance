@@ -23,7 +23,10 @@ def test_mcp_tool_name(cli_mod, name, expected):
 # --- default_mode / catchall_cap -------------------------------------------
 
 @pytest.mark.parametrize("value,expected", [
-    (None, "deny"), ("deny", "deny"), ("audit", "audit"),
+    (None, "deny"), ("deny", "deny"),
+    ("allow", "audit"),   # canonical permissive spelling -> internal audit token
+    ("ALLOW", "audit"),
+    ("audit", "audit"),   # deprecated alias still maps to permissive
     ("AUDIT", "audit"), ("nonsense", "deny"),
 ])
 def test_default_mode(cli_mod, make_cfg, value, expected):
@@ -31,9 +34,141 @@ def test_default_mode(cli_mod, make_cfg, value, expected):
     assert cli_mod.default_mode(cfg) == expected
 
 
+@pytest.mark.parametrize("value,label", [
+    ("deny", "deny"), ("allow", "allow"), ("audit", "allow"),
+    ("nonsense", "deny"), (None, "deny"),
+])
+def test_default_label(cli_mod, make_cfg, value, label):
+    assert cli_mod.default_label(make_cfg(default=value)) == label
+
+
 def test_catchall_cap(cli_mod, make_cfg):
     assert cli_mod.catchall_cap(make_cfg(default="deny")) == "unlisted"
     assert cli_mod.catchall_cap(make_cfg(default="audit")) == "audit"
+    assert cli_mod.catchall_cap(make_cfg(default="allow")) == "audit"
+
+
+# --- posture: mode dry-run / audit alias / warnings ------------------------
+
+@pytest.mark.parametrize("value,observe", [
+    ("enforce", False),
+    ("dry-run", True),      # canonical observe-only
+    ("dry_run", True),      # forgiving spelling
+    ("audit", True),        # deprecated alias still works
+    ("AUDIT", True),        # case-insensitive
+    (None, False),          # default is enforce
+    ("allow", False),       # belongs on default:, not mode: -> fail-closed to enforce
+    ("nonsense", False),    # unknown -> enforce
+])
+def test_policy_mode_and_is_audit_mode(cli_mod, make_cfg, value, observe):
+    cfg = make_cfg(mode=value)
+    assert cli_mod.is_audit_mode(cfg) is observe
+    assert cli_mod.policy_mode(cfg) == (cli_mod.MODE_DRY_RUN if observe else cli_mod.MODE_ENFORCE)
+
+
+def test_posture_warnings_clean_for_canonical(cli_mod, make_cfg):
+    assert cli_mod.posture_warnings(make_cfg(mode="enforce", default="deny")) == []
+    assert cli_mod.posture_warnings(make_cfg(mode="dry-run", default="allow")) == []
+
+
+def test_posture_warnings_flags_deprecated_audit_mode(cli_mod, make_cfg):
+    warns = cli_mod.posture_warnings(make_cfg(mode="audit"))
+    assert any("deprecated" in w and "dry-run" in w for w in warns)
+
+
+def test_posture_warnings_flags_unknown_mode(cli_mod, make_cfg):
+    warns = cli_mod.posture_warnings(make_cfg(mode="observe"))
+    assert any("not recognized" in w and "enforce" in w for w in warns)
+
+
+def test_posture_warnings_default_allow_is_valid(cli_mod, make_cfg):
+    """`default: allow` is the canonical permissive catch-all: no warning, and it
+    routes to the permissive (audit) capability rather than fail-closed deny."""
+    assert cli_mod.posture_warnings(make_cfg(default="allow")) == []
+    assert cli_mod.default_mode(make_cfg(default="allow")) == "audit"
+
+
+def test_posture_warnings_flags_deprecated_default_audit(cli_mod, make_cfg):
+    warns = cli_mod.posture_warnings(make_cfg(default="audit"))
+    assert any("deprecated" in w and "default: allow" in w for w in warns)
+
+
+def test_posture_warnings_flags_unknown_default(cli_mod, make_cfg):
+    warns = cli_mod.posture_warnings(make_cfg(default="nonsense"))
+    assert any("not recognized" in w and "deny" in w for w in warns)
+
+
+# --- managed Cloud mode ----------------------------------------------------
+
+def test_managed_mode_from_resolved_flag(cli_mod, make_cfg):
+    assert cli_mod.managed_mode(make_cfg(_managed=True)) is True
+    assert cli_mod.managed_mode(make_cfg(_managed=False)) is False
+
+
+def test_managed_mode_from_cloud_policy_without_disk(cli_mod):
+    """cloud.managed short-circuits before reading cloud_state.json from disk."""
+    assert cli_mod.managed_mode({"cloud": {"managed": True}}) is True
+
+
+def test_managed_pins_enforce_posture(cli_mod, make_cfg):
+    # dry-run is observe-only on an unmanaged endpoint...
+    assert cli_mod.is_audit_mode(make_cfg(mode="dry-run", _managed=False)) is True
+    # ...but managed Cloud mode pins it to enforce (never observe-only).
+    assert cli_mod.is_audit_mode(make_cfg(mode="dry-run", _managed=True)) is False
+
+
+def test_posture_warning_notes_managed_pin(cli_mod, make_cfg):
+    warns = cli_mod.posture_warnings(make_cfg(mode="dry-run", _managed=True))
+    assert any("pinned to enforce" in w and "managed" in w for w in warns)
+
+
+def test_managed_enforce_pinned_reads_env(cli_mod, monkeypatch):
+    monkeypatch.delenv("TENUO_MANAGED_ENFORCE", raising=False)
+    assert cli_mod._managed_enforce_pinned() is False
+    monkeypatch.setenv("TENUO_MANAGED_ENFORCE", "1")
+    assert cli_mod._managed_enforce_pinned() is True
+    monkeypatch.setenv("TENUO_MANAGED_ENFORCE", "0")
+    assert cli_mod._managed_enforce_pinned() is False
+
+
+def test_pinned_managed_hook_overrides_local_observe(cli_mod, make_cfg, monkeypatch):
+    """P1 regression: a developer who edits local state to drop the managed flag
+    AND set mode: dry-run must NOT be able to make the MDM-pinned hook observe-only."""
+    cfg = make_cfg(mode="dry-run", _managed=False)
+    assert cli_mod.is_audit_mode(cfg) is True  # editable view: observe-only
+    # The pinned `_managed-hook` sets this env; it can't be forged away locally.
+    monkeypatch.setenv("TENUO_MANAGED_ENFORCE", "1")
+    assert cli_mod.managed_mode(cfg) is True
+    assert cli_mod.is_audit_mode(cfg) is False  # enforce, regardless of local edits
+
+
+def test_local_widened_tools_flags_tools_absent_from_warrant(cli_mod, make_cfg):
+    cfg = make_cfg(audit=["WebSearch"])
+    cap = cli_mod.audit_map(cfg)["WebSearch"]
+    # Warrant grants nothing -> the locally-governed tool is a widening.
+    assert cli_mod.local_widened_tools(cfg, {}) == [cap]
+    # Warrant grants it -> local merely narrows/matches, no widening.
+    assert cli_mod.local_widened_tools(cfg, {cap: {}}) == []
+    # No readable warrant -> we can't tell, so we make no widening claim.
+    assert cli_mod.local_widened_tools(cfg, None) == []
+
+
+def test_local_widened_tools_ignores_synthetic_catchall(cli_mod, make_cfg):
+    # default: allow adds the synthetic 'audit' catch-all cap; it's a routing
+    # artifact, not a grant, so it must never count as widening.
+    cfg = make_cfg(default="allow")
+    assert cli_mod.CATCHALL_AUDIT not in cli_mod.local_widened_tools(cfg, {})
+
+
+def test_assert_managed_runtime_fails_closed_without_trigger(cli_mod, make_cfg):
+    """The core security invariant: managed mode must NOT fall back to a local
+    warrant when no Cloud trigger is available."""
+    with pytest.raises(SystemExit):
+        cli_mod._assert_managed_runtime(make_cfg(_managed=True), use_trigger=False)
+    # Managed + a Cloud trigger present -> allowed.
+    cli_mod._assert_managed_runtime(make_cfg(_managed=True), use_trigger=True)
+    # Unmanaged -> local/Cloud fallback is fine, never raises.
+    cli_mod._assert_managed_runtime(make_cfg(_managed=False), use_trigger=False)
 
 
 # --- audit_map --------------------------------------------------------------
@@ -221,7 +356,7 @@ def test_load_config_never_auto_audits_command_exec_tools(cli_mod, monkeypatch, 
     """The shipped harness bundle is auto-audited (allow+log). A command-exec tool
     slipping into it would grant an unconstrained shell, so load_config drops them."""
     cfg_file = tmp_path / "tenuo.yaml"
-    cfg_file.write_text("name: t\nsandbox: ./sb\ndefault: audit\n")
+    cfg_file.write_text("name: t\nsandbox: ./sb\ndefault: allow\n")
     monkeypatch.setattr(cli_mod, "CONFIG_FILE", cfg_file, raising=False)
     monkeypatch.setattr(cli_mod, "CLOUD_PROFILE", tmp_path / "none1", raising=False)
     monkeypatch.setattr(cli_mod, "ADVANCED_PROFILE", tmp_path / "none2", raising=False)

@@ -31,6 +31,7 @@ def make_cfg():
             "audit": [],
             "default": "deny",
             "mode": "enforce",
+            "_managed": False,
         }
         cfg.update(over)
         return cfg
@@ -51,6 +52,7 @@ def bound(monkeypatch, tmp_path):
     binding = {
         "DEMO_DIR": tmp_path,
         "STATE": state,
+        "STATE_JSON": state / "state.json",
         "GATEWAY": state / "gateway.yaml",
         "SRL": state / "srl.cbor",
         "AGENTS_DIRS": (agents, tmp_path / "no-such-user-agents"),

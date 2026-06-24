@@ -5,13 +5,13 @@
 # These are only what the CLI / hooks / MCP proxy import.
 #
 # `tenuo` is pinned in lockstep with the authorizer image tag
-# (tenuo 0.1.0b24  <->  tenuo/authorizer:0.1.0-beta.24) and bundles `tenuo_core`.
+# (tenuo 0.2.0  <->  tenuo/authorizer:0.2.0-authz.3) and bundles `tenuo_core`.
 #
 #   uv sync                    # preferred — see pyproject.toml
 #   python3 -m pip install -r requirements.txt
 #
 # Requires Python >= 3.10 (uses `X | None` annotations and the walrus operator).
 
-tenuo==0.1.0b24
+tenuo==0.2.0
 mcp>=1.0
 PyYAML>=6.0

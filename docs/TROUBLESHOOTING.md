@@ -198,6 +198,51 @@ tenuo-claude check && tenuo-claude up
 tenuo-claude demo
 ```
 
+### How do I turn governance off?
+
+`tenuo-claude down` only stops the authorizer; the `PreToolUse` hook is still
+wired, so the next tool call fails closed (authorizer unreachable). To actually
+stop governance, remove the wiring:
+
+```bash
+tenuo-claude disable      # unwire hooks + stop authorizer; keeps policy/warrant
+# re-enable later with:
+tenuo-claude up
+```
+
+To remove everything (also deletes `.state/`: warrant, keys, gateway, receipts,
+Cloud credentials — `tenuo.yaml` is left untouched):
+
+```bash
+tenuo-claude uninstall            # prompts first
+tenuo-claude uninstall --yes      # no prompt
+tenuo-claude uninstall --keep-state   # unwire + stop, but keep .state
+```
+
+### My agent is blocked but I'm in Cursor, not Claude Code
+
+Cursor can import and run a project's `.claude/settings.json` (including the
+Tenuo `PreToolUse` hook) when **Settings → Rules, Skills, Subagents → "Include
+third-party Plugins, Skills, and other configs"** is on. With that enabled, the
+Cursor agent's tool calls go through the authorizer too. To stop it, either turn
+that Cursor setting off, or run `tenuo-claude disable` to remove the wiring. The
+**Hooks** output channel (bottom panel) shows which config the firing hook came
+from.
+
+### `mode:` / `default:` doesn't seem to take effect
+
+Run `tenuo-claude check` (or `status`) and look at the `posture` line. An
+*unrecognized* value is treated as the safe default (`enforce` / `deny`) and
+flagged there rather than silently applied.
+
+`mode:` and `default:` are different switches. `mode:` is global:
+`mode: dry-run` logs but blocks nothing, even tools listed under `enforce:`
+(the old `mode: audit` is an alias). `default:` is only the catch-all for
+unlisted tools: `default: allow` logs-and-allows them, `default: deny` blocks
+them (the old `default: audit` is an alias for `allow`). In `mode: dry-run`,
+`default:` has no effect because nothing is enforced. To stop blocking
+everything while still logging, set `mode: dry-run`, not `default: allow`.
+
 ---
 
 ## Policy changes
@@ -206,7 +251,7 @@ tenuo-claude demo
 
 | Change | Command |
 |--------|---------|
-| `mode: audit` ↔ `mode: enforce` only | `tenuo-claude refresh` |
+| `mode: dry-run` ↔ `mode: enforce` only | No command is strictly required for the native hook; `tenuo-claude refresh` is safe and keeps wiring/gateway state tidy |
 | `enforce`, `mcp`, `subagents`, approval overlay (Cloud) | `tenuo-admin setup` then `tenuo-claude refresh` or `up` |
 | Local-only project (no Cloud) | `tenuo-claude refresh` |
 

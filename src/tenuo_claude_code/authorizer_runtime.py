@@ -23,12 +23,17 @@ from typing import Callable
 
 import certifi
 
-DEFAULT_IMAGE = "tenuo/authorizer:0.1.0-beta.24"
+DEFAULT_IMAGE = "tenuo/authorizer:0.2.0-authz.3"
 DEFAULT_AUTHORIZER_PORT = 9090
 AUTHORIZER_PORT_ENV = "TENUO_AUTHORIZER_PORT"
 LEGACY_AUTHORIZER_PORT_ENV = "PORT"
 RELEASE_REPO = "tenuo-ai/tenuo"
 _INFO_VERSION_RE = re.compile(r"^Tenuo Authorizer v(\S+)", re.MULTILINE)
+# Docker tags can't contain '+', so the authorizer's `+authz.N` semver build
+# metadata is rendered as `-authz.N` in the image tag (e.g. `0.2.0-authz.2` is
+# semver `0.2.0+authz.2`). Strip that suffix to recover the crate version while
+# leaving genuine pre-release identifiers like `-beta.24` intact.
+_TAG_BUILD_META_RE = re.compile(r"[-+]authz\.[0-9A-Za-z.-]+$")
 
 
 def authorizer_port_env_hint() -> str:
@@ -55,8 +60,15 @@ def managed_binary_path() -> Path:
 
 
 def authorizer_crate_version(image: str = DEFAULT_IMAGE) -> str:
-    """Crates.io / Docker tag for the pinned authorizer (e.g. ``0.1.0-beta.24``)."""
-    return image.rsplit(":", 1)[-1].lstrip("v")
+    """Crate version for the pinned authorizer, matching what the binary reports.
+
+    The image tag renders semver build metadata ``+authz.N`` as ``-authz.N`` (Docker
+    tags forbid ``+``), so tag ``0.2.0-authz.2`` is crate ``0.2.0`` — which is what the
+    authorizer's ``/status`` and ``crate_version_from_authorizer_version`` produce. A
+    real pre-release like ``0.1.0-beta.24`` is preserved.
+    """
+    tag = image.rsplit(":", 1)[-1].lstrip("v")
+    return _TAG_BUILD_META_RE.sub("", tag)
 
 
 def release_tag(image: str = DEFAULT_IMAGE) -> str:

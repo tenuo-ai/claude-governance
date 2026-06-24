@@ -4427,6 +4427,19 @@ def _template_root(cfg: dict) -> str:
             or _ROOT_PLACEHOLDER)
 
 
+def _cfg_authorizer(cfg: dict) -> dict:
+    """The ``authorizer`` sub-dict, created (and attached) if missing/malformed.
+
+    Lets callers mutate ``cfg["authorizer"]`` keys without repeating the
+    get-or-create dance.
+    """
+    az = cfg.get("authorizer")
+    if not isinstance(az, dict):
+        az = {}
+        cfg["authorizer"] = az
+    return az
+
+
 def _authz_socket_flags(cfg: dict) -> list[str]:
     """Connect-permission flags (``serve``) for the root-owned managed socket.
 
@@ -4434,12 +4447,11 @@ def _authz_socket_flags(cfg: dict) -> list[str]:
     trust boundary (`_safe_managed_socket`). The default ``0666`` is world-
     connectable so the unprivileged Claude hook can reach it. Enterprises that want
     to tighten CONNECT without hand-editing units set ``authorizer.socket_group``:
-    the socket then defaults to ``0660`` and is connectable only by that group.
-    ``authorizer.socket_mode`` overrides the mode explicitly.
+    the socket then uses ``0660`` and is connectable only by that group.
     """
     authz = cfg.get("authorizer") or {}
     group = authz.get("socket_group")
-    mode = str(authz.get("socket_mode") or ("0660" if group else "0666"))
+    mode = "0660" if group else "0666"
     flags = ["--socket-mode", mode]
     if group:
         flags += ["--socket-group", str(group)]
@@ -4650,11 +4662,9 @@ def cmd_managed_template(args) -> None:
     if getattr(args, "authorizer_bin", None):
         # Bake the native (macOS) authorizer path into the launchd plist so admins
         # don't hand-edit the placeholder.
-        az = cfg.get("authorizer")
-        if not isinstance(az, dict):
-            az = {}
-            cfg["authorizer"] = az
-        az["binary"] = args.authorizer_bin
+        _cfg_authorizer(cfg)["binary"] = args.authorizer_bin
+    if getattr(args, "socket_group", None):
+        _cfg_authorizer(cfg)["socket_group"] = args.socket_group
     platform = getattr(args, "platform", "all") or "all"
     artifacts = _managed_artifacts(cfg, platform)
     target = getattr(args, "target", "all") or "all"
@@ -4744,6 +4754,9 @@ def main() -> None:
     pmt.add_argument("--authorizer-bin", metavar="PATH",
                      help="native authorizer binary path baked into the macOS launchd plist "
                           "(avoids hand-editing the placeholder)")
+    pmt.add_argument("--socket-group", metavar="GROUP",
+                     help="harden the managed authorizer socket: chgrp the root-owned socket "
+                          "to GROUP and use connect mode 0660")
     pr = sub.add_parser("refresh",
                         help="re-apply tenuo.yaml (warrant, gateway, hooks) after policy edits")
     pr.add_argument("--no-restart", action="store_true",

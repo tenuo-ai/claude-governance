@@ -108,14 +108,14 @@ The keys above are the `tenuo.yaml` DSL's convenient subset. The underlying tenu
 
 For internal egress, `WebFetch` also accepts `cidrs:` to allow hosts by IP range (e.g. `cidrs: ["10.0.0.0/8"]` alongside `domains:`). It's off by default and reaches past public domains and SSRF private-network defaults, so add it deliberately.
 
-**Command-execution tools.** `Bash`, `PowerShell`, and `Monitor` all execute commands and are each governed independently (their own constraint on the `command` argument). `Monitor` runs the same shell commands as `Bash` in the background; `PowerShell` is a different dialect, so prefer `oneof`/`pattern`/`regex` over `shlex` (which parses POSIX syntax) for it. If your team enables `PowerShell` or `Monitor` in Claude Code, list them under `enforce:` too. Left unlisted they fall to `default`: `deny` blocks them, but `allow` logs them **unconstrained**, so on `default: allow` give every enabled shell an explicit constraint.
+**Command-execution tools.** `Bash`, `PowerShell`, and `Monitor` all execute commands and are each governed independently (their own constraint on the `command` argument). `Monitor` runs the same shell commands as `Bash` in the background; `PowerShell` is a different dialect, so prefer `oneof`/`pattern`/`regex` over `shlex` (which parses POSIX syntax) for it. If your team enables `PowerShell` or `Monitor` in Claude Code, list them under `enforce:` too. Left unlisted they fall to `default` (`deny`, or `approve` for a Cloud approval gate). Never put a shell on the `allow:` permit-list either: that grants it **unconstrained**. Always govern shells with an explicit `enforce:` constraint.
 
 **MCP tool arguments.** Under `mcp.enforce:`, a bare constraint string targets the `path` argument. To constrain a differently-named argument use `arg: NAME` + `constraint:`, and to constrain several at once use `args: {NAME: constraint, …}`. This works for any downstream MCP tool and any constraint kind, locally and on Cloud. Tools you don't list are still allowed/denied by `default` and can be human-approval gated (`approval:`); they just aren't argument-constrained.
 
-**`mode:` and `default:` are two independent switches.** `mode:` is the global posture for **every** tool; `default:` is only the catch-all for tools you **didn't** list.
+**Three lists, plus two switches.** Put tools under `enforce:` (constrained), `allow:` (permitted but **unconstrained**: allowed and logged), and let everything else fall to `default:`. `mode:` is the global posture for **every** tool; `default:` is only the catch-all for tools in neither list.
 
 - **`mode: enforce`** blocks denied calls. **`mode: dry-run`** computes and logs the same decisions but blocks nothing, even for tools listed under `enforce:`; use it to shadow a policy, then switch to `enforce`. (`mode: audit` is a deprecated alias for `dry-run`.)
-- **`default: deny`** denies any tool not listed (recommended, fail-closed). **`default: allow`** logs-and-allows unlisted tools instead. (`default: audit` is a deprecated alias for `allow`.)
+- **`default: deny`** denies any unlisted tool (recommended, fail-closed). **`default: approve`** routes unlisted tools to a human-approval gate instead (Tenuo Cloud only; locally it falls back to deny). There is no permissive catch-all: `default: allow` / `default: audit` are no longer supported (enforce must not fail open) and collapse to `deny`. To permit specific tools without a constraint, list them under `allow:`; to observe everything without blocking, use `mode: dry-run`.
 - In `mode: dry-run` nothing is enforced, so `default:` has no effect until you switch back to `enforce`.
 - **`subagents:`** declares roles; spawning is gated to those roles, and each runs under the session warrant **attenuated** to its `tools` (it can only ever do less than the session). [Details](docs/DETAILS.md#subagents).
 - **`ttl_seconds:`** sets the session warrant lifetime in seconds (positive integer; default `3600` = 1h). `up` re-mints before expiry. Enterprise rollouts pin it centrally through Claude Code managed settings / MDM (the policy file is what managed settings pins); local dev sets it directly. A shorter TTL shrinks the blast radius of a leaked warrant.
@@ -133,7 +133,7 @@ Day to day, you mostly need `up` (start), `audit` (review), and `refresh` (after
 | `init` | Compile an **existing** `tenuo.yaml`: mint the warrant, wire the PreToolUse hook and MCP proxy. Pass `--scaffold` to write an example if none exists (it no longer does so automatically). |
 | `up` / `down` | Start / stop the authorizer (auto-selects Docker or native; `--native` to force). |
 | `refresh` | Recompile after editing `tenuo.yaml` (restarts the authorizer if running). In Cloud mode, warns if capability rules drifted from the last `tenuo-admin setup`. |
-| `verify [--deep]` | Self-test the live policy against the authorizer (no Claude session needed). `--deep` adds an SSRF / encoded-IP matrix and extra Bash deny cases — a reproducible artifact for security review; when the local Claude CLI can load project settings, it also runs a live PreToolUse exit-code harness. |
+| `verify [--deep]` | Self-test the live policy against the authorizer (no Claude session needed). `--deep` adds an SSRF / encoded-IP matrix and extra Bash deny cases, a reproducible artifact for security review; when the local Claude CLI can load project settings, it also runs a live PreToolUse exit-code harness. |
 | `audit [--tail N]` | Show the decision log (`.state/receipts.jsonl`). |
 | `check` | Preflight: dependencies, wiring, audit-sink health, leaked admin keys, and (Cloud) control-plane bindings. |
 | `status` | Warrant, mode, audit-sink health, and Cloud summary. |
@@ -181,8 +181,13 @@ Two keys, kept apart; the runtime never sees the admin key:
 
 ```bash
 mkdir my-project && cd my-project
-tenuo-claude bootstrap --cloud      # runtime token from --connect-token/env, or prompts if missing; then sets up + verifies
+# First Cloud setup needs BOTH keys from the table above: the runtime Quick Connect
+# token (fires the warrant) AND the tenant-admin key in ~/.tenuo/admin.env (the
+# `tenuo-admin setup` step that publishes + signs the template).
+tenuo-claude bootstrap --cloud      # runtime token from --connect-token/env (prompts if missing); runs setup, then verifies
 ```
+
+> First-time Cloud setup requires **both** credentials: the runtime token and the tenant-admin key. Every session after that needs only the runtime token.
 
 Every session after that:
 
@@ -198,9 +203,9 @@ CI / non-interactive and manual step-by-step setup: [docs/DETAILS.md § Tenuo Cl
 
 ### Human approval (Cloud)
 
-A gated capability returns a third outcome, `approval-required`, instead of allow/deny. The hook opens a Cloud approval request, waits for an approver on their notification channel (Slack, Telegram, console, …), then re-authorizes with their **signed, identity-bound** approval — so the receipt records *who* approved. Add an `approval:` block to **any enforced native tool** (e.g. `Bash`), **any `mcp.enforce` tool**, or `WebFetch`; an optional `exempt:` lets safe argument values skip the gate. `default: approve` gates every unlisted tool.
+A gated capability returns a third outcome, `approval-required`, instead of allow/deny. The hook opens a Cloud approval request, waits for an approver on their notification channel (Slack, Telegram, console, …), then re-authorizes with their **signed, identity-bound** approval, so the receipt records *who* approved. Add an `approval:` block to **any enforced native tool** (e.g. `Bash`), **any `mcp.enforce` tool**, or `WebFetch`; an optional `exempt:` lets safe argument values skip the gate. `default: approve` gates every unlisted tool.
 
-**Human approval requires Tenuo Cloud — anywhere (native hook, MCP proxy, or catch-all).** The gate lives in the Cloud-issued warrant, so without Cloud an approval-gated tool falls back to **deny** (fail-closed); `tenuo-claude check` warns when a gate is configured but Cloud isn't. First time setting this up? Follow the step-by-step [approval setup runbook](docs/DETAILS.md#approval-setup-runbook) (the approver identity and its notification channel are created in the Tenuo Cloud console). Policy shape and mechanics: [docs/DETAILS.md § Human approval](docs/DETAILS.md#human-approval-cloud).
+**Human approval requires Tenuo Cloud, anywhere (native hook, MCP proxy, or catch-all).** The gate lives in the Cloud-issued warrant, so without Cloud an approval-gated tool falls back to **deny** (fail-closed); `tenuo-claude check` warns when a gate is configured but Cloud isn't. First time setting this up? Follow the step-by-step [approval setup runbook](docs/DETAILS.md#approval-setup-runbook) (the approver identity and its notification channel are created in the Tenuo Cloud console). Policy shape and mechanics: [docs/DETAILS.md § Human approval](docs/DETAILS.md#human-approval-cloud).
 
 ![Receipt drill-down: a human approval with the approver identity and request hash](https://raw.githubusercontent.com/tenuo-ai/claude-governance/main/docs/images/cloud-receipt-approval-detail.png)
 

@@ -3,7 +3,7 @@
 Common setup and runtime issues for **tenuo-claude-code**. For install paths see
 [README.md](../README.md). For behavior details see [DETAILS.md](DETAILS.md).
 
-Run **`tenuo-claude check`** first — it validates credentials, wiring drift, and
+Run **`tenuo-claude check`** first. It validates credentials, wiring drift, and
 (when Cloud is configured) live agent/trigger/holder bindings before you start the
 authorizer.
 
@@ -67,7 +67,7 @@ Use `tenuo-claude check && tenuo-claude up`, or re-onboard with
 | **Runtime** (Quick Connect, Authorizer Only) | `.state/cloud.env` | `tenuo-claude up`, hooks, trigger fire |
 | **Tenant admin** | `~/.tenuo/admin.env` | `tenuo-admin setup` only |
 
-Runtime must **never** see the admin key — `tenuo-claude` refuses to start if
+Runtime must **never** see the admin key; `tenuo-claude` refuses to start if
 `TENUO_ADMIN_KEY` is exported in the shell.
 
 ### Quick Connect: Authorizer Only or Agent + Authorizer?
@@ -123,7 +123,7 @@ tenuo-claude check && tenuo-claude up
 ```
 
 If `check` shows **`admin.env missing`**, add your tenant-admin key to
-`~/.tenuo/admin.env` — `check` then compares the local holder key to Cloud and
+`~/.tenuo/admin.env`; `check` then compares the local holder key to Cloud and
 dry-runs the trigger fire before `up`.
 
 ### `Refusing to run: TENUO_ADMIN_KEY is present in the runtime environment`
@@ -145,7 +145,7 @@ Keep admin credentials only in `~/.tenuo/admin.env` for `tenuo-admin`.
 
 ### `Warrant expired — refreshing…` then an error
 
-Normal prefix — `up` tries to refresh the session warrant. If refresh fails, see
+Normal prefix: `up` tries to refresh the session warrant. If refresh fails, see
 Cloud errors above or run `tenuo-claude check`.
 
 ### Port 9090 already in use
@@ -211,7 +211,7 @@ tenuo-claude up
 ```
 
 To remove everything (also deletes `.state/`: warrant, keys, gateway, receipts,
-Cloud credentials — `tenuo.yaml` is left untouched):
+Cloud credentials; `tenuo.yaml` is left untouched):
 
 ```bash
 tenuo-claude uninstall            # prompts first
@@ -238,16 +238,19 @@ flagged there rather than silently applied.
 `mode:` and `default:` are different switches. `mode:` is global:
 `mode: dry-run` logs but blocks nothing, even tools listed under `enforce:`
 (the old `mode: audit` is an alias). `default:` is only the catch-all for
-unlisted tools: `default: allow` logs-and-allows them, `default: deny` blocks
-them (the old `default: audit` is an alias for `allow`). In `mode: dry-run`,
-`default:` has no effect because nothing is enforced. To stop blocking
-everything while still logging, set `mode: dry-run`, not `default: allow`.
+unlisted tools: `default: deny` blocks them (fail-closed), `default: approve`
+routes them to a Cloud human-approval gate. `default: allow` / `default: audit`
+are no longer supported (enforce must not fail open) and collapse to `deny`. In
+`mode: dry-run`, `default:` has no effect because nothing is enforced. To stop
+blocking everything while still logging, set `mode: dry-run` (there is no
+permissive default); to permit specific tools unconstrained, list them under
+`allow:`.
 
 ---
 
 ## Policy changes
 
-### I edited `tenuo.yaml` — what do I run?
+### I edited `tenuo.yaml`: what do I run?
 
 | Change | Command |
 |--------|---------|

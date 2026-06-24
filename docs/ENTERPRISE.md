@@ -244,6 +244,57 @@ The result is a deployment where security owns the policy, the developer can't q
    and must itself be root-owned. Default rollout uses mode `srw-rw-rw-`; hardened
    group rollout uses mode `srw-rw----` with the configured group.
 
+## Operating the authorizer
+
+On a managed deployment the authorizer is not the user-scoped `tenuo-claude up` process. It is a system service the org installs, and the developer can neither stop nor replace it:
+
+- **Linux:** a `systemd` unit (`tenuo-authorizer`) that runs the pinned authorizer container and serves a Unix socket at `/var/run/tenuo/authorizer.sock`.
+- **macOS:** a `launchd` LaunchDaemon (`com.tenuo.authorizer`) that runs the native authorizer (Docker Desktop's socket lives in a VM the host cannot reach, so the container path would fail closed).
+
+Generate, install, and start these from the `managed-template` artifacts; the full sequence is in [`examples/managed/README.md`](../examples/managed/README.md):
+
+```bash
+# Linux, on each managed device:
+sudo cp tenuo-authorizer.service /etc/systemd/system/
+sudo systemctl enable --now tenuo-authorizer
+
+# macOS:
+sudo cp com.tenuo.authorizer.plist /Library/LaunchDaemons/
+sudo launchctl load /Library/LaunchDaemons/com.tenuo.authorizer.plist
+```
+
+**Why a socket, not a port.** The hook authenticates the authorizer by OS file ownership, not by a port number. Any local process can bind a loopback TCP port if the real authorizer is down and answer "allow"; a root-owned socket under a root-owned directory cannot be replaced by an unprivileged developer. The service runs as root so the socket it creates is root-owned (that ownership is the trust anchor), and the managed hook refuses any socket that is not (`_safe_managed_socket`). Connect permission is a separate, weaker knob: the default `0666` lets the unprivileged hook reach the root-owned socket, and `--socket-group tenuo` tightens that to a group (`0660`) without changing ownership.
+
+**Health and verification.** `check`, `status`, and `verify` are transport-aware. In managed socket mode they report `unix:///var/run/tenuo/authorizer.sock`, and when it is down they point at the service rather than at `tenuo-claude up` (which only starts the user-scoped TCP authorizer):
+
+```bash
+tenuo-claude check        # dependencies, wiring, socket-aware authorizer liveness
+tenuo-claude status       # warrant, posture, transport endpoint, Cloud summary
+tenuo-claude verify       # self-test the live policy against the authorizer
+sudo ls -ld /var/run/tenuo && sudo ls -l /var/run/tenuo/authorizer.sock   # ownership
+journalctl -u tenuo-authorizer        # Linux service logs
+```
+
+To recover a down socket: `systemctl restart tenuo-authorizer` (Linux) or `launchctl kickstart -k system/com.tenuo.authorizer` (macOS), then re-check ownership.
+
+## Failure modes and break-glass
+
+Managed mode fails closed by design. Stopping or breaking the authorizer does not disable governance; it blocks the governed tools.
+
+- **Authorizer unreachable.** If the socket is missing or not answering, the hook denies the call (`authorizer unreachable, denying`) instead of letting it through.
+- **Untrusted socket.** If the socket or its parent directory is not root-owned, the managed hook refuses it outright (`refusing untrusted authorizer socket`) and never connects, so a developer cannot stand up their own permissive authorizer on the managed path.
+- **No transport downgrade.** Managed mode ignores an inherited `TENUO_AUTHZ_TRANSPORT=tcp` and stays on the Unix socket, so a developer cannot env their way back to the spoofable loopback port.
+- **Warrant expiry.** Warrants are short-lived (default 1h) and ride in every request header; they are re-minted before expiry, and an expired warrant denies until refreshed.
+- **Cloud reachability.** The warrant and trust anchor are local to the running authorizer, so enforcement continues if Tenuo Cloud is briefly unreachable. What needs Cloud is the control-plane functions: minting or re-firing warrants, human approvals (approval-gated calls deny while Cloud is unreachable), receipt delivery, and revocation propagation.
+
+**Break-glass.** To re-enable loopback TCP during a migration or incident (for example before the socket authorizer is live), an admin drops a root-owned marker file:
+
+```bash
+sudo install -m 0600 -o root /dev/null /etc/tenuo/allow_insecure_tcp
+```
+
+This is deliberately a root-owned file under `/etc/tenuo`, never an environment variable: the hook inherits the developer's environment, so an env-based escape would let any local user re-enable the unauthenticated-TCP downgrade. Only someone who can write under `/etc/tenuo` (an admin, via MDM) can flip it, and the marker is ignored unless it is a regular, root-owned, non-world-writable file under a root-owned directory. Delete it to return to socket-only enforcement.
+
 ## Limits
 
 - Layer 2 is client-side. It is robust on MDM-managed, non-admin devices, but a user with root on an unmanaged machine can tamper with the client. Treat managed devices as the boundary, and rely on Layer 3 (the gateway) and Layer 4 (evidence and revocation) for guarantees that do not depend on the endpoint.

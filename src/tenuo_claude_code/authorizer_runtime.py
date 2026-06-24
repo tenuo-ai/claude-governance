@@ -361,8 +361,39 @@ def fetch_health(authz_url: str) -> dict | None:
         return None
 
 
+def fetch_health_unix(socket_path: str) -> dict | None:
+    """Check /health over a Unix domain socket using a raw HTTP/1.1 request."""
+    import http.client
+
+    class _UnixHTTPConnection(http.client.HTTPConnection):
+        def __init__(self, socket_path: str) -> None:
+            super().__init__("localhost")
+            self._socket_path = socket_path
+
+        def connect(self) -> None:
+            self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.sock.settimeout(self.timeout)
+            self.sock.connect(self._socket_path)
+
+    try:
+        conn = _UnixHTTPConnection(socket_path)
+        conn.timeout = 2
+        conn.request("GET", "/health")
+        resp = conn.getresponse()
+        data = json.loads(resp.read().decode())
+        conn.close()
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
 def is_tenuo_authorizer_health(authz_url: str) -> bool:
     health = fetch_health(authz_url)
+    return bool(health and health.get("service") == "tenuo-authorizer")
+
+
+def is_tenuo_authorizer_health_unix(socket_path: str) -> bool:
+    health = fetch_health_unix(socket_path)
     return bool(health and health.get("service") == "tenuo-authorizer")
 
 
@@ -457,11 +488,21 @@ def start_native(
     srl_name: str | None,
     state: Path,
     image: str = DEFAULT_IMAGE,
+    socket_path: str | None = None,
 ) -> None:
+    """Start the native authorizer process.
+
+    When *socket_path* is provided the authorizer is launched with
+    ``--socket <socket_path>`` and does not bind any TCP port.  The caller is
+    responsible for passing a matching ``authz_url`` (ignored in socket mode;
+    health is checked via the socket).
+    """
     gw = mount / gateway_name
     if not gw.is_file():
         raise SystemExit(f"Missing {gw} — run `tenuo-claude init` first.")
-    assert_port_available(port, authz_url, mount)
+    if socket_path is None:
+        # TCP mode: ensure the port is free before starting.
+        assert_port_available(port, authz_url, mount)
     ensure_binary_version(binary, image)
     stop_native(mount)
     # Scoped environment: pass only what the authorizer process needs.
@@ -482,12 +523,19 @@ def start_native(
         env["TENUO_REVOCATION_LIST"] = str((mount / srl_name).resolve())
     log_path = native_log_path(state)
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        str(binary), "serve",
-        "--config", str(gw.resolve()),
-        "--port", str(port),
-        "--bind", "127.0.0.1",
-    ]
+    if socket_path is not None:
+        cmd = [
+            str(binary), "serve",
+            "--config", str(gw.resolve()),
+            "--socket", socket_path,
+        ]
+    else:
+        cmd = [
+            str(binary), "serve",
+            "--config", str(gw.resolve()),
+            "--port", str(port),
+            "--bind", "127.0.0.1",
+        ]
     with log_path.open("a", encoding="utf-8") as logfh:
         logfh.write(f"\n--- native authorizer start {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} ---\n")
         proc = subprocess.Popen(
@@ -498,7 +546,10 @@ def start_native(
             start_new_session=True,
         )
     native_pid_path(mount).write_text(str(proc.pid))
-    write_runtime_meta(mount, backend="native", binary=str(binary.resolve()))
+    meta: dict[str, object] = {"backend": "native", "binary": str(binary.resolve())}
+    if socket_path is not None:
+        meta["socket"] = socket_path
+    write_runtime_meta(mount, **meta)
 
 
 def wait_healthy(
@@ -507,13 +558,26 @@ def wait_healthy(
     is_running: Callable[[], bool],
     on_exited: Callable[[], None] | None = None,
     timeout_s: float = 20.0,
+    socket_path: str | None = None,
 ) -> None:
+    """Poll until the authorizer reports healthy or the process exits.
+
+    When *socket_path* is provided, health is checked over the Unix socket
+    rather than TCP.
+    """
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         try:
-            with urllib.request.urlopen(authz_url + "/health", timeout=2):
+            if socket_path is not None:
+                healthy = fetch_health_unix(socket_path) is not None
+            else:
+                with urllib.request.urlopen(authz_url + "/health", timeout=2):
+                    healthy = True
+            if healthy:
                 return
         except Exception:
+            healthy = False
+        if not healthy:
             if not is_running():
                 if on_exited:
                     on_exited()

@@ -106,7 +106,9 @@ Before deploying, replace the loud placeholders in the service/env files:
    --managed`; developers should never receive a tenant-admin key.
 2. Generate artifacts with `tenuo-claude managed-template --platform linux|macos
    --bin /opt/tenuo/bin/tenuo-claude`. For hardened Linux rollout, add
-   `--socket-group tenuo` and provision that group before starting Claude.
+   `--socket-group tenuo` and provision that group (create it and add each
+   governed user) before starting the authorizer service, and before users
+   launch Claude, since the group controls socket connect permission.
 3. Replace `REPLACE_WITH_TENANT_ROOT_HEX`, `REPLACE_WITH_CONTROL_PLANE_URL`, and
    `REPLACE_WITH_RUNTIME_KEY`. Use a runtime/service-account key only.
 4. Deploy `managed-settings.json` through Claude Enterprise, MDM, or the OS managed

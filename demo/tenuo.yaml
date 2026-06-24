@@ -15,6 +15,12 @@ mode: dry-run
 # Files Claude may touch. {sandbox} below expands to this absolute path.
 sandbox: ./sandbox
 
+# Session warrant lifetime in seconds. Optional; defaults to 3600 (1h). `up`
+# re-mints before expiry. Enterprise deployments pin this centrally via Claude
+# Code managed settings / MDM (the policy file is what managed settings pins);
+# local dev can just set it here. Must be a positive integer.
+# ttl_seconds: 3600
+
 # Optional Tenuo Cloud (root-signed warrants, signed audit stream). Not required
 # for local mode. Tool overlay: `tenuo-claude init --cloud` → tenuo.cloud.yaml.
 # Optional human-approval overlay: tenuo.advanced.yaml. See tenuo.yaml.advanced.example.
@@ -68,10 +74,10 @@ enforce:
 
 # Harness-inert tools (Task*, plan mode, AskUserQuestion, …) ship in the
 # bundled package list (`src/tenuo_claude_code/data/harness_tools.yaml`) and
-# merge at load time. Add site-specific audit-allows:
-# audit_extra:
+# merge at load time. Add site-specific permitted tools (unconstrained) here:
+# allow:
 #   - MyCustomHarnessTool
-# audit_bundled: false   # disable bundled list (not recommended)
+# allow_bundled: false   # disable bundled list (not recommended)
 
 # DEFAULT for everything else. Any unknown/future tool: deny, with a signed
 # receipt. Only the enforced + audit lists above are permitted. Set to "allow"

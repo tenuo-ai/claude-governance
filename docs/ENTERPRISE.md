@@ -196,7 +196,7 @@ The result is a deployment where security owns the policy, the developer can't q
 
 2. **Provision runtime credentials.** Each developer or machine gets an Authorizer-Only runtime token (zero standing privilege: it fires the trigger for a short-lived warrant and cannot modify policy).
 
-3. **Pin Tenuo via managed settings.** Generate the pinned artifacts with `tenuo-claude managed-template --platform linux|macos --bin /opt/tenuo/bin/tenuo-claude` (add `--authorizer-bin /opt/tenuo/bin/tenuo-authorizer` for macOS). Through your MDM or Claude Enterprise admin console, deploy `managed-settings.json` and, when `mcp.downstream` is configured, the generated `managed-mcp.json`. The settings register the managed Tenuo `PreToolUse` hook, set `allowManagedHooksOnly: true`, set `allowManagedPermissionRulesOnly: true`, and set `permissions.disableBypassPermissionsMode: "disable"` and `permissions.disableAutoMode: "disable"`.
+3. **Pin Tenuo via managed settings.** Generate the pinned artifacts with `tenuo-claude managed-template --platform linux|macos --bin /opt/tenuo/bin/tenuo-claude` (add `--authorizer-bin /opt/tenuo/bin/tenuo-authorizer` for macOS). Linux fleets can add `--socket-group tenuo` to generate a root-owned, group-connectable `0660` authorizer socket instead of the easier default `0666` socket. Through your MDM or Claude Enterprise admin console, deploy `managed-settings.json` and, when `mcp.downstream` is configured, the generated `managed-mcp.json`. The settings register the managed Tenuo `PreToolUse` hook, set `allowManagedHooksOnly: true`, set `allowManagedPermissionRulesOnly: true`, and set `permissions.disableBypassPermissionsMode: "disable"` and `permissions.disableAutoMode: "disable"`.
 
    Abbreviated shape (use the generated file, because the guarded command contains
    shell quoting and the exact deny JSON):
@@ -231,6 +231,18 @@ The result is a deployment where security owns the policy, the developer can't q
 5. **Wire evidence.** Connect Tenuo Cloud receipts to your SIEM over OpenTelemetry, configure approval routing (Slack/console) for the actions that need sign-off, and confirm fleet revocation.
 
 6. **Roll out in `dry-run`, then `enforce`.** Ship the policy in observe-only mode first, review the would-deny stream against real usage, then flip to enforce centrally, for the fleet.
+
+   Smoke-test each platform before broad rollout:
+
+   ```bash
+   tenuo-claude check
+   sudo ls -ld /var/run/tenuo
+   sudo ls -l /var/run/tenuo/authorizer.sock
+   ```
+
+   The authorizer socket must be under a root-owned, non-world-writable directory
+   and must itself be root-owned. Default rollout uses mode `srw-rw-rw-`; hardened
+   group rollout uses mode `srw-rw----` with the configured group.
 
 ## Limits
 

@@ -18,6 +18,13 @@ hand-written file is the #1 footgun):
 tenuo-claude managed-template --out ./tenuo-managed --platform linux \
   --bin /usr/local/bin/tenuo-claude        # uniform fleet-wide launcher path
 
+# Hardened Linux fleet: only members of the `tenuo` group can connect to the
+# root-owned authorizer socket. The default is easier rollout: root-owned socket,
+# mode 0666.
+tenuo-claude managed-template --out ./tenuo-managed --platform linux \
+  --bin /usr/local/bin/tenuo-claude \
+  --socket-group tenuo
+
 # macOS fleet (native authorizer):
 tenuo-claude managed-template --out ./tenuo-managed --platform macos \
   --bin /usr/local/bin/tenuo-claude \
@@ -66,6 +73,8 @@ sudo install -m 0600 -o root authorizer.env /etc/tenuo/authorizer.env
 sudo install -m 0644 -o root .state/gateway.yaml /etc/tenuo/gateway/gateway.yaml  # routes (no keys)
 
 # Linux (Docker-backed authorizer):
+sudo groupadd --system tenuo 2>/dev/null || true   # only if generated with --socket-group tenuo
+sudo usermod -aG tenuo "$DEVELOPER_USER"           # repeat via MDM/user provisioning
 sudo cp tenuo-authorizer.service /etc/systemd/system/
 sudo systemctl enable --now tenuo-authorizer
 
@@ -83,6 +92,37 @@ Before deploying, replace the loud placeholders in the service/env files:
   authorizer binary. Pass `--authorizer-bin /opt/tenuo/bin/tenuo-authorizer` (or set
   `authorizer.binary` in `tenuo.yaml`) at generation time to bake it in; the CLI
   warns only when the path is left unresolved.
+
+## Rollout checklist
+
+1. Publish policy from a security-owned environment with `tenuo-admin setup
+   --managed`; developers should never receive a tenant-admin key.
+2. Generate artifacts with `tenuo-claude managed-template --platform linux|macos
+   --bin /opt/tenuo/bin/tenuo-claude`. For hardened Linux rollout, add
+   `--socket-group tenuo` and provision that group before starting Claude.
+3. Replace `REPLACE_WITH_TENANT_ROOT_HEX`, `REPLACE_WITH_CONTROL_PLANE_URL`, and
+   `REPLACE_WITH_RUNTIME_KEY`. Use a runtime/service-account key only.
+4. Deploy `managed-settings.json` through Claude Enterprise, MDM, or the OS managed
+   settings path. Confirm `allowManagedHooksOnly`, `allowManagedPermissionRulesOnly`,
+   `disableBypassPermissionsMode`, and `disableAutoMode` remain present.
+5. Deploy `/etc/tenuo/authorizer.env` as root-owned `0600` and
+   `/etc/tenuo/gateway/gateway.yaml` as root-owned `0644`.
+6. Start the system authorizer and verify the socket:
+
+   ```bash
+   sudo systemctl restart tenuo-authorizer
+   systemctl status tenuo-authorizer --no-pager
+   sudo ls -ld /var/run/tenuo
+   sudo ls -l /var/run/tenuo/authorizer.sock
+   tenuo-claude check
+   ```
+
+   Default rollout should show a root-owned socket with mode `srw-rw-rw-`. Hardened
+   rollout should show a root-owned socket in the configured group with mode
+   `srw-rw----`.
+7. Start in Cloud `dry-run`, review `WOULD-DENY` receipts, then switch the Cloud
+   policy to `enforce`. Managed endpoints pin local posture to enforcement once the
+   Cloud policy is enforcing.
 
 ## Why both halves are required
 
@@ -137,8 +177,9 @@ therefore pass `--socket-mode 0666`: the socket stays **root-owned** (the trust 
 only root could place it under the root-owned dir), but any local user may connect.
 This does not weaken the model: the authorizer authorizes by warrant/PoP, not by socket
 peer identity, so connecting without a valid warrant just gets denied. To tighten,
-drop `--socket-mode` and instead pass `--socket-group <gid>` (keeps the default `0660`)
-with your developers in that group.
+generate with `tenuo-claude managed-template --socket-group tenuo` and put governed
+developers in that group; the generated service keeps the socket root-owned and uses
+mode `0660`.
 
 **Linux vs macOS — different backends on purpose.** Linux runs the authorizer in
 Docker: a container-created Unix socket on a bind mount is usable by the host (same

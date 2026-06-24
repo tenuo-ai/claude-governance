@@ -461,34 +461,84 @@ def audit_map(cfg: dict) -> dict:
 
 
 def default_mode(cfg: dict) -> str:
-    """Internal routing token for the catch-all: ``deny`` or ``audit`` (permissive).
+    """Fallback posture for tools in neither `enforce` nor `allow`.
 
-    ``allow`` is the canonical permissive spelling and ``audit`` the deprecated
-    alias; both map to the internal ``audit`` token (allow + signed receipt).
-    Anything unrecognized canonicalizes to ``deny`` (fail-closed); `posture_warnings`
-    surfaces it. Use `default_label` for user-facing display.
+    Canonical values: `deny` (block — the secure default) and `approve` (require
+    human approval; Cloud-only). The legacy `audit`/`allow` (permit + log unlisted)
+    is no longer supported — enforce must not fail open — and collapses to `deny`.
     """
-    mode = (str(cfg.get("default")) if cfg.get("default") is not None else "deny").strip().lower()
-    if mode in ("allow", "audit"):
-        return "audit"
-    return "deny"
-
-
-def default_label(cfg: dict) -> str:
-    """User-facing catch-all posture: ``allow`` (permissive) or ``deny``."""
-    return "allow" if default_mode(cfg) == "audit" else "deny"
+    mode = (cfg.get("default") or "deny").strip().lower()
+    return "approve" if mode == "approve" else "deny"
 
 
 def catchall_cap(cfg: dict) -> str:
-    """Capability the /gate catch-all routes to: the granted 'audit' (under
-    default: allow -> allow + log) or the ungranted 'unlisted' (under default:
-    deny -> the authorizer returns a signed DENY)."""
-    return CATCHALL_AUDIT if default_mode(cfg) == "audit" else CATCHALL_DENY
+    """Capability the /gate catch-all routes to.
+
+    `default: approve` -> the 'audit' cap, which the Cloud trigger warrant grants
+    WITH an approval gate, so an unlisted tool pauses for human sign-off. (Local
+    warrants never grant it, so locally `approve` falls back to deny.) Otherwise
+    the ungranted 'unlisted' cap -> the authorizer returns a signed DENY.
+    """
+    return CATCHALL_AUDIT if default_mode(cfg) == "approve" else CATCHALL_DENY
+
+
+def posture_advisories(cfg: dict) -> list[str]:
+    """Deprecation + degradation notices for the posture model.
+
+    Combines the deprecated-key notices recorded at load time with a live advisory
+    when an approval gate can't be honored. Human-in-the-loop approval — anywhere:
+    `default: approve`, an `enforce.<tool>.approval` block, `enforce.WebFetch.approval`,
+    or `mcp.enforce.<tool>.approval` — is a Tenuo Cloud feature: the gate lives in the
+    Cloud-issued warrant, so without Cloud those gated tools fall back to DENY.
+    Surfaced from check/refresh/status — never the hook hot path.
+    """
+    notes = list(cfg.get("_deprecations") or [])
+    if has_approval_gates(cfg):
+        creds = cloud_creds(cfg)
+        if not (creds.get("url") and creds.get("api_key") and trigger_id(cfg)):
+            notes.append("human-in-the-loop approval requires Tenuo Cloud — the gate "
+                         "lives in the Cloud-issued warrant. Until `tenuo-admin setup`, "
+                         "every approval-gated tool (and `default: approve`) DENIES.")
+    return notes
 
 
 def subagent_roles(cfg: dict) -> dict:
     """Declared subagent roles (name -> {tools, ttl_seconds, ...}); {} when none."""
     return cfg.get("subagents") or {}
+
+
+# Default session warrant lifetime when `ttl_seconds` is absent (1 hour).
+DEFAULT_SESSION_TTL_SECONDS = 3600
+
+
+def session_ttl_seconds(cfg: dict) -> int:
+    """Session warrant lifetime in seconds from `ttl_seconds`, else the default (1h).
+
+    Single source of truth for both mint paths — local mint (`mint_local_warrant`)
+    and the Cloud trigger config (`admin.build_warrant_config`). Validated in
+    `validate_ttl_seconds` at load time, so by the time this runs the value is a
+    positive int; the bounds check here is defensive (e.g. an in-memory cfg that
+    skipped load_config).
+    """
+    raw = cfg.get("ttl_seconds")
+    if raw is None:
+        return DEFAULT_SESSION_TTL_SECONDS
+    return validate_ttl_seconds(raw)
+
+
+def validate_ttl_seconds(raw) -> int:
+    """Coerce + validate a session `ttl_seconds` value; must be a positive integer.
+
+    Rejects bools (a YAML `true`/`false` is not a duration), non-integers, and
+    non-positive values with the tool's usual `SystemExit` error style. Mirrors how
+    `_normalize_posture_keys` fails loud on a bad `mode`/`default`."""
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise SystemExit(
+            f"Invalid ttl_seconds: {raw!r}. Must be a positive integer (seconds).")
+    if raw <= 0:
+        raise SystemExit(
+            f"Invalid ttl_seconds: {raw}. Must be a positive integer (seconds).")
+    return raw
 
 
 def webfetch_approval(cfg: dict) -> dict | None:
@@ -642,13 +692,22 @@ def mcp_constraint_args(tool: str, parsed: dict) -> dict:
 
 
 def approval_entries(cfg: dict) -> list[tuple[str, dict]]:
-    """(authorizer capability, approval settings) for every gated tool."""
+    """(authorizer capability, approval settings) for every gated tool.
+
+    Includes the catch-all when `default: approve` so `tenuo-admin setup` creates
+    the session approval policy and the hook budget accounts for the wait.
+    """
     entries: list[tuple[str, dict]] = []
     if appr := webfetch_approval(cfg):
         entries.append(("web_fetch", appr))
+    for g in governed_map(cfg).values():
+        if g.get("approval"):           # native enforce tool with an approval block
+            entries.append((g["cap"], g["approval"]))
     for tool, parsed in mcp_enforce_entries(cfg).items():
         if parsed.get("approval"):
             entries.append((tool, parsed["approval"]))
+    if default_mode(cfg) == "approve":
+        entries.append((CATCHALL_AUDIT, {"threshold": 1}))
     return entries
 
 
@@ -738,13 +797,17 @@ def is_audit_mode(cfg: dict) -> bool:
     return policy_mode(cfg) == MODE_DRY_RUN and not managed_mode(cfg)
 
 
+def is_dry_run_mode(cfg: dict) -> bool:
+    """Alias for the current posture vocabulary; kept for newer call sites."""
+    return is_audit_mode(cfg)
+
+
 def posture_warnings(cfg: dict) -> list[str]:
     """Human-readable warnings about the policy's posture vocabulary.
 
-    Catches the silent-failure traps: an unrecognized ``mode:`` (treated as
-    enforce) or an unrecognized ``default:`` (treated as deny), and the deprecated
-    ``audit`` spelling. Surfaced by user-facing commands (`check`, `status`,
-    `refresh`) so a typo or a misplaced value never quietly changes the posture.
+    Compatibility wrapper for older call sites/tests. The newer loader validates
+    posture vocabulary and records deprecations in ``_deprecations``; managed mode
+    still adds the important advisory that local dry-run is pinned to enforce.
     """
     out: list[str] = []
     raw_mode = str(cfg.get("mode", MODE_ENFORCE)).strip().lower()
@@ -753,22 +816,7 @@ def posture_warnings(cfg: dict) -> list[str]:
                    "(the local observe-only posture is ignored on managed endpoints).")
     elif raw_mode == "audit":
         out.append("mode: audit is deprecated, use mode: dry-run (same observe-only behavior).")
-    elif raw_mode not in _OBSERVE_ALIASES and raw_mode != MODE_ENFORCE:
-        hint = " Observe-only is set via `mode: dry-run`." if raw_mode in (
-            "allow", "permit", "off") else ""
-        out.append(
-            f"mode: {raw_mode!r} is not recognized, treated as enforce.{hint}")
-    raw_default = cfg.get("default")
-    if raw_default is not None:
-        rd = str(raw_default).strip().lower()
-        if rd == "audit":
-            out.append("default: audit is deprecated, use default: allow "
-                       "(same allow-and-log behavior for unlisted tools).")
-        elif rd not in ("deny", "allow"):
-            hint = (" To stop blocking everything while still logging, use "
-                    "`mode: dry-run` instead." if rd in ("dry-run", "dry_run") else "")
-            out.append(
-                f"default: {rd!r} is not recognized, treated as deny.{hint}")
+    out.extend(posture_advisories(cfg))
     return out
 
 
@@ -858,24 +906,67 @@ def load_config() -> dict:
     except Exception:
         state_managed = None
     cfg["_managed"] = bool((cfg.get("cloud") or {}).get("managed") or state_managed)
-    if cfg.get("audit_bundled", True):
-        # Command-execution tools are never harness-inert: auto-audit would grant
+    # Permit-list ("allow") + bundled toggle ("allow_bundled"), with the legacy
+    # audit* keys accepted as deprecated aliases. Everything normalizes into the
+    # internal `cfg["audit"]` representation so the rest of the code is unchanged.
+    deps = _normalize_posture_keys(cfg)
+    user_allow = list(cfg.get("allow") or [])
+    if isinstance(cfg.get("audit"), list):
+        deps.append("`audit:` is deprecated — rename to `allow:`")
+        user_allow += cfg["audit"]
+    if cfg.get("audit_extra"):
+        deps.append("`audit_extra:` is deprecated — fold its tools into `allow:`")
+        user_allow += [str(t) for t in cfg["audit_extra"]]
+    bundled_on = cfg.get("allow_bundled")
+    if bundled_on is None and "audit_bundled" in cfg:
+        deps.append("`audit_bundled:` is deprecated — rename to `allow_bundled:`")
+        bundled_on = cfg.get("audit_bundled")
+    if bundled_on is None:
+        bundled_on = True
+    if bundled_on:
+        # Command-execution tools are never harness-inert: auto-allowing would grant
         # an unconstrained shell. Defensive guard so a future edit to the shipped
         # bundle can't silently allow one — they must be governed via `enforce`.
-        bundled = [t for t in load_harness_tools() if t not in COMMAND_EXEC_TOOLS]
-        legacy = cfg.get("audit") if isinstance(cfg.get("audit"), list) else []
-        extra = [str(t) for t in (cfg.get("audit_extra") or [])]
-        seen: set[str] = set()
-        audit: list[str] = []
-        for t in bundled + legacy + extra:
-            if t not in seen:
-                seen.add(t)
-                audit.append(t)
-        cfg["audit"] = audit
+        merged_src = [t for t in load_harness_tools() if t not in COMMAND_EXEC_TOOLS] + user_allow
     else:
-        cfg.setdefault("audit", [])
+        merged_src = list(user_allow)
+    seen: set[str] = set()
+    audit: list[str] = []
+    for t in merged_src:
+        if t not in seen:
+            seen.add(t)
+            audit.append(t)
+    cfg["audit"] = audit          # internal canonical (read by audit_map, status, …)
+    cfg["_deprecations"] = deps
     validate_webfetch_policy(cfg)
+    if cfg.get("ttl_seconds") is not None:
+        validate_ttl_seconds(cfg["ttl_seconds"])
     return cfg
+
+
+def _normalize_posture_keys(cfg: dict) -> list[str]:
+    """Canonicalize `mode`/`default` in-place; return deprecation notices.
+
+    `mode: audit` -> dry-run; `default: audit|allow` -> deny (enforce must not fail
+    open). Unknown values fail loud. Returned strings are surfaced from user-facing
+    commands (check/refresh/status), never the hook hot path.
+    """
+    deps: list[str] = []
+    raw_mode = str(cfg.get("mode", "enforce")).strip().lower()
+    if raw_mode == "audit":
+        deps.append("`mode: audit` is deprecated — rename to `mode: dry-run`")
+    elif raw_mode not in ("enforce", "dry-run", "dry_run", "dryrun"):
+        raise SystemExit(f"Unknown mode: '{raw_mode}'. Valid: enforce, dry-run.")
+    raw_default = (cfg.get("default") or "deny").strip().lower()
+    if raw_default in ("audit", "allow"):
+        deps.append(
+            f"`default: {raw_default}` is no longer supported — enforce must not "
+            "fail open. Unlisted tools are now DENIED. Use `mode: dry-run` to "
+            "observe, or add specific tools to `allow:`.")
+        cfg["default"] = "deny"
+    elif raw_default not in ("deny", "approve"):
+        raise SystemExit(f"Unknown default: '{raw_default}'. Valid: deny, approve.")
+    return deps
 
 
 def _range_bound(text: str, spec: str):
@@ -998,16 +1089,32 @@ def make_web_constraints(policy: dict, *, approval_gate: bool = False) -> dict:
 
 
 def governed_map(cfg: dict) -> dict:
-    """Claude tool -> dict(capability, arg, field, constraint spec/policy)."""
+    """Claude tool -> dict(capability, arg, field, + constraint spec / web policy / approval).
+
+    A native value is a constraint string, or a dict: `WebFetch` takes a web policy
+    (domains/cidrs/approval); any other tool takes an `approval:` block (with an
+    optional `exempt:` constraint string on its arg) for a Cloud human-approval gate
+    — e.g. `Bash: {approval: {threshold: 1, exempt: "shlex:ls,pwd"}}`.
+    """
     out = {}
-    for tool, spec in cfg["enforce"].items():
+    for tool, spec in (cfg.get("enforce") or {}).items():
         if tool not in TOOL_DEFAULTS:
             raise SystemExit(f"enforce: unknown tool '{tool}'")
         cap, arg, field = TOOL_DEFAULTS[tool]
         if isinstance(spec, dict):
-            if tool != "WebFetch":
-                raise SystemExit(f"enforce: structured policy is only for WebFetch, not '{tool}'")
-            out[tool] = {"cap": cap, "arg": arg, "field": field, "web": spec}
+            if tool == "WebFetch":
+                out[tool] = {"cap": cap, "arg": arg, "field": field, "web": spec}
+            elif isinstance(spec.get("approval"), dict):
+                appr = dict(spec["approval"])
+                exempt = appr.pop("exempt", None)   # constraint spec (string) on this tool's arg
+                if exempt is not None and not isinstance(exempt, str):
+                    raise SystemExit(f"enforce.{tool}.approval.exempt must be a constraint string")
+                out[tool] = {"cap": cap, "arg": arg, "field": field,
+                             "approval": appr, "exempt": exempt}
+            else:
+                raise SystemExit(
+                    f"enforce.{tool}: a structured value needs an `approval:` block "
+                    "(only WebFetch takes domains/cidrs).")
         else:
             out[tool] = {"cap": cap, "arg": arg, "field": field, "spec": spec}
     return out
@@ -1123,7 +1230,8 @@ def _parse_connect_token(raw: str) -> dict:
         return {"url": ct.endpoint, "api_key": ct.api_key}
     except ImportError as e:
         raise SystemExit(
-            "TENUO_CONNECT_TOKEN requires tenuo_core (install tenuo==0.2.0)."
+            "TENUO_CONNECT_TOKEN requires the tenuo_core extension "
+            "(bundled with tenuo>=0.2.0)."
         ) from e
     except Exception as e:
         raise SystemExit(f"Invalid TENUO_CONNECT_TOKEN: {e}") from e
@@ -1435,6 +1543,14 @@ def resolve_tool(cfg: dict, tool_name: str, tool_input: dict):
             args[field] = val
         return bare, f"/verify/{bare}", args, args, True
 
+    # Catch-all. Under `default: approve` the catch-all carries a whole-tool gate
+    # (every unlisted call requires approval), so we don't need to sign `tool` to
+    # make the gate fire. We sign it anyway so the approval's request_hash binds per
+    # tool name — approving one unlisted tool must not auto-approve another — and the
+    # signed args must match what the /gate route extracts. Under `deny` the cap is
+    # ungranted, so no args are checked (route extracts none) — keep sign_args empty.
+    if default_mode(cfg) == "approve":
+        return catchall_cap(cfg), "/gate", {"tool": tool_name}, {"tool": tool_name, **(tool_input or {})}, False
     return catchall_cap(cfg), "/gate", {}, {"tool": tool_name, **(tool_input or {})}, False
 
 
@@ -1536,6 +1652,11 @@ def authorize_call(cfg: dict, tool: str, tin: dict, agent_type, roles: dict,
             cfg, tool, tenuo_tool, route, sign_args, body, warrant_b64, live=live)
     else:
         allowed, reason = authorize(tenuo_tool, route, sign_args, body, warrant_b64=warrant_b64)
+    # `default: approve` fails closed in the warrant, not here: the catch-all carries
+    # a whole-tool approval gate, so tenuo-core requires a signed human approval for
+    # every unlisted call (and the cap is granted only alongside that gate; locally
+    # it's never granted, so approve falls back to deny). The authorizer is the
+    # boundary — we don't re-derive its decision client-side.
     if not allowed and governed:
         reason = _augment_denial_reason(cfg, tool, reason)
     return allowed, reason, governed, tenuo_tool
@@ -1754,7 +1875,7 @@ def cmd_mcp_proxy(_args) -> None:
     downstream = str((DEMO_DIR / mcp_cfg.get("downstream", "")).resolve())
     enforced = mcp_enforce_entries(cfg)
     catchall = catchall_cap(cfg)
-    audit_only = is_audit_mode(cfg)
+    audit_only = is_dry_run_mode(cfg)
     roles = subagent_roles(cfg)
 
     def log(m):
@@ -1829,13 +1950,24 @@ def enforced_capabilities(cfg: dict) -> dict:
     from tenuo_core import Wildcard
 
     sandbox = cfg["_sandbox_abs"]
-    gate_web = bool(webfetch_approval(cfg) and trigger_id(cfg))
+    # Relax an approval-gated tool's constraints ONLY when a Cloud trigger will
+    # actually carry the gate (use_cloud_trigger, not trigger_id alone). A stale
+    # trigger_id with no creds would otherwise mint the wildcard locally with no gate
+    # (fail-open). Evaluated lazily, only when an approval gate is actually present.
+    gate_web = bool(webfetch_approval(cfg) and use_cloud_trigger(cfg))
     caps: dict = {}
     for g in governed_map(cfg).values():
         if g["cap"] in caps:
             continue
         if "web" in g:
             caps[g["cap"]] = make_web_constraints(g["web"], approval_gate=gate_web)
+        elif g.get("approval"):
+            # Cloud human-approval gate on this tool's arg (mirrors mcp.enforce
+            # approval): the arg relaxes to a wildcard and the gate itself lives in
+            # the Cloud trigger warrant. Local minting has no approval, so the cap
+            # is granted only under a trigger; without Cloud it stays denied.
+            if use_cloud_trigger(cfg):
+                caps[g["cap"]] = {g["arg"]: Wildcard()}
         else:
             caps[g["cap"]] = {g["arg"]: make_constraint(g["spec"], sandbox)}
     for mtool, raw in (cfg.get("mcp", {}).get("enforce") or {}).items():
@@ -1845,7 +1977,7 @@ def enforced_capabilities(cfg: dict) -> dict:
         cons = parsed["constraints"]
         if cons:
             caps[mtool] = {a: make_constraint(spec, sandbox) for a, spec in cons.items()}
-        elif parsed.get("approval") and trigger_id(cfg):
+        elif parsed.get("approval") and use_cloud_trigger(cfg):
             gated = list((parsed.get("exempt_args") or {}).keys()) or [mcp_default_arg(mtool)]
             caps[mtool] = {a: Wildcard() for a in gated}
     roles = subagent_roles(cfg)
@@ -1920,7 +2052,13 @@ def write_gateway(cfg: dict, enforced_caps: dict) -> None:
     # capability (declared as a tool either way so the route compiles).
     catchall = catchall_cap(cfg)
     tools.setdefault(catchall, {"description": catchall, "constraints": {}})
-    routes.append({"pattern": "/gate", "method": ["POST"], "tool": catchall, "constraints": {}})
+    # Under `default: approve` the catch-all carries a whole-tool approval gate. The
+    # gate fires regardless of args, but the /gate route still extracts `tool` so the
+    # approval's request_hash binds per tool name (resolve_tool signs the same field).
+    gate_constraints = ({"tool": {"from": "body", "path": "tool", "required": True}}
+                        if default_mode(cfg) == "approve" else {})
+    routes.append({"pattern": "/gate", "method": ["POST"], "tool": catchall,
+                   "constraints": gate_constraints})
     gw = {"version": "1",
           "settings": {"debug_mode": True, "warrant_header": WARRANT_HEADER,
                        "pop_header": POP_HEADER, "clock_tolerance_secs": 30},
@@ -1942,11 +2080,11 @@ def mint_local_warrant(cfg: dict, issuer, holder):
     for cap in audit_map(cfg).values():
         if cap not in enforced:
             builder = builder.capability(cap, {})
-    # Catch-all: grant "audit" only when default: audit. Under default: deny the
-    # catch-all capability is intentionally absent so unlisted tools are denied.
-    if default_mode(cfg) == "audit":
-        builder = builder.capability(CATCHALL_AUDIT, {})
-    return builder.holder(holder.public_key).ttl(3600).mint(issuer)
+    # Catch-all is never granted locally: unlisted tools are always denied. Local
+    # minting has no approval support, so `default: approve` can't be honored here
+    # and falls back to deny (the runtime surfaces that as an advisory). Cloud
+    # trigger warrants are where `approve` grants the gated catch-all.
+    return builder.holder(holder.public_key).ttl(session_ttl_seconds(cfg)).mint(issuer)
 
 
 def remint_session(cfg: dict) -> str:
@@ -2004,7 +2142,7 @@ def refresh_policy(cfg: dict | None = None) -> str:
     """
     cfg = cfg or load_config()
     creds = cloud_creds(cfg)
-    use_trigger = bool(creds["url"] and creds["api_key"] and trigger_id(cfg))
+    use_trigger = use_cloud_trigger(cfg)
     _assert_managed_runtime(cfg, use_trigger)
 
     write_claude_wiring(cfg)
@@ -2952,8 +3090,8 @@ def cmd_check(_args) -> None:
                         "no extra local tools; constraint-level attenuation not verified", None)
     _check_line(True, "posture",
                 "dry-run (observe-only)" if is_audit_mode(cfg) else "enforce", None)
-    for w in posture_warnings(cfg):
-        _check_line(None, "posture", w, "edit tenuo.yaml")
+    for note in posture_warnings(cfg):
+        _check_line(None, "policy", note, "edit tenuo.yaml")
     if mode == "local" and any(files.values()):
         _check_line(None, "cloud files", "present but mode is local",
                     "remove/rename .state/cloud.env or run: tenuo-claude init --local")
@@ -3206,6 +3344,23 @@ def trigger_id(cfg: dict) -> str | None:
     return (cfg.get("cloud") or {}).get("trigger") or load_cloud_state().get("trigger_id")
 
 
+def use_cloud_trigger(cfg: dict) -> bool:
+    """True only when a Cloud trigger can actually issue a warrant right now: creds
+    (URL + API key) AND a configured trigger.
+
+    A `trigger_id()` alone is NOT sufficient — it can linger in a stale
+    `.state/cloud_state.json` after the creds/profile are gone, leaving the project
+    effectively local. Anything that relaxes constraints "because the Cloud trigger
+    carries the gate" must key off this, not `trigger_id()`: otherwise an
+    approval-gated tool relaxes to a wildcard and then gets minted LOCALLY with no
+    approval gate (fail-open). The decision to fire a trigger uses the same predicate.
+    """
+    if not trigger_id(cfg):
+        return False
+    creds = cloud_creds(cfg)
+    return bool(creds.get("url") and creds.get("api_key"))
+
+
 def fire_session_warrant(cfg: dict, creds: dict) -> tuple[str, str]:
     """Fire the configured trigger -> (warrant_b64, tenant_root_hex). Runtime key."""
     tid = trigger_id(cfg)
@@ -3259,6 +3414,11 @@ def authorizer_running(cfg: dict) -> bool:
     backend = art.read_runtime_backend(mount)
     if backend == "native" or art.native_pid_path(mount).is_file():
         return art.native_running(mount, resolve_authz_url())
+    # No native state recorded, so any authorizer we manage would be the Docker
+    # container. On a host without Docker (e.g. macOS/WSL on the native backend)
+    # nothing we manage is running — report that instead of hard-failing.
+    if shutil.which("docker") is None:
+        return False
     r = docker("inspect", "-f", "{{.State.Running}}", container_name(cfg))
     return r.returncode == 0 and r.stdout.strip() == "true"
 
@@ -3370,7 +3530,7 @@ def _attenuation_notice(cfg: dict) -> list[str]:
 def cmd_up(_args) -> None:
     cfg = load_config()
     creds = cloud_creds(cfg)
-    use_trigger = bool(creds["url"] and creds["api_key"] and trigger_id(cfg))
+    use_trigger = use_cloud_trigger(cfg)
     _assert_managed_runtime(cfg, use_trigger)
 
     if not WARRANT.exists() and not use_trigger:
@@ -3604,7 +3764,7 @@ def cmd_status(_args) -> None:
     for w in posture_warnings(cfg):
         print(f"posture     : !! {w}")
     print(f"enforced    : {gov or '<none>'}")
-    print(f"audit-allow : {aud or '<none>'}   | default: {default_label(cfg)}")
+    print(f"allow       : {aud or '<none>'}   | default: {default_mode(cfg)}")
     if has_approval_gates(cfg):
         cs = load_cloud_state()
         cloud_cfg = cfg.get("cloud") or {}
@@ -4123,7 +4283,7 @@ def cmd_init(args) -> None:
 def cmd_refresh(args) -> None:
     cfg = load_config()
     creds = cloud_creds(cfg)
-    use_trigger = bool(creds["url"] and creds["api_key"] and trigger_id(cfg))
+    use_trigger = use_cloud_trigger(cfg)
     was_running = authorizer_running(cfg)
 
     wid = refresh_policy(cfg)
@@ -4267,6 +4427,25 @@ def _template_root(cfg: dict) -> str:
             or _ROOT_PLACEHOLDER)
 
 
+def _authz_socket_flags(cfg: dict) -> list[str]:
+    """Connect-permission flags (``serve``) for the root-owned managed socket.
+
+    The socket is ALWAYS root-owned — that ownership, not the connect mode, is the
+    trust boundary (`_safe_managed_socket`). The default ``0666`` is world-
+    connectable so the unprivileged Claude hook can reach it. Enterprises that want
+    to tighten CONNECT without hand-editing units set ``authorizer.socket_group``:
+    the socket then defaults to ``0660`` and is connectable only by that group.
+    ``authorizer.socket_mode`` overrides the mode explicitly.
+    """
+    authz = cfg.get("authorizer") or {}
+    group = authz.get("socket_group")
+    mode = str(authz.get("socket_mode") or ("0660" if group else "0666"))
+    flags = ["--socket-mode", mode]
+    if group:
+        flags += ["--socket-group", str(group)]
+    return flags
+
+
 def _authz_docker_argv(cfg: dict) -> list[str]:
     """``docker`` arguments for a system-managed authorizer.
 
@@ -4290,12 +4469,12 @@ def _authz_docker_argv(cfg: dict) -> list[str]:
     # 1000-owned dir would be insecure on a typical workstation where the developer
     # IS uid 1000 and could replace the socket.
     #
-    # `--socket-mode 0666`: the socket stays root-OWNED (the trust anchor), but the
-    # unprivileged Claude hook must be able to CONNECT. Connect permission is not the
-    # trust boundary — the authorizer authorizes by warrant/PoP, and only root could
-    # have placed a root-owned socket under the root-owned dir — so 0666 is safe. To
-    # tighten, drop this and pass `--socket-group <gid>` (default 0660) with the
-    # developers in that group instead.
+    # `--socket-mode 0666` (default): the socket stays root-OWNED (the trust anchor),
+    # but the unprivileged Claude hook must be able to CONNECT. Connect permission is
+    # not the trust boundary — the authorizer authorizes by warrant/PoP, and only root
+    # could have placed a root-owned socket under the root-owned dir — so 0666 is safe.
+    # Set `authorizer.socket_group` to tighten to a group (mode 0660); see
+    # `_authz_socket_flags`.
     return [
         "run", "--rm", "--name", "tenuo-authorizer",
         "-u", "0:0",
@@ -4307,7 +4486,7 @@ def _authz_docker_argv(cfg: dict) -> list[str]:
         "-e", f"TENUO_AUTHORIZER_NAME={cfg.get('name', 'tenuo-claude')}",
         authorizer_image(cfg),
         "serve", "--config", f"/state/{GATEWAY.name}",
-        "--socket", DEFAULT_AUTHZ_SOCKET, "--socket-mode", "0666",
+        "--socket", DEFAULT_AUTHZ_SOCKET, *_authz_socket_flags(cfg),
     ]
 
 
@@ -4368,13 +4547,14 @@ def launchd_plist_template(cfg: dict) -> str:
     # key, and execs the native authorizer with the cloud-root-only trust anchor.
     env_file = f"/etc/tenuo/{AUTHZ_ENV_NAME}"
     cfg_path = f"{_MANAGED_GATEWAY}/{GATEWAY.name}"
-    # --socket-mode 0666: root-OWNED socket (the trust anchor) that the unprivileged
-    # hook can still connect to. See _authz_docker_argv for why connect != trust.
+    # Root-OWNED socket (the trust anchor) that the unprivileged hook can still
+    # connect to. See _authz_docker_argv / _authz_socket_flags for why connect != trust.
+    socket_flags = " ".join(q(f) for f in _authz_socket_flags(cfg))
     serve = (f"env TENUO_TRUSTED_KEYS={q(_template_root(cfg))} "
              f"TENUO_CONTROL_PLANE_URL={q(cloud_creds(cfg).get('url') or _URL_PLACEHOLDER)} "
              f"TENUO_AUTHORIZER_NAME={q(cfg.get('name', 'tenuo-claude'))} "
              f"{q(_template_native_bin(cfg))} serve --config {q(cfg_path)} "
-             f"--socket {q(DEFAULT_AUTHZ_SOCKET)} --socket-mode 0666")
+             f"--socket {q(DEFAULT_AUTHZ_SOCKET)} {socket_flags}")
     wrapper = (f"mkdir -p {q(sock_dir)} && chmod 0755 {q(sock_dir)} && "
                f"set -a && . {q(env_file)} && exec {serve}")
     argv = ["/bin/sh", "-c", wrapper]

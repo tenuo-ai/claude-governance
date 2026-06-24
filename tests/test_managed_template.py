@@ -130,6 +130,28 @@ def test_authz_socket_is_connectable_by_unprivileged_hook(cli_mod, make_cfg, fle
     assert "--socket-mode 0666" in cli_mod.launchd_plist_template(make_cfg())
 
 
+def test_authz_socket_group_generates_hardened_connect_mode(cli_mod, make_cfg, fleet):
+    """Enterprises can avoid world-connectable sockets without hand-editing units:
+    socket_group keeps root ownership but limits connect permission to that group."""
+    cfg = make_cfg(authorizer={"socket_group": "tenuo"})
+    argv = cli_mod._authz_docker_argv(cfg)
+    assert "--socket-group" in argv and argv[argv.index("--socket-group") + 1] == "tenuo"
+    assert "--socket-mode" in argv and argv[argv.index("--socket-mode") + 1] == "0660"
+    unit = cli_mod.systemd_unit_template(cfg)
+    assert "--socket-group tenuo" in unit
+    assert "--socket-mode 0660" in unit
+    plist = cli_mod.launchd_plist_template(cfg)
+    assert "--socket-group tenuo" in plist
+    assert "--socket-mode 0660" in plist
+
+
+def test_authz_socket_mode_can_be_explicit(cli_mod, make_cfg, fleet):
+    cfg = make_cfg(authorizer={"socket_group": "tenuo", "socket_mode": "0666"})
+    argv = cli_mod._authz_docker_argv(cfg)
+    assert argv[argv.index("--socket-mode") + 1] == "0666"
+    assert argv[argv.index("--socket-group") + 1] == "tenuo"
+
+
 def test_service_units_create_root_owned_socket_dir(cli_mod, make_cfg, fleet):
     """systemd/launchd must create the socket's parent dir root-owned before the
     daemon binds, so `_safe_managed_socket`'s dir-ownership invariant holds."""

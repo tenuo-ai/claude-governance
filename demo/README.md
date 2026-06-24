@@ -63,11 +63,24 @@ claude -p "Use the researcher subagent to run 'ls -la sandbox'." --dangerously-s
 
 ## Human approval (optional, Cloud)
 
-The demo exercises approver sign-off on **WebFetch** (native hook) and **delete_deployment** (MCP proxy) when approval is configured in policy:
+The demo exercises approver sign-off on three paths when approval is configured in the advanced overlay:
+- **WebFetch** (native hook) — off-allowlist URL pauses for sign-off.
+- **delete_deployment** (MCP proxy) — non-exempt target pauses for sign-off.
+- **`default: approve`** (catch-all) — **any** tool not in `enforce`/`allow` pauses for sign-off instead of being denied.
 
 ```bash
 tenuo-admin setup                              # after adding the advanced overlay
 tenuo-claude demo --advanced --live-approval   # blocks until an approver responds
 ```
+
+Try the catch-all yourself — invoke a tool the policy doesn't list and watch it pause:
+
+```bash
+claude -p "Use NotebookEdit to add a cell to demo.ipynb." --dangerously-skip-permissions
+# → pauses: a pending request appears in Cloud → Approvals (and Slack). Approve it and the
+#   call proceeds (reason: approved); deny or let it time out and the call is denied.
+```
+
+**Fail-closed guarantee:** an unlisted tool is *never* allowed without an actual approval. If the approver denies, doesn't respond, or the gate fails for any reason, the call is denied — the runtime treats a catch-all allow that didn't go through approval as a denial.
 
 Setup and policy shape: [README § Human approval](../README.md#human-approval-cloud) and [docs/DETAILS.md § Human approval](../docs/DETAILS.md#human-approval-cloud). Use `--approver-id` / `cloud.approver_identity_id` for team configs; display-name lookup is for demos only.

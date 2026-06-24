@@ -80,7 +80,7 @@ Changing `subagents:` is a policy change: re-run `tenuo-admin setup` (Cloud) or 
 
 ## Dry-run mode (`mode: dry-run`)
 
-Shadow mode: every call's real allow/deny is still computed against the warrant and written to the receipt log, but **nothing is blocked**. The hook deliberately emits *no* permission decision in this mode — not even "allow" — because an explicit hook-allow would auto-approve calls that Claude's own settings might otherwise prompt on. So observe-only stays observe-only, and Claude's prompts remain in effect.
+(`mode: audit` is a deprecated alias for `dry-run`.) Shadow mode: every call's real allow/deny is still computed against the warrant and written to the receipt log, but **nothing is blocked**. The hook deliberately emits *no* permission decision in this mode — not even "allow" — because an explicit hook-allow would auto-approve calls that Claude's own settings might otherwise prompt on. So observe-only stays observe-only, and Claude's prompts remain in effect.
 
 Roll out by watching `WOULD-DENY` rows in `tenuo-claude audit`, tuning policy, then switching to `mode: enforce`. The hook reads `mode` live (next tool call); the MCP proxy picks it up on the next Claude session.
 
@@ -150,7 +150,15 @@ When a warrant includes **approval gates**, a governed call can return `approval
 
 This is **Cloud-only** — gates carry the approver's KMS public keys from the linked approval policy; there's no local fallback, so without Cloud a gated call that needs sign-off is denied.
 
-Setup (`tenuo-admin setup`): point `cloud.approver_identity_id` at an existing Cloud identity (KMS key + notification routing); `cloud.approver_identity` display-name lookup works too, for demos. Setup creates or reuses a Cloud approval policy, bakes `approval_gates` into the trigger warrant config (with `_policy_id` for offline verification), syncs the local gateway, and reloads the authorizer if it's running so new MCP routes work immediately.
+### Approval setup runbook
+
+Setting up approvals spans two places: you create the **approver** in the Tenuo Cloud console, then wire the **gate** with this CLI. The CLI only references an approver identity that already exists in Cloud — it does not create the identity or its notification channel.
+
+1. **Be on Cloud.** Run `tenuo-claude onboard --cloud` (or confirm `tenuo-claude check` is green). Approval has no local fallback; without Cloud a gated call is denied.
+2. **Create the approver in [Tenuo Cloud](https://cloud.tenuo.ai).** Make an identity with a KMS signing key and a notification channel (Slack, Telegram, or console), then copy its identity id. *(This step lives in the Cloud console.)*
+3. **Bind it:** `tenuo-admin setup --approver-id <id>` (or `--approver "<display name>"` for demos). Setup creates or reuses a Cloud approval policy, bakes `approval_gates` into the trigger warrant config (with `_policy_id` for offline verification), syncs the local gateway, and reloads a running authorizer so new MCP routes work immediately.
+4. **Gate something:** add an `approval:` block to a tool (example below) or set `default: approve`, then run `tenuo-claude refresh`.
+5. **Test end to end:** `tenuo-claude demo --advanced --live-approval`.
 
 Receipts show `PENDING [appr]` while parked, then `ALLOW`/`DENY`. In audit mode the gate is reported only, never blocks. **Live approval blocks the tool call** until the approver responds or it times out — make sure the identity is reachable first, or Claude's hook timeout can expire and look like a deny.
 

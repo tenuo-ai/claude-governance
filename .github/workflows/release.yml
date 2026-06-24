@@ -9,6 +9,7 @@ on:
 permissions:
   contents: read
   id-token: write  # trusted publishing (OIDC) when PYPI_TOKEN is unset
+  attestations: write  # SLSA build provenance for the published artifacts
 
 jobs:
   publish-pypi:
@@ -22,6 +23,11 @@ jobs:
 
       - name: Build
         run: uv build
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: "dist/*"
 
       - name: Publish to PyPI
         env:

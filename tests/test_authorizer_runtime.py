@@ -180,7 +180,7 @@ def test_install_authorizer_cmd_without_project(tmp_path, monkeypatch):
     fake.parent.mkdir()
     fake.write_bytes(b"fake")
     monkeypatch.setattr(art, "install_authorizer", lambda *a, **kw: fake)
-    monkeypatch.setattr(art, "query_binary_version", lambda p: "0.1.0-beta.24+authz.1")
+    monkeypatch.setattr(art, "query_binary_version", lambda p: "0.2.0+authz.1")
     cli.main()
 
 

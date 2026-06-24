@@ -23,29 +23,18 @@ def test_mcp_tool_name(cli_mod, name, expected):
 # --- default_mode / catchall_cap -------------------------------------------
 
 @pytest.mark.parametrize("value,expected", [
-    (None, "deny"), ("deny", "deny"),
-    ("allow", "audit"),   # canonical permissive spelling -> internal audit token
-    ("ALLOW", "audit"),
-    ("audit", "audit"),   # deprecated alias still maps to permissive
-    ("AUDIT", "audit"), ("nonsense", "deny"),
+    (None, "deny"), ("deny", "deny"), ("approve", "approve"), ("APPROVE", "approve"),
+    ("allow", "deny"), ("audit", "deny"), ("nonsense", "deny"),
 ])
 def test_default_mode(cli_mod, make_cfg, value, expected):
     cfg = make_cfg(default=value)
     assert cli_mod.default_mode(cfg) == expected
 
-
-@pytest.mark.parametrize("value,label", [
-    ("deny", "deny"), ("allow", "allow"), ("audit", "allow"),
-    ("nonsense", "deny"), (None, "deny"),
-])
-def test_default_label(cli_mod, make_cfg, value, label):
-    assert cli_mod.default_label(make_cfg(default=value)) == label
-
-
 def test_catchall_cap(cli_mod, make_cfg):
     assert cli_mod.catchall_cap(make_cfg(default="deny")) == "unlisted"
-    assert cli_mod.catchall_cap(make_cfg(default="audit")) == "audit"
-    assert cli_mod.catchall_cap(make_cfg(default="allow")) == "audit"
+    assert cli_mod.catchall_cap(make_cfg(default="approve")) == "audit"
+    assert cli_mod.catchall_cap(make_cfg(default="audit")) == "unlisted"
+    assert cli_mod.catchall_cap(make_cfg(default="allow")) == "unlisted"
 
 
 # --- posture: mode dry-run / audit alias / warnings ------------------------
@@ -68,34 +57,12 @@ def test_policy_mode_and_is_audit_mode(cli_mod, make_cfg, value, observe):
 
 def test_posture_warnings_clean_for_canonical(cli_mod, make_cfg):
     assert cli_mod.posture_warnings(make_cfg(mode="enforce", default="deny")) == []
-    assert cli_mod.posture_warnings(make_cfg(mode="dry-run", default="allow")) == []
+    assert cli_mod.posture_warnings(make_cfg(mode="dry-run", default="deny")) == []
 
 
 def test_posture_warnings_flags_deprecated_audit_mode(cli_mod, make_cfg):
     warns = cli_mod.posture_warnings(make_cfg(mode="audit"))
     assert any("deprecated" in w and "dry-run" in w for w in warns)
-
-
-def test_posture_warnings_flags_unknown_mode(cli_mod, make_cfg):
-    warns = cli_mod.posture_warnings(make_cfg(mode="observe"))
-    assert any("not recognized" in w and "enforce" in w for w in warns)
-
-
-def test_posture_warnings_default_allow_is_valid(cli_mod, make_cfg):
-    """`default: allow` is the canonical permissive catch-all: no warning, and it
-    routes to the permissive (audit) capability rather than fail-closed deny."""
-    assert cli_mod.posture_warnings(make_cfg(default="allow")) == []
-    assert cli_mod.default_mode(make_cfg(default="allow")) == "audit"
-
-
-def test_posture_warnings_flags_deprecated_default_audit(cli_mod, make_cfg):
-    warns = cli_mod.posture_warnings(make_cfg(default="audit"))
-    assert any("deprecated" in w and "default: allow" in w for w in warns)
-
-
-def test_posture_warnings_flags_unknown_default(cli_mod, make_cfg):
-    warns = cli_mod.posture_warnings(make_cfg(default="nonsense"))
-    assert any("not recognized" in w and "deny" in w for w in warns)
 
 
 # --- managed Cloud mode ----------------------------------------------------
@@ -154,9 +121,9 @@ def test_local_widened_tools_flags_tools_absent_from_warrant(cli_mod, make_cfg):
 
 
 def test_local_widened_tools_ignores_synthetic_catchall(cli_mod, make_cfg):
-    # default: allow adds the synthetic 'audit' catch-all cap; it's a routing
-    # artifact, not a grant, so it must never count as widening.
-    cfg = make_cfg(default="allow")
+    # default: approve adds the synthetic 'audit' catch-all cap; it's a routing
+    # artifact for the approval gate, so it must never count as widening.
+    cfg = make_cfg(default="approve")
     assert cli_mod.CATCHALL_AUDIT not in cli_mod.local_widened_tools(cfg, {})
 
 
@@ -319,10 +286,13 @@ def test_resolve_tool_catchall_deny(cli_mod, make_cfg):
     assert governed is False
 
 
-def test_resolve_tool_catchall_audit(cli_mod, make_cfg):
-    cfg = make_cfg(default="audit")
-    cap, *_ = cli_mod.resolve_tool(cfg, "SomethingNew", {})
-    assert cap == "audit"             # granted -> allow+log
+def test_resolve_tool_catchall_approve(cli_mod, make_cfg):
+    # default: approve routes unlisted tools to the granted catch-all cap (gated in
+    # the Cloud warrant -> human approval). default: deny routes to ungranted "unlisted".
+    cap, *_ = cli_mod.resolve_tool(make_cfg(default="approve"), "SomethingNew", {})
+    assert cap == "audit"
+    cap, *_ = cli_mod.resolve_tool(make_cfg(default="deny"), "SomethingNew", {})
+    assert cap == "unlisted"
 
 
 def test_resolve_tool_mcp_bare_name(cli_mod, make_cfg, tmp_path):
@@ -356,7 +326,7 @@ def test_load_config_never_auto_audits_command_exec_tools(cli_mod, monkeypatch, 
     """The shipped harness bundle is auto-audited (allow+log). A command-exec tool
     slipping into it would grant an unconstrained shell, so load_config drops them."""
     cfg_file = tmp_path / "tenuo.yaml"
-    cfg_file.write_text("name: t\nsandbox: ./sb\ndefault: allow\n")
+    cfg_file.write_text("name: t\nsandbox: ./sb\nallow:\n  - WebSearch\n")
     monkeypatch.setattr(cli_mod, "CONFIG_FILE", cfg_file, raising=False)
     monkeypatch.setattr(cli_mod, "CLOUD_PROFILE", tmp_path / "none1", raising=False)
     monkeypatch.setattr(cli_mod, "ADVANCED_PROFILE", tmp_path / "none2", raising=False)
@@ -450,3 +420,18 @@ def test_resolve_tool_mcp_delete_deployment_target(cli_mod, make_cfg):
     assert route == "/verify/delete_deployment"
     assert sign_args == {"target": "production"}
     assert governed is True
+
+
+def test_authorizer_running_false_without_docker(cli_mod, monkeypatch, tmp_path):
+    """Docker-less host (macOS/WSL on the native backend): with no native state
+    recorded, report not-running rather than hard-failing on a missing `docker`."""
+    monkeypatch.setattr(cli_mod, "authorizer_mount_dir", lambda: tmp_path)
+    monkeypatch.setattr(cli_mod.art, "read_runtime_backend", lambda _m: None)
+    monkeypatch.setattr(cli_mod.art, "native_pid_path", lambda _m: tmp_path / "absent.pid")
+    monkeypatch.setattr(cli_mod.shutil, "which", lambda _name: None)
+
+    def _no_docker(*_a):
+        raise AssertionError("docker must not be invoked when Docker is absent")
+    monkeypatch.setattr(cli_mod, "docker", _no_docker)
+
+    assert cli_mod.authorizer_running({"name": "x"}) is False

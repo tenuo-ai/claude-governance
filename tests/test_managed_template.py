@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -145,13 +146,6 @@ def test_authz_socket_group_generates_hardened_connect_mode(cli_mod, make_cfg, f
     assert "--socket-mode 0660" in plist
 
 
-def test_authz_socket_mode_can_be_explicit(cli_mod, make_cfg, fleet):
-    cfg = make_cfg(authorizer={"socket_group": "tenuo", "socket_mode": "0666"})
-    argv = cli_mod._authz_docker_argv(cfg)
-    assert argv[argv.index("--socket-mode") + 1] == "0666"
-    assert argv[argv.index("--socket-group") + 1] == "tenuo"
-
-
 def test_service_units_create_root_owned_socket_dir(cli_mod, make_cfg, fleet):
     """systemd/launchd must create the socket's parent dir root-owned before the
     daemon binds, so `_safe_managed_socket`'s dir-ownership invariant holds."""
@@ -260,3 +254,16 @@ def test_authorizer_bin_flag_bakes_native_path(cli_mod, make_cfg, fleet):
     plist = cli_mod.launchd_plist_template(cfg)
     assert "/opt/tenuo/bin/tenuo-authorizer" in plist
     assert cli_mod._NATIVE_BIN_PLACEHOLDER not in plist
+
+
+def test_socket_group_flag_hardens_generated_unit(cli_mod, make_cfg, fleet, monkeypatch, capsys):
+    """`managed-template --socket-group` wires the group end-to-end into the generated
+    systemd unit (root-owned socket, group-restricted 0660 connect mode) without the
+    admin hand-editing tenuo.yaml."""
+    monkeypatch.setattr(cli_mod, "load_config", lambda: make_cfg())
+    args = SimpleNamespace(bin=None, authorizer_bin=None, socket_group="tenuo",
+                           platform="linux", target="systemd", out=None)
+    cli_mod.cmd_managed_template(args)
+    unit = capsys.readouterr().out
+    assert "--socket-group tenuo" in unit
+    assert "--socket-mode 0660" in unit

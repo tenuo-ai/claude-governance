@@ -28,6 +28,15 @@ import pytest
 
 posix_only = pytest.mark.skipif(os.name != "posix", reason="Unix-socket transport is POSIX-only")
 
+# The ownership-discrimination tests assume the test user is NOT root: their premise
+# is "a user-owned socket/dir must be rejected as untrusted". When the runner is root
+# (e.g. CI under WSL), everything the test creates is root-owned and therefore
+# correctly TRUSTED, so those negative assertions don't apply. Skip them as root.
+requires_nonroot = pytest.mark.skipif(
+    os.name == "posix" and os.geteuid() == 0,
+    reason="needs a non-root user (root owns everything it creates, so user-vs-root "
+           "ownership can't be distinguished)")
+
 
 @pytest.fixture(autouse=True)
 def _clean_env_bound(monkeypatch, bound):
@@ -134,6 +143,7 @@ def test_managed_breakglass_is_root_owned_file_not_env(cli_mod, monkeypatch):
 
 
 @posix_only
+@requires_nonroot
 def test_breakglass_rejects_user_owned_marker(cli_mod, monkeypatch, short_socket_dir):
     """A real, user-created marker is not trusted (it isn't root-owned)."""
     marker = os.path.join(short_socket_dir, "allow_insecure_tcp")
@@ -208,6 +218,7 @@ def test_unsafe_socket_symlink_rejected(cli_mod, short_socket_dir):
 
 
 @posix_only
+@requires_nonroot
 def test_unsafe_socket_user_owned_dir_rejected(cli_mod, short_socket_dir, monkeypatch):
     """The realistic local-spoofing case: a socket under a dir the user owns. Even
     if the socket itself passed the owner check (here via TENUO_AUTHZ_SERVICE_UID),
@@ -223,6 +234,7 @@ def test_unsafe_socket_user_owned_dir_rejected(cli_mod, short_socket_dir, monkey
 
 
 @posix_only
+@requires_nonroot
 def test_unsafe_socket_user_owned_socket_rejected(cli_mod, short_socket_dir):
     """With no service-uid override, a user-created socket is rejected at the
     socket-owner check (it isn't root-owned)."""
@@ -235,6 +247,7 @@ def test_unsafe_socket_user_owned_socket_rejected(cli_mod, short_socket_dir):
 
 
 @posix_only
+@requires_nonroot
 def test_unmanaged_unix_accepts_user_owned_socket(cli_mod, short_socket_dir):
     """The dev opt-in (managed=False) must actually work: a socket the developer
     owns, in a dir they own and that isn't world-writable, is trusted. Otherwise the
@@ -288,6 +301,7 @@ def test_authorize_over_uds_denies_missing_socket(cli_mod, short_socket_dir):
 
 
 @posix_only
+@requires_nonroot
 def test_authorize_over_uds_denies_user_owned_socket_when_managed(cli_mod, short_socket_dir, monkeypatch):
     """Under the pinned managed hook, a user-owned socket must be refused outright
     (not even connected to), since the developer is the adversary."""

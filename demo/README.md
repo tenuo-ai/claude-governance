@@ -20,8 +20,10 @@ That is all the local demo needs. No Tenuo account, no keys, no tenant root: `bo
 
 **Cloud (adds signed receipts, fleet revocation, and human approval):**
 
-1. Create your account at [cloud.tenuo.ai](https://cloud.tenuo.ai). Your tenant's signing **root is provisioned for you**; there is no manual "create a root key" step, and a brand-new tenant works out of the box (the demo runs in unmanaged Cloud mode, which resolves the tenant root automatically).
-2. Grab two keys, kept apart (the runtime never sees the admin key):
+A brand-new tenant has no signing keys yet, and warrants cannot be issued until an active **root key** exists. So do the one-time Cloud onboarding first, then bootstrap:
+
+1. Create your account at [cloud.tenuo.ai](https://cloud.tenuo.ai) and complete the dashboard's **Infrastructure** onboarding. It provisions your KMS-backed key hierarchy: a **root key** (your tenant trust anchor) and an **issuer key**. Private key material stays in KMS; you only ever see public keys. This step is required, not optional.
+2. Grab two API keys, kept apart (the runtime never sees the admin key):
 
    | Key | From | Goes in |
    |-----|------|---------|

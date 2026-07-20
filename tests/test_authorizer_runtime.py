@@ -90,8 +90,9 @@ def test_resolve_binary_on_path(tmp_path, monkeypatch):
     monkeypatch.delenv("TENUO_AUTHORIZER_BIN", raising=False)
     binary = tmp_path / "tenuo-authorizer"
     binary.write_bytes(b"fake")
-    with mock.patch("shutil.which", return_value=str(binary)):
-        assert art.resolve_authorizer_binary() == binary
+    with mock.patch.object(art, "managed_binary_path", return_value=tmp_path / "missing"):
+        with mock.patch("shutil.which", return_value=str(binary)):
+            assert art.resolve_authorizer_binary() == binary
 
 
 def test_resolve_binary_missing(monkeypatch):
@@ -118,7 +119,7 @@ def test_install_authorizer_skips_when_current(tmp_path, monkeypatch):
     managed.parent.mkdir()
     managed.write_bytes(b"fake")
     with mock.patch.object(art, "managed_binary_path", return_value=managed):
-        with mock.patch.object(art, "query_binary_version", return_value="0.2.0+authz.3"):
+        with mock.patch.object(art, "query_binary_version", return_value="0.2.3+authz.3"):
             with mock.patch.object(art, "download_release_binary") as dl:
                 result = art.install_authorizer(force=False)
                 assert result == managed
@@ -135,8 +136,9 @@ def test_runtime_meta_roundtrip(tmp_path):
 
 def test_find_authorizer_binary_none(monkeypatch):
     monkeypatch.delenv("TENUO_AUTHORIZER_BIN", raising=False)
-    with mock.patch("shutil.which", return_value=None):
-        assert art.find_authorizer_binary() is None
+    with mock.patch.object(art, "managed_binary_path", return_value=Path("/nonexistent/tenuo-authorizer")):
+        with mock.patch("shutil.which", return_value=None):
+            assert art.find_authorizer_binary() is None
 
 
 def test_assert_port_available_free(monkeypatch, tmp_path):
@@ -180,7 +182,7 @@ def test_install_authorizer_cmd_without_project(tmp_path, monkeypatch):
     fake.parent.mkdir()
     fake.write_bytes(b"fake")
     monkeypatch.setattr(art, "install_authorizer", lambda *a, **kw: fake)
-    monkeypatch.setattr(art, "query_binary_version", lambda p: "0.2.0+authz.1")
+    monkeypatch.setattr(art, "query_binary_version", lambda p: "0.2.3+authz.3")
     cli.main()
 
 

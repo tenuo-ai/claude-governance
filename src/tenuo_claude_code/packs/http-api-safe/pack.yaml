@@ -1,0 +1,48 @@
+name: http-api-safe
+version: 1
+title: HTTP API Safe
+reviewed: "2026-07-10"
+reviewed_by: tenuo-packs
+description: >
+  Adapter governance for generic HTTP/API-call MCP tools: safe methods to one
+  URL pattern, with mutation/admin calls denied by default. The user supplies
+  the concrete MCP tool and argument names, so this pack does not assume a
+  specific server schema.
+pinned:
+  name: user-specified-http-mcp
+  version: adapter-v1
+  tool_list_hash: user-supplied-schema
+params:
+  - name: tool
+    prompt: Which MCP tool performs HTTP calls?
+    example: http_call
+    default: http_call
+    required: true
+  - name: url_arg
+    prompt: Which argument contains the request URL?
+    example: url
+    default: url
+    required: true
+  - name: method_arg
+    prompt: Which argument contains the HTTP method?
+    example: method
+    default: method
+    required: true
+  - name: url_pattern
+    prompt: Which API URL pattern may agents call?
+    example: "https://api.acme.com/v1/*"
+    required: true
+  - name: methods
+    prompt: Which methods are safe without approval?
+    example: GET,HEAD
+    default: GET,HEAD
+    required: true
+summary:
+  tools: 1
+  allowed: 1
+  gated: 0
+  denied: 0
+assumptions:
+  - The named MCP tool exposes URL and method as separate structured arguments.
+  - This pack intentionally does not approve mutations for a single generic http_call tool.
+  - Pair with least-privilege API credentials for the hard provider-side boundary.

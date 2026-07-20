@@ -1,0 +1,32 @@
+name: github-mcp
+version: 3
+title: GitHub MCP
+reviewed: "2026-06-28"
+reviewed_by: tenuo-packs
+description: >
+  Starter governance for GitHub MCP servers: repo-scoped reads and ordinary
+  collaboration, approval-gated merge/push, and explicit denial for repository
+  deletion/fork/high-blast-radius operations.
+pinned:
+  name: github-mcp-server
+  version: "0.4.1"
+  tool_list_hash: a1b9f0c
+params:
+  - name: repos
+    prompt: Which repos may agents touch?
+    example: glob, e.g. myorg/service-*
+    required: true
+  - name: approver
+    prompt: Who approves merges and pushes?
+    example: key id, email, or any-human
+    required: true
+summary:
+  tools: 18
+  allowed: 9
+  gated: 6
+  denied: 3
+assumptions:
+  - GitHub MCP tool names match github-mcp-server v0.4.1.
+  - The repo argument is named repo on governed tools.
+  - Approval gates require Tenuo Cloud; local mode denies gated calls fail-closed.
+

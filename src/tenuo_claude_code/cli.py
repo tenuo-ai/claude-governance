@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
+import hashlib
 import json
 import os
 import shlex
@@ -42,6 +44,11 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+try:
+    import fcntl  # POSIX advisory file locking (macOS/Linux)
+except ImportError:  # pragma: no cover - non-POSIX platforms
+    fcntl = None
+
 from tenuo_claude_code import authorizer_runtime as art
 from tenuo_claude_code.paths import (
     ADMIN_COMMAND,
@@ -52,6 +59,7 @@ from tenuo_claude_code.paths import (
     bind_project_paths,
     scaffold_example_policy,
 )
+from tenuo_claude_code import packs
 from tenuo_claude_code.verify import ProbeResult, build_probes, format_text, run_probes
 
 # ---------------------------------------------------------------------------
@@ -72,6 +80,8 @@ MCP_SERVER_NAME = "tenuo-files"
 HOLDER_KEY: Path
 ISSUER_KEY: Path
 ISSUER_PUB: Path
+RECEIPT_KEY: Path
+RECEIPT_PUB: Path
 WARRANT: Path
 STATE_JSON: Path
 GATEWAY: Path
@@ -95,6 +105,27 @@ DEFAULT_AUTHZ_SOCKET = "/var/run/tenuo/authorizer.sock"
 # `_insecure_tcp_breakglass`). Deliberately a file under an admin-only dir, not an
 # env var, so a local user can't re-enable the TCP downgrade.
 BREAKGLASS_TCP_FILE = "/etc/tenuo/allow_insecure_tcp"
+
+
+def _decode_b64url_or_standard(value: str) -> bytes:
+    """Decode Tenuo header base64, accepting URL-safe no-pad and standard forms."""
+    token = "".join(value.split())
+    padded = token + ("=" * ((4 - len(token) % 4) % 4))
+    try:
+        return base64.urlsafe_b64decode(padded)
+    except Exception:
+        return base64.b64decode(padded)
+
+
+def _decode_warrant_header(value: str):
+    """Decode a header carrying either a WarrantStack or one bare warrant."""
+    from tenuo import Warrant
+    from tenuo_core import decode_warrant_stack_base64
+
+    try:
+        return decode_warrant_stack_base64(value)
+    except Exception:
+        return [Warrant.from_base64(value)]
 
 
 def resolve_authz_url() -> str:
@@ -323,7 +354,7 @@ POP_HEADER = "X-Tenuo-PoP"
 # The authorizer ships as a published container image (Docker Hub), pinned in
 # lockstep with the `tenuo` PyPI package. Override with TENUO_AUTHORIZER_IMAGE or
 # an `authorizer.image` key in tenuo.yaml.
-DEFAULT_AUTHZ_IMAGE = "tenuo/authorizer:0.2.0-authz.3"
+DEFAULT_AUTHZ_IMAGE = "tenuo/authorizer:0.2.3"
 
 # Claude tool -> (capability, primary arg, Claude input field for that arg)
 #
@@ -1231,7 +1262,7 @@ def _parse_connect_token(raw: str) -> dict:
     except ImportError as e:
         raise SystemExit(
             "TENUO_CONNECT_TOKEN requires the tenuo_core extension "
-            "(bundled with tenuo>=0.2.0)."
+            "(bundled with tenuo>=0.2.3)."
         ) from e
     except Exception as e:
         raise SystemExit(f"Invalid TENUO_CONNECT_TOKEN: {e}") from e
@@ -1242,14 +1273,46 @@ def _parse_connect_token(raw: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _authorization_receipt_context(tenuo_tool: str, route: str, sign_args: dict,
+                                   warrant_b64: str, pop_b64: str | None,
+                                   pop_ts: int | None,
+                                   approvals_b64: str | None = None) -> dict:
+    """Evidence needed to replay a governed decision from the receipt alone.
+
+    The receipt stores the exact warrant header presented to the authorizer, plus
+    a hash for quick tamper diagnostics. Verification still decodes and validates
+    the warrant chain against a separately configured trust root; it never trusts
+    the issuer just because it appeared in the receipt.
+    """
+    stack_bytes = _decode_b64url_or_standard(warrant_b64)
+    chain = _decode_warrant_header(warrant_b64)
+    leaf = chain[-1]
+    ctx = {
+        "authz_evidence_version": 1,
+        "warrant_stack_b64": warrant_b64,
+        "warrant_stack_hash": hashlib.sha256(stack_bytes).hexdigest(),
+        "warrant_chain_ids": [w.id for w in chain],
+        "warrant_id": leaf.id,
+        "tenuo_tool": tenuo_tool,
+        "route": route,
+        "sign_args": sign_args,
+        "pop_b64": pop_b64,
+        "pop_ts": pop_ts,
+    }
+    if approvals_b64:
+        ctx["approvals_b64"] = approvals_b64
+    return ctx
+
+
 def _authorize_attempt(tenuo_tool: str, route: str, sign_args: dict, body,
                        warrant_b64: str | None, approvals_b64: str | None = None):
-    """One signed authorizer call. Returns (allowed, reason, response_body|{}).
+    """One signed authorizer call. Returns (allowed, reason, response_body|{}, evidence).
 
     Fail-closed: any signing/transport error -> (False, reason, {}). `approvals_b64`
     attaches base64-CBOR SignedApproval(s) (the X-Tenuo-Approvals header) so a
     previously approval-gated call can be re-authorized.
     """
+    evidence = {}
     try:
         from tenuo import SigningKey
         from tenuo_core import decode_warrant_stack_base64
@@ -1258,37 +1321,46 @@ def _authorize_attempt(tenuo_tool: str, route: str, sign_args: dict, body,
         header_b64 = warrant_b64 if warrant_b64 is not None else WARRANT.read_text()
         # The header may carry a single warrant or a WarrantStack; either decodes
         # to a chain (single -> length 1). The leaf (last) is what signs the PoP.
-        leaf = decode_warrant_stack_base64(header_b64)[-1]
-        pop = leaf.sign(holder, tenuo_tool, sign_args, int(time.time()))
+        try:
+            leaf = decode_warrant_stack_base64(header_b64)[-1]
+        except Exception:
+            from tenuo import Warrant
+            leaf = Warrant.from_base64(header_b64)
+        pop_ts = int(time.time())
+        pop = leaf.sign(holder, tenuo_tool, sign_args, pop_ts)
+        pop_b64 = base64.b64encode(bytes(pop)).decode("ascii")
+        evidence = _authorization_receipt_context(
+            tenuo_tool, route, sign_args, header_b64, pop_b64, pop_ts, approvals_b64)
         headers = {
             WARRANT_HEADER: header_b64,
-            POP_HEADER: base64.b64encode(bytes(pop)).decode("ascii"),
+            POP_HEADER: pop_b64,
             "Content-Type": "application/json",
         }
         if approvals_b64:
             headers[APPROVALS_HEADER] = approvals_b64
         data = json.dumps(body).encode()
     except Exception as exc:
-        return False, f"enforcement error ({exc})", {}
+        return False, f"enforcement error ({exc})", {}, evidence
 
     mode, loc = authz_endpoint()
     if mode == "unix":
-        return _authorize_over_uds(loc, route, headers, data)
+        allowed, reason, rb = _authorize_over_uds(loc, route, headers, data)
+        return allowed, reason, rb, evidence
     try:
         req = urllib.request.Request(loc + route, data=data, headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=5) as resp:
             rb = json.loads(resp.read().decode() or "{}")
             if resp.status == 200 and rb.get("authorized"):
-                return True, "authorized", rb
-            return False, rb.get("message") or rb.get("error") or f"status {resp.status}", rb
+                return True, "authorized", rb, evidence
+            return False, rb.get("message") or rb.get("error") or f"status {resp.status}", rb, evidence
     except urllib.error.HTTPError as exc:
         try:
             rb = json.loads(exc.read().decode() or "{}")
-            return False, rb.get("message") or rb.get("error") or f"status {exc.code}", rb
+            return False, rb.get("message") or rb.get("error") or f"status {exc.code}", rb, evidence
         except Exception:
-            return False, f"status {exc.code}", {}
+            return False, f"status {exc.code}", {}, evidence
     except Exception as exc:
-        return False, f"authorizer unreachable, denying ({exc})", {}
+        return False, f"authorizer unreachable, denying ({exc})", {}, evidence
 
 
 def _authorize_over_uds(socket_path: str, route: str, headers: dict, data: bytes):
@@ -1320,7 +1392,7 @@ def authorize(tenuo_tool: str, route: str, sign_args: dict, body=None,
     trusted root; the LEAF signs the PoP. The holder key is the same in both
     cases (children are delegated to the session holder), so signing is uniform.
     """
-    allowed, reason, _ = _authorize_attempt(
+    allowed, reason, _, _ = _authorize_attempt(
         tenuo_tool, route, sign_args, sign_args if body is None else body, warrant_b64)
     return allowed, reason
 
@@ -1444,31 +1516,33 @@ def authorize_with_approval(cfg: dict, claude_tool: str, tenuo_tool: str, route:
     """authorize() + Cloud approval retry on 1707. live=False = report-only (verify/demo)."""
     if body is None:
         body = sign_args
-    allowed, reason, rb = _authorize_attempt(tenuo_tool, route, sign_args, body, warrant_b64)
+    allowed, reason, rb, evidence = _authorize_attempt(
+        tenuo_tool, route, sign_args, body, warrant_b64)
     if allowed:
-        return True, reason
+        return True, reason, evidence
     if not (isinstance(rb, dict) and rb.get("error_code") == APPROVAL_REQUIRED_CODE):
-        return False, reason
+        return False, reason, evidence
 
     creds = cloud_creds(cfg)
     policy_id = approval_policy_id(cfg, tenuo_tool)
     if not (creds.get("url") and creds.get("api_key") and policy_id):
         return False, ("approval required, but the Cloud approver isn't configured — "
-                       "run `tenuo-admin setup` (approval gates require Tenuo Cloud)")
+                       "run `tenuo-admin setup` (approval gates require Tenuo Cloud)"), evidence
     threshold = int(rb.get("required_approvals") or 1)
     if not live:
-        return False, f"{APPROVAL_PENDING_REASON}: {threshold} approval(s) required"
+        return False, f"{APPROVAL_PENDING_REASON}: {threshold} approval(s) required", evidence
 
     sigs, areason = request_cloud_approval(
         creds, policy_id, claude_tool, tenuo_tool, sign_args, rb, warrant_b64)
     if not sigs:
-        return False, f"{APPROVAL_PENDING_REASON} — {areason}"
-    allowed, reason, _ = _authorize_attempt(
+        return False, f"{APPROVAL_PENDING_REASON} — {areason}", evidence
+    approvals_header = encode_approvals_header(sigs)
+    allowed, reason, _, approved_evidence = _authorize_attempt(
         tenuo_tool, route, sign_args, body, warrant_b64,
-        approvals_b64=encode_approvals_header(sigs))
+        approvals_b64=approvals_header)
     if allowed:
-        return True, "approved"
-    return False, f"re-authorize after approval failed: {reason}"
+        return True, "approved", approved_evidence
+    return False, f"re-authorize after approval failed: {reason}", approved_evidence
 
 
 def mcp_tool_name(tool_name: str) -> str | None:
@@ -1606,8 +1680,13 @@ def resolve_subagent_role(role: str, defs: dict[str, Path] | None = None) -> tup
 
 
 def authorize_call(cfg: dict, tool: str, tin: dict, agent_type, roles: dict,
-                   live: bool = False, skip_approval_gate: bool = False):
+                   live: bool = False, skip_approval_gate: bool = False,
+                   return_context: bool = False):
     """Decide one tool call. Returns (allowed, reason, governed, tenuo_tool).
+
+    With ``return_context=True`` appends the authorization evidence that should be
+    embedded in a receipt. The default shape stays stable for tests and callers
+    that only need the decision.
 
     Three layers, in order:
       1. SPAWN GATE — a main-thread Agent/Task call. With `subagents:` declared,
@@ -1623,35 +1702,52 @@ def authorize_call(cfg: dict, tool: str, tin: dict, agent_type, roles: dict,
       3. SESSION — everything else (incl. in-subagent calls under flat coverage):
          the main-thread session warrant, as before.
     """
+    def done(allowed, reason, governed, tenuo_tool, evidence=None):
+        out = (allowed, reason, governed, tenuo_tool)
+        return (*out, evidence or {}) if return_context else out
+
     if tool in SPAWN_TOOLS and not agent_type:
         if not roles:
             # Flat coverage: no subagent roles -> spawning is plain orchestration.
             # The subagent's tool calls still run under the session warrant, so
             # nothing escalates; record the spawn as audited rather than denying.
-            return True, "flat coverage (no subagent roles declared)", False, tool
+            return done(True, "flat coverage (no subagent roles declared)", False, tool)
         # Signed spawn gate: ask the authorizer (root-signed in Cloud mode). The
         # warrant's spawn_agent oneof decides which declared roles may spawn.
         requested = (tin or {}).get("subagent_type") or ""
-        allowed, reason = authorize(SPAWN_CAP, f"/verify/{SPAWN_CAP}",
-                                    {"subagent_type": requested},
-                                    {"subagent_type": requested})
-        return allowed, reason, True, SPAWN_CAP
+        route = f"/verify/{SPAWN_CAP}"
+        sign_args = {"subagent_type": requested}
+        if return_context:
+            allowed, reason, _, evidence = _authorize_attempt(
+                SPAWN_CAP, route, sign_args, sign_args, warrant_b64=None)
+            return done(allowed, reason, True, SPAWN_CAP, evidence)
+        allowed, reason = authorize(SPAWN_CAP, route, sign_args, sign_args)
+        return done(allowed, reason, True, SPAWN_CAP)
 
     tenuo_tool, route, sign_args, body, governed = resolve_tool(cfg, tool, tin)
     warrant_b64 = None
     if agent_type and roles:
         sw = subwarrant_path(agent_type)
         if agent_type not in roles or not sw.exists():
-            return False, f"undeclared subagent '{agent_type}'", governed, tenuo_tool
+            return done(False, f"undeclared subagent '{agent_type}'", governed, tenuo_tool)
         warrant_b64 = sw.read_text()
     # Any governed tool call can return approval-required (1707) when the warrant
     # includes an approval gate for that capability. The hook resolves it via
     # Cloud (live) or reports PAUSE (verify / demo / audit mode).
+    evidence = {}
     if not skip_approval_gate:
-        allowed, reason = authorize_with_approval(
+        result = authorize_with_approval(
             cfg, tool, tenuo_tool, route, sign_args, body, warrant_b64, live=live)
+        if len(result) == 3:
+            allowed, reason, evidence = result
+        else:
+            allowed, reason = result
     else:
-        allowed, reason = authorize(tenuo_tool, route, sign_args, body, warrant_b64=warrant_b64)
+        if return_context:
+            allowed, reason, _, evidence = _authorize_attempt(
+                tenuo_tool, route, sign_args, sign_args if body is None else body, warrant_b64)
+        else:
+            allowed, reason = authorize(tenuo_tool, route, sign_args, body, warrant_b64=warrant_b64)
     # `default: approve` fails closed in the warrant, not here: the catch-all carries
     # a whole-tool approval gate, so tenuo-core requires a signed human approval for
     # every unlisted call (and the cap is granted only alongside that gate; locally
@@ -1659,7 +1755,7 @@ def authorize_call(cfg: dict, tool: str, tin: dict, agent_type, roles: dict,
     # boundary — we don't re-derive its decision client-side.
     if not allowed and governed:
         reason = _augment_denial_reason(cfg, tool, reason)
-    return allowed, reason, governed, tenuo_tool
+    return done(allowed, reason, governed, tenuo_tool, evidence)
 
 
 def _augment_denial_reason(cfg: dict, tool: str, reason: str) -> str:
@@ -1696,6 +1792,224 @@ def receipt_sink_failure() -> str | None:
         return None
 
 
+def _canonical_receipt_bytes(payload: dict) -> bytes:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+
+
+def _receipt_signing_key():
+    from tenuo import SigningKey
+
+    ensure_state_dir()
+    if RECEIPT_KEY.exists():
+        key = SigningKey.from_bytes(base64.b64decode(RECEIPT_KEY.read_text()))
+        if not RECEIPT_PUB.exists():
+            RECEIPT_PUB.write_text(key.public_key.to_bytes().hex())
+        return key
+    key = SigningKey.generate()
+    write_secret(RECEIPT_KEY, base64.b64encode(bytes(key.secret_key_bytes())).decode())
+    RECEIPT_PUB.write_text(key.public_key.to_bytes().hex())
+    return key
+
+
+def _trusted_receipt_signer() -> str | None:
+    try:
+        if RECEIPT_PUB.exists():
+            return RECEIPT_PUB.read_text().strip()
+        if RECEIPT_KEY.exists():
+            key = _receipt_signing_key()
+            return key.public_key.to_bytes().hex()
+    except Exception:
+        pass
+    return None
+
+
+def _last_receipt_hash() -> str | None:
+    if not RECEIPTS.exists():
+        return None
+    try:
+        for line in reversed(RECEIPTS.read_text().splitlines()):
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if isinstance(row, dict):
+                return row.get("receipt_hash") or row.get("hash")
+    except Exception:
+        return None
+    return None
+
+
+def _unwrap_receipt(row: dict) -> dict:
+    payload = row.get("payload")
+    return payload if isinstance(payload, dict) else row
+
+
+def _receipt_trust_roots() -> list[str]:
+    """Trusted root public keys recorded outside the receipt itself."""
+    roots: list[str] = []
+    for path in (globals().get("ISSUER_PUB"),):
+        try:
+            if path and Path(path).exists():
+                val = Path(path).read_text().strip()
+                if val:
+                    roots.append(val)
+        except Exception:
+            pass
+    try:
+        if STATE_JSON.exists():
+            val = json.loads(STATE_JSON.read_text()).get("issuer_pub_hex")
+            if isinstance(val, str) and val.strip():
+                roots.append(val.strip())
+    except Exception:
+        pass
+    try:
+        val = load_cloud_state().get("root")
+        if isinstance(val, str) and val.strip():
+            roots.append(val.strip())
+    except Exception:
+        pass
+    out = []
+    seen = set()
+    for root in roots:
+        if root not in seen:
+            seen.add(root)
+            out.append(root)
+    return out
+
+
+def _verify_authz_evidence(payload: dict, idx: int) -> list[str]:
+    """Replay the governed decision embedded in one receipt payload."""
+    authz = payload.get("authz")
+    if not isinstance(authz, dict) or not authz:
+        return []
+
+    errors: list[str] = []
+    required = ("warrant_stack_b64", "warrant_stack_hash", "warrant_id",
+                "tenuo_tool", "sign_args", "pop_b64")
+    missing = [k for k in required if k not in authz or authz.get(k) is None]
+    if missing:
+        return [f"receipt {idx}: authz evidence missing {missing}"]
+
+    try:
+        from tenuo import Authorizer, PublicKey
+        from tenuo_core import decode_warrant_stack_base64
+
+        stack_b64 = authz["warrant_stack_b64"]
+        stack_bytes = _decode_b64url_or_standard(stack_b64)
+        stack_hash = hashlib.sha256(stack_bytes).hexdigest()
+        if authz.get("warrant_stack_hash") != stack_hash:
+            errors.append(f"receipt {idx}: warrant_stack_hash mismatch")
+        chain = _decode_warrant_header(stack_b64)
+        if not chain:
+            return [*errors, f"receipt {idx}: empty warrant chain"]
+        leaf = chain[-1]
+        if authz.get("warrant_id") != leaf.id:
+            errors.append(f"receipt {idx}: warrant_id mismatch")
+        ids = authz.get("warrant_chain_ids")
+        if isinstance(ids, list) and ids != [w.id for w in chain]:
+            errors.append(f"receipt {idx}: warrant_chain_ids mismatch")
+
+        roots = _receipt_trust_roots()
+        if not roots:
+            return [*errors, f"receipt {idx}: no trusted root key available for warrant verification"]
+
+        verified = False
+        last_chain_error = None
+        for root in roots:
+            try:
+                verifier = Authorizer()
+                verifier.add_trusted_root(PublicKey.from_bytes(bytes.fromhex(root)))
+                verifier.verify_chain(chain)
+                verified = True
+                break
+            except Exception as exc:
+                last_chain_error = exc
+        if not verified:
+            return [*errors, f"receipt {idx}: warrant chain invalid ({last_chain_error})"]
+
+        verifier = Authorizer()
+        verifier.add_trusted_root(PublicKey.from_bytes(bytes.fromhex(root)))
+        tool = authz["tenuo_tool"]
+        args = authz["sign_args"]
+        constraint_error = leaf.check_constraints(tool, args)
+        in_bounds = constraint_error is None
+
+        pop_ts = authz.get("pop_ts")
+        pop_age = time.time() - pop_ts if isinstance(pop_ts, int) else None
+        if pop_age is not None and pop_age < 0:
+            errors.append(f"receipt {idx}: pop_ts is in the future")
+
+        recorded = payload.get("decision")
+        if recorded == "allow" and not in_bounds:
+            errors.append(f"receipt {idx}: recorded allow but warrant replay denied ({constraint_error})")
+    except Exception as exc:
+        errors.append(f"receipt {idx}: authz evidence invalid ({exc})")
+    return errors
+
+
+def verify_receipt_rows(rows: list[dict]) -> tuple[bool, list[str]]:
+    """Verify local receipt signatures, hash chain, and embedded authorization evidence."""
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    except Exception as exc:
+        return False, [f"cryptography unavailable: {exc}"]
+
+    errors: list[str] = []
+    prev = None
+    trusted_signer = _trusted_receipt_signer()
+    if not trusted_signer:
+        errors.append("receipt verifier key unavailable")
+    for idx, row in enumerate(rows, 1):
+        payload = row.get("payload")
+        sig_b64 = row.get("signature")
+        pub_hex = row.get("signer_pub")
+        receipt_hash = row.get("receipt_hash")
+        if not isinstance(payload, dict) or not sig_b64 or not pub_hex or not receipt_hash:
+            errors.append(f"receipt {idx}: unsigned or malformed")
+            continue
+        if trusted_signer and pub_hex != trusted_signer:
+            errors.append(f"receipt {idx}: signer_pub does not match trusted receipt key")
+        if payload.get("prev_hash") != prev:
+            errors.append(f"receipt {idx}: prev_hash mismatch")
+        canonical = _canonical_receipt_bytes(payload)
+        try:
+            sig = base64.b64decode(sig_b64)
+            pub = Ed25519PublicKey.from_public_bytes(bytes.fromhex(pub_hex))
+            pub.verify(sig, canonical)
+        except Exception as exc:
+            errors.append(f"receipt {idx}: signature invalid ({exc})")
+        expected = hashlib.sha256(canonical + base64.b64decode(sig_b64)).hexdigest()
+        if receipt_hash != expected:
+            errors.append(f"receipt {idx}: receipt_hash mismatch")
+        errors.extend(_verify_authz_evidence(payload, idx))
+        prev = receipt_hash
+    return not errors, errors
+
+
+@contextlib.contextmanager
+def _receipt_append_lock():
+    """Serialize the read-prev-hash + append across every receipt writer.
+
+    Receipts are written by multiple processes: each native-tool PreToolUse hook
+    is a fresh short-lived process, and the long-running MCP proxy writes too.
+    Without a lock, two writers both read the same `prev_hash` and append rows
+    claiming it — forking the hash chain and producing spurious `audit --verify`
+    failures — and large rows (an embedded warrant stack can exceed PIPE_BUF) can
+    tear. An exclusive advisory lock on a sidecar file makes the whole
+    read-modify-append atomic. On platforms without ``fcntl`` this degrades to a
+    no-op (single-writer only), which is the pre-existing behavior.
+    """
+    if fcntl is None:
+        yield
+        return
+    lock_path = RECEIPTS.with_name(RECEIPTS.name + ".lock")
+    with open(lock_path, "w") as lock_fh:
+        fcntl.flock(lock_fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_fh, fcntl.LOCK_UN)
+
+
 def write_receipt(entry: dict) -> bool:
     """Append one receipt to the signed decision log. Returns True on success.
 
@@ -1703,13 +2017,30 @@ def write_receipt(entry: dict) -> bool:
     drops a marker so `status`/`check` can surface it — a SILENT gap in the audit
     trail is the worst failure mode for an audit product. In enforce mode, callers
     fail closed on a False return when `strict_receipts: true` is set in policy.
+
+    The chain link (`prev_hash`) is read and the row appended under an exclusive
+    lock so concurrent hook/proxy writers can't fork the chain or interleave.
     """
     global _receipt_write_warned
     try:
         ensure_state_dir()
-        entry["ts"] = datetime.now(timezone.utc).isoformat()
-        with RECEIPTS.open("a") as fh:
-            fh.write(json.dumps(entry) + "\n")
+        key = _receipt_signing_key()
+        with _receipt_append_lock():
+            payload = dict(entry)
+            payload["ts"] = datetime.now(timezone.utc).isoformat()
+            payload["receipt_version"] = 1
+            payload["prev_hash"] = _last_receipt_hash()
+            canonical = _canonical_receipt_bytes(payload)
+            sig = key.sign_raw(canonical)
+            row = {
+                "payload": payload,
+                "signer_pub": key.public_key.to_bytes().hex(),
+                "signature": base64.b64encode(sig).decode(),
+                "receipt_hash": hashlib.sha256(canonical + sig).hexdigest(),
+            }
+            with RECEIPTS.open("a") as fh:
+                fh.write(json.dumps(row) + "\n")
+                fh.flush()
         marker = _receipt_fail_marker()
         if marker.exists():
             marker.unlink()  # sink recovered
@@ -1755,13 +2086,14 @@ def cmd_hook(_args) -> None:
         agent_type = event.get("agent_type")
         roles = subagent_roles(cfg)
         # Enforce mode drives the live approval flow; audit mode only reports.
-        allowed, reason, governed, tenuo_tool = (
-            authorize_call(cfg, tool, tin, agent_type, roles, live=not audit_only))
+        allowed, reason, governed, tenuo_tool, authz_evidence = (
+            authorize_call(cfg, tool, tin, agent_type, roles, live=not audit_only,
+                           return_context=True))
         wrote = write_receipt(
             {"phase": "pre", "decision": "allow" if allowed else "deny",
              "shadow": audit_only, "claude_tool": tool, "tenuo_tool": tenuo_tool,
              "governed": governed, "agent_type": agent_type, "args": tin,
-             "reason": reason}
+             "reason": reason, "authz": authz_evidence}
         )
         kind = "authorized" if governed else "audited"
         scope = f" (subagent:{agent_type})" if agent_type else ""
@@ -1908,14 +2240,15 @@ def cmd_mcp_proxy(_args) -> None:
                     # receipt in the background until its own timeout — its result is
                     # just discarded.)
                     tin = dict(arguments or {})
-                    allowed, reason, _, tenuo_tool = await asyncio.to_thread(
+                    allowed, reason, _, tenuo_tool, authz_evidence = await asyncio.to_thread(
                         authorize_call, cfg, name, tin, None, roles,
-                        live=not audit_only)
+                        live=not audit_only, return_context=True)
                     wrote = write_receipt({"phase": "pre", "source": "mcp_proxy",
                                    "decision": "allow" if allowed else "deny",
                                    "shadow": audit_only, "claude_tool": name,
                                    "tenuo_tool": tenuo_tool,
-                                   "args": tin, "reason": reason})
+                                   "args": tin, "reason": reason,
+                                   "authz": authz_evidence})
                     # strict_receipts: don't forward an allowed call we couldn't log.
                     if allowed and not audit_only and not wrote and cfg.get("strict_receipts"):
                         allowed, reason = False, "audit receipt unwritable, strict_receipts on (fail-closed)"
@@ -1977,9 +2310,13 @@ def enforced_capabilities(cfg: dict) -> dict:
         cons = parsed["constraints"]
         if cons:
             caps[mtool] = {a: make_constraint(spec, sandbox) for a, spec in cons.items()}
-        elif parsed.get("approval") and use_cloud_trigger(cfg):
-            gated = list((parsed.get("exempt_args") or {}).keys()) or [mcp_default_arg(mtool)]
-            caps[mtool] = {a: Wildcard() for a in gated}
+        elif parsed.get("approval"):
+            exempt = parsed.get("exempt_args") or {}
+            if use_cloud_trigger(cfg):
+                gated = list(exempt.keys()) or [mcp_default_arg(mtool)]
+                caps[mtool] = {a: Wildcard() for a in gated}
+            elif exempt:
+                caps[mtool] = {a: make_constraint(spec, sandbox) for a, spec in exempt.items()}
     roles = subagent_roles(cfg)
     if roles:
         # Spawning is a first-class signed capability; per-role child warrants
@@ -2048,6 +2385,16 @@ def write_gateway(cfg: dict, enforced_caps: dict) -> None:
         tools[cap] = {"description": cap, "constraints": {}}
         routes.append({"pattern": f"/verify/{cap}", "method": ["POST"], "tool": cap,
                        "constraints": {}})
+    for mtool, parsed in mcp_enforce_entries(cfg).items():
+        if mtool in tools:
+            continue
+        fields = mcp_constraint_args(mtool, parsed)
+        if not fields:
+            continue
+        tools[mtool] = {"description": mtool, "constraints": {}}
+        routes.append({"pattern": f"/verify/{mtool}", "method": ["POST"], "tool": mtool,
+                       "constraints": {f: {"from": "body", "path": f, "required": True}
+                                       for f in fields}})
     # Catch-all route /gate -> the granted "audit" or the ungranted "unlisted"
     # capability (declared as a tool either way so the route compiles).
     catchall = catchall_cap(cfg)
@@ -2751,7 +3098,12 @@ def write_advanced_profile(*, approver: str | None = None, approver_id: str | No
         raise SystemExit("--advanced requires --approver-id or --approver.")
     data: dict = {
         "cloud": cloud,
-        "enforce": {"WebFetch": {"approval": {"threshold": threshold}}},
+        "enforce": {
+            "WebFetch": {
+                "domains": ["docs.anthropic.com"],
+                "approval": {"threshold": threshold},
+            },
+        },
         "mcp": {
             "enforce": {
                 "delete_deployment": {
@@ -3821,7 +4173,16 @@ def cmd_audit(args) -> None:
     if not RECEIPTS.exists():
         print("No receipts yet.")
         return
-    rows = [json.loads(x) for x in RECEIPTS.read_text().splitlines() if x.strip()]
+    raw_rows = [json.loads(x) for x in RECEIPTS.read_text().splitlines() if x.strip()]
+    if getattr(args, "verify", False):
+        ok, errors = verify_receipt_rows(raw_rows)
+        if ok:
+            print(f"Receipt verification OK ({len(raw_rows)} receipts)")
+        else:
+            print("Receipt verification FAILED")
+            for err in errors:
+                print(f"  {err}")
+    rows = [_unwrap_receipt(r) for r in raw_rows]
     if getattr(args, "tail", None):
         rows = rows[-args.tail:]
     for r in rows:
@@ -4231,17 +4592,82 @@ def cmd_bench(args) -> None:
     print("  • Core chain-verify microbenches: tenuo-core `cargo bench --bench warrant_benchmarks`.")
 
 
+def _pack_summary_line(pack: packs.Pack) -> str:
+    s = pack.summary
+    return (
+        f"{s.get('tools', 0)} tools: {s.get('allowed', 0)} allowed, "
+        f"{s.get('gated', 0)} gated on approval, {s.get('denied', 0)} denied"
+    )
+
+
+def _print_pack_header(pack: packs.Pack) -> None:
+    pin = pack.pinned
+    print(f"{pack.name} pack {pack.display_version} (reviewed {pack.reviewed})")
+    print(
+        f"pinned to {pin.get('name')} {pin.get('version')}, "
+        f"tool-list hash {pin.get('tool_list_hash')}"
+    )
+
+
+def cmd_pack(args) -> None:
+    action = getattr(args, "pack_cmd", None)
+    if action == "list":
+        all_packs = packs.list_packs()
+        if not all_packs:
+            print("No bundled policy packs found.")
+            return
+        for pack in all_packs:
+            print(f"{pack.name:<16} {pack.display_version:<4} {_pack_summary_line(pack)}")
+        return
+    if action == "inspect":
+        pack = packs.load_pack(args.name)
+        _print_pack_header(pack)
+        if pack.description:
+            print()
+            print(pack.description.strip())
+        print()
+        print(_pack_summary_line(pack))
+        if pack.params:
+            print("\nParameters:")
+            for p in pack.params:
+                example = f" ({p.get('example')})" if p.get("example") else ""
+                print(f"  - {p['name']}: {p.get('prompt', p['name'])}{example}")
+        if pack.assumptions:
+            print("\nAssumptions:")
+            for a in pack.assumptions:
+                print(f"  - {a}")
+        return
+    raise SystemExit("Usage: tenuo-claude pack list | pack inspect <name>")
+
+
+def render_policy_pack(args) -> None:
+    pack = packs.load_pack(args.pack)
+    _print_pack_header(pack)
+    print()
+    print(f"This pack needs {len(pack.params)} decision(s) from you:")
+    supplied = packs.parse_param_overrides(getattr(args, "param", None))
+    params = packs.collect_params(pack, supplied, assume_defaults=getattr(args, "yes", False))
+    dest = packs.write_pack_policy(DEMO_DIR, pack, params, force=getattr(args, "force", False))
+    print()
+    print(f"Wrote {dest.name} (mode: dry-run)")
+    print(_pack_summary_line(pack))
+    print("Run your agent normally. `tenuo-claude audit` shows what WOULD have been denied.")
+
+
 def cmd_init(args) -> None:
     # `init` compiles an EXISTING policy; it no longer writes one by default.
     # Scaffolding belongs to the first-run path (`onboard`, or `init --scaffold`).
     # This avoids silently dropping an example policy into a project you're
     # integrating into. `--no-scaffold` is kept as a hidden no-op for back-compat.
-    if getattr(args, "scaffold", False):
+    if getattr(args, "pack", None):
+        render_policy_pack(args)
+    elif getattr(args, "scaffold", False):
         scaffold_example_policy(DEMO_DIR)
     elif not CONFIG_FILE.exists():
         raise SystemExit(
             "No tenuo.yaml here — `init` compiles an existing policy, it doesn't write one.\n"
             "  • guided setup:     tenuo-claude onboard\n"
+            "  • use a pack:       tenuo-claude init --pack github-mcp\n"
             "  • write an example: tenuo-claude init --scaffold\n"
             "  • or add your own tenuo.yaml, then re-run `init`")
     if getattr(args, "local", False):
@@ -4702,6 +5128,7 @@ COMMANDS = {
     "disable": cmd_disable, "uninstall": cmd_uninstall,
     "check": cmd_check, "onboard": cmd_onboard, "bootstrap": cmd_bootstrap,
     "install-authorizer": cmd_install_authorizer,
+    "pack": cmd_pack,
     "managed-template": cmd_managed_template,
     "audit": cmd_audit, "revoke": cmd_revoke,
     "verify": cmd_verify, "doctor": cmd_doctor, "demo": cmd_demo, "bench": cmd_bench,
@@ -4766,6 +5193,12 @@ def main() -> None:
     pi.add_argument("--local", action="store_true", help="move Cloud files aside for local mode")
     pi.add_argument("--scaffold", action="store_true",
                     help="write an example tenuo.yaml if none exists (default: require one)")
+    pi.add_argument("--pack", metavar="NAME",
+                    help="write a reviewed bundled policy pack first (for example: github-mcp)")
+    pi.add_argument("--param", action="append", metavar="NAME=VALUE",
+                    help="pack parameter override; repeatable (for example: repos=myorg/service)")
+    pi.add_argument("--force", action="store_true",
+                    help="with --pack: overwrite an existing tenuo.yaml")
     pi.add_argument("--no-scaffold", action="store_true", help=argparse.SUPPRESS)  # default now; kept for back-compat
     pi.add_argument("--advanced", action="store_true",
                     help="write tenuo.advanced.yaml (human approval overlay; WebFetch example)")
@@ -4797,6 +5230,11 @@ def main() -> None:
     pb.add_argument("--admin-key")
     pb.add_argument("--approver")
     pb.add_argument("--approver-id")
+    pp = sub.add_parser("pack", help="list and inspect bundled policy packs")
+    pps = pp.add_subparsers(dest="pack_cmd")
+    pps.add_parser("list", help="list bundled policy packs")
+    ppi = pps.add_parser("inspect", help="show reviewed intent for a pack")
+    ppi.add_argument("name")
     pv = sub.add_parser("verify", help="policy self-test against the authorizer")
     pv.add_argument("--deep", action="store_true",
                     help="SSRF matrix, extra Bash denies, live hook exit-code harness")
@@ -4818,6 +5256,8 @@ def main() -> None:
     pbench.add_argument("--json", action="store_true", help="machine-readable output")
     pa = sub.add_parser("audit")
     pa.add_argument("--tail", type=int, default=None)
+    pa.add_argument("--verify", action="store_true",
+                    help="verify receipt signatures, hash chain, and warrant replay")
     args = parser.parse_args()
     if not args.cmd:
         parser.print_help()
@@ -4826,7 +5266,7 @@ def main() -> None:
     if args.cmd != "install-authorizer":
         bind_project_paths(
             sys.modules[__name__],
-            fallback_cwd=args.cmd in ("init", "onboard", "bootstrap", "disable", "uninstall"),
+            fallback_cwd=args.cmd in ("init", "onboard", "bootstrap", "disable", "uninstall", "pack"),
         )
     # Separation of duties: the runtime/agent plane must never carry an admin
     # credential. Admin actions live in `tenuo-admin`. Skip the internal hook

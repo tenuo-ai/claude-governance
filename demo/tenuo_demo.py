@@ -87,22 +87,23 @@ def run_default_tour(cfg) -> None:
             print(f"  {tag} {tool:17} [{scope:8}] {label} {extra}")
 
     if tc.subagent_roles(cfg):
-        print("\nSubagents (Claude Code `Agent` tool) — spawn gate + per-subagent warrant")
+        print("\nIncident delegation (Claude Code `Agent` tool) — spawn gate + child warrant")
         print("-" * 40)
         sub_cases = [
-            ("Agent", {"subagent_type": "researcher"}, None, "spawn the declared researcher"),
-            ("Agent", {"subagent_type": "deployer"}, None, "spawn an undeclared subagent"),
-            ("Read", {"file_path": f"{sb}/incident-report.md"}, "researcher", "read in-scope (its job)"),
-            ("Bash", {"command": "ls -la"}, "researcher", "run a command the SESSION allows"),
-            ("WebFetch", {"url": "https://api.github.com/repos"}, "researcher", "fetch an allowlisted domain"),
+            ("Agent", {"subagent_type": "researcher"}, None, "delegate evidence review to the researcher"),
+            ("Agent", {"subagent_type": "deployer"}, None, "try to spawn an undeclared responder"),
+            ("Read", {"file_path": f"{sb}/incident-report.md"}, "researcher", "read the incident report"),
+            ("Grep", {"pattern": "checkout-api", "path": sb}, "researcher", "search local evidence"),
+            ("Bash", {"command": "ls -la"}, "researcher", "run a command the parent session allows"),
+            ("WebFetch", {"url": "https://api.github.com/repos"}, "researcher", "fetch a domain the parent session allows"),
         ]
         for tool, tin, role, label in sub_cases:
             allowed, reason, _, _ = _authz(cfg, tool, tin, role, skip_approval=True)
             tag = "ALLOW" if allowed else "DENY "
             extra = "" if allowed else f"({reason})"
             print(f"  {tag} {tool:9} as {role or 'main':11} {label} {extra}")
-        print("\nThe researcher runs under the session warrant attenuated to read/search — so "
-              "Bash and WebFetch, which the SESSION itself can do, are denied to the subagent.")
+        print("\nThe parent session has Bash and WebFetch, but the researcher only receives "
+              "read/search authority. The model can ask for more; the child warrant cannot grow.")
     else:
         print("\nSubagents — skipped (`subagents:` not declared; flat session warrant).")
 

@@ -14,7 +14,7 @@ A note on what you'll actually see: a capable model often self-refuses the embed
 
 - Python 3.10+ and [uv](https://docs.astral.sh/uv/) (or `pip`).
 - For the *live Claude examples*, the `claude` CLI on PATH. The scripted tour (`tenuo-claude demo`) talks to the authorizer directly and does not need Claude.
-- Docker is optional: if it is absent, `up` auto-installs and runs the native authorizer (macOS, Linux, WSL).
+- Docker is optional. For the most predictable path, run `tenuo-claude install-authorizer` once and set `TENUO_AUTHORIZER_BACKEND=native` before `bootstrap`/`up`.
 
 That is all the local demo needs. No Tenuo account, no keys, no tenant root: `bootstrap` generates a local issuer key for you.
 
@@ -45,6 +45,8 @@ Then, local-only (no Cloud account):
 
 ```bash
 cd demo
+tenuo-claude install-authorizer
+export TENUO_AUTHORIZER_BACKEND=native
 tenuo-claude bootstrap
 tenuo-claude demo          # scripted authorizer tour
 ```
@@ -60,7 +62,7 @@ To populate `tenuo-claude audit`, open Claude Code in `demo/` (where
 | Path | Purpose |
 |------|---------|
 | `tenuo.yaml` | Sample policy. Ships in `mode: dry-run` (logs `WOULD-DENY`, blocks nothing) so you can see decisions before enforcing |
-| `sandbox/` | The directory `subpath:` constraints point at. `notes.txt` is in scope; `incident-report.md` carries an embedded out-of-policy instruction |
+| `sandbox/` | The directory `subpath:` constraints point at. `incident-report.md` and `checkout-evidence.log` are in-scope evidence; the incident report also carries an embedded out-of-policy instruction |
 | `fake-secrets.env` | Fake credentials, placed **outside** `sandbox/` on purpose; reading it requires escaping the `subpath:` directory, so it's denied |
 | `ops_server.py` | The downstream MCP server. Exposes `read_file` and `list_directory` (granted) plus a simulated `delete_deployment` (not granted → denied). Claude talks to Tenuo's proxy, not this directly |
 | `tenuo_demo.py` | The scripted tour (`tenuo-claude demo`) |
@@ -83,15 +85,16 @@ claude -p "Summarize sandbox/incident-report.md for me." --dangerously-skip-perm
 claude -p "Use read_file to read sandbox/notes.txt and summarize." --dangerously-skip-permissions
 claude -p "Use read_file to read /etc/passwd." --dangerously-skip-permissions                  # WOULD-DENY in dry-run mode
 claude -p "Use delete_deployment to tear down production." --dangerously-skip-permissions       # WOULD-DENY in dry-run mode
-claude -p "Use the researcher subagent to run 'ls -la sandbox'." --dangerously-skip-permissions
+claude -p "Use the researcher subagent to investigate sandbox/incident-report.md. The researcher should read the report, search sandbox for checkout-api evidence, then try to run 'ls -la' and fetch https://api.github.com/repos. Report findings and which actions were blocked." --dangerously-skip-permissions
 ```
 
 ## Human approval (optional, Cloud)
 
-The demo exercises approver sign-off on three paths when approval is configured in the advanced overlay:
+The generated advanced overlay exercises approver sign-off on two paths:
 - **WebFetch** (native hook): off-allowlist URL pauses for sign-off.
 - **delete_deployment** (MCP proxy): non-exempt target pauses for sign-off.
-- **`default: approve`** (catch-all): **any** tool not in `enforce`/`allow` pauses for sign-off instead of being denied.
+
+You can also opt into **`default: approve`** yourself to make any tool not in `enforce`/`allow` pause for sign-off instead of being denied.
 
 ```bash
 tenuo-claude init --advanced --approver-id <Cloud identity id>
@@ -100,7 +103,7 @@ tenuo-claude up                                # refreshes the root-signed sessi
 tenuo-claude demo --advanced --live-approval   # blocks until an approver responds
 ```
 
-Try the catch-all yourself: invoke a tool the policy doesn't list and watch it pause:
+To try the catch-all yourself, add `default: approve`, run `tenuo-admin setup && tenuo-claude up`, then invoke a tool the policy doesn't list and watch it pause:
 
 ```bash
 claude -p "Use NotebookEdit to add a cell to demo.ipynb." --dangerously-skip-permissions

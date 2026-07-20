@@ -1,0 +1,26 @@
+# pack: ${pack_name} ${pack_version}
+# pinned: ${pinned_name} ${pinned_version} (tool-list ${tool_list_hash})
+# reviewed: ${reviewed} by ${reviewed_by}
+# params: sandbox=${sandbox}, web_domain=${web_domain}
+name: filesystem-dev-agent
+sandbox: ${sandbox}
+mode: dry-run          # flip to enforce when the WOULD-DENY log looks right
+default: deny
+
+enforce:
+  Read: "subpath:{sandbox}"
+  Write: "subpath:{sandbox}"
+  Edit: "subpath:{sandbox}"
+  Grep: "subpath:{sandbox}"
+  Glob: "subpath:{sandbox}"
+  NotebookEdit: "subpath:{sandbox}"
+  Bash: "shlex:git,ls,pwd,cat,grep,rg,sed,head,tail,find"
+  WebFetch:
+    domains: ["${web_domain}"]
+
+# Explicit intent: these remain denied by default unless you add a reviewed rule.
+deny:
+  - PowerShell
+  - Monitor
+  - WebSearch
+

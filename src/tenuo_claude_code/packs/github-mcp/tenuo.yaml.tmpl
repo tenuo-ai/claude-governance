@@ -1,0 +1,86 @@
+# pack: ${pack_name} ${pack_version}
+# pinned: ${pinned_name} ${pinned_version} (tool-list ${tool_list_hash})
+# reviewed: ${reviewed} by ${reviewed_by}
+# params: repos=${repos}, approver=${approver}
+name: github-agent
+mode: dry-run          # flip to enforce when the WOULD-DENY log looks right
+default: deny
+
+mcp:
+  enforce:
+    # reads: scoped to your repos, nothing else
+    get_file_contents:
+      arg: repo
+      constraint: "pattern:${repos}"
+    search_code:
+      arg: repo
+      constraint: "pattern:${repos}"
+    list_issues:
+      arg: repo
+      constraint: "pattern:${repos}"
+    list_pull_requests:
+      arg: repo
+      constraint: "pattern:${repos}"
+    get_issue:
+      arg: repo
+      constraint: "pattern:${repos}"
+    get_pull_request:
+      arg: repo
+      constraint: "pattern:${repos}"
+
+    # writes: allowed, argument-constrained
+    create_issue:
+      arg: repo
+      constraint: "pattern:${repos}"
+    add_issue_comment:
+      arg: repo
+      constraint: "pattern:${repos}"
+    create_pull_request:
+      args:
+        repo: "pattern:${repos}"
+        base: "oneof:main,develop"
+
+    # destructive or high-blast-radius: human signature required
+    merge_pull_request:
+      args:
+        repo: "pattern:${repos}"
+      approval:
+        threshold: 1
+        approver: "${approver}"
+    push_files:
+      args:
+        repo: "pattern:${repos}"
+      approval:
+        threshold: 1
+        approver: "${approver}"
+    update_pull_request_branch:
+      args:
+        repo: "pattern:${repos}"
+      approval:
+        threshold: 1
+        approver: "${approver}"
+    create_branch:
+      args:
+        repo: "pattern:${repos}"
+      approval:
+        threshold: 1
+        approver: "${approver}"
+    update_file:
+      args:
+        repo: "pattern:${repos}"
+      approval:
+        threshold: 1
+        approver: "${approver}"
+    delete_file:
+      args:
+        repo: "pattern:${repos}"
+      approval:
+        threshold: 1
+        approver: "${approver}"
+
+# never, regardless of arguments (default: deny enforces this; the explicit list
+# keeps the reviewer's intent visible)
+deny:
+  - delete_repository
+  - delete_branch
+  - fork_repository

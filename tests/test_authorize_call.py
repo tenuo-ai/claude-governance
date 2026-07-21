@@ -58,7 +58,7 @@ def test_in_subagent_uses_child_warrant(cli_mod, make_cfg, bound, monkeypatch):
 
     def fake_awa(cfg, claude_tool, tenuo_tool, route, sign_args, body, warrant_b64, live):
         captured.update(warrant_b64=warrant_b64, tenuo_tool=tenuo_tool, live=live)
-        return True, "ok"
+        return True, "ok", {}
 
     monkeypatch.setattr(cli_mod, "authorize_with_approval", fake_awa)
     cfg = make_cfg(enforce={"Read": "subpath:" + str(bound)}, _sandbox_abs=str(bound))

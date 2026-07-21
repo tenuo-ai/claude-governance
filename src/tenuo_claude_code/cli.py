@@ -1796,15 +1796,16 @@ def _receipt_signing_key():
     from tenuo import SigningKey
 
     ensure_state_dir()
-    if RECEIPT_KEY.exists():
-        key = SigningKey.from_bytes(base64.b64decode(RECEIPT_KEY.read_text()))
-        if not RECEIPT_PUB.exists():
-            RECEIPT_PUB.write_text(key.public_key.to_bytes().hex())
+    with _receipt_append_lock():
+        if RECEIPT_KEY.exists():
+            key = SigningKey.from_bytes(base64.b64decode(RECEIPT_KEY.read_text()))
+            if not RECEIPT_PUB.exists():
+                RECEIPT_PUB.write_text(key.public_key.to_bytes().hex())
+            return key
+        key = SigningKey.generate()
+        write_secret(RECEIPT_KEY, base64.b64encode(bytes(key.secret_key_bytes())).decode())
+        RECEIPT_PUB.write_text(key.public_key.to_bytes().hex())
         return key
-    key = SigningKey.generate()
-    write_secret(RECEIPT_KEY, base64.b64encode(bytes(key.secret_key_bytes())).decode())
-    RECEIPT_PUB.write_text(key.public_key.to_bytes().hex())
-    return key
 
 
 def _trusted_receipt_signer() -> str | None:
@@ -1873,7 +1874,14 @@ def _receipt_trust_roots() -> list[str]:
 
 
 def _verify_authz_evidence(payload: dict, idx: int) -> list[str]:
-    """Replay the governed decision embedded in one receipt payload."""
+    """Replay the governed decision embedded in one receipt payload.
+
+    Local replay validates the warrant chain and deterministic constraints from
+    receipt evidence. When a Cloud approval was used, the approval CBOR is stored
+    as presented to the authorizer, but local `audit --verify` does not currently
+    reconstruct the Cloud approval policy or threshold; Cloud audit is the
+    independent source for approver/threshold verification.
+    """
     authz = payload.get("authz")
     if not isinstance(authz, dict) or not authz:
         return []
@@ -2309,6 +2317,10 @@ def enforced_capabilities(cfg: dict) -> dict:
         if cons:
             caps[mtool] = {a: make_constraint(spec, sandbox) for a, spec in cons.items()}
         elif parsed.get("approval"):
+            # `exempt_args` are the constrained argument values that skip a human
+            # approval. Cloud trigger warrants wildcard the gated arg so the
+            # authorizer can reach the approval gate; local warrants cannot carry
+            # that gate, so they grant only the exempt values and deny the rest.
             exempt = parsed.get("exempt_args") or {}
             if use_cloud_trigger(cfg):
                 gated = list(exempt.keys()) or [mcp_default_arg(mtool)]

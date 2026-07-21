@@ -110,7 +110,9 @@ Session warrants have a ~1h TTL; `status` flags `EXPIRED` when one lapses. `tenu
 The hook appends a signed local JSON line per call to `.state/receipts.jsonl`.
 `tenuo-claude audit` pretty-prints it; `tenuo-claude audit --verify` checks the
 receipt signature, hash-chain link, warrant chain, and recorded authorization
-evidence:
+evidence. For Cloud-approved calls, the local receipt stores the approval CBOR
+presented to the authorizer; independent approver identity and threshold replay
+requires Cloud audit because it depends on the linked Cloud approval policy:
 
 ```json
 {"phase": "pre", "decision": "deny", "claude_tool": "Bash", "governed": true,

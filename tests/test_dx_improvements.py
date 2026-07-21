@@ -109,12 +109,12 @@ def test_write_receipt_signs_and_hash_chains(cli_mod, bound, monkeypatch):
 
 def test_write_receipt_chain_survives_concurrent_writers(cli_mod, bound, monkeypatch):
     # Native-tool hooks and the MCP proxy write receipts from separate execution
-    # contexts. The read-prev-hash + append must be atomic or the hash chain forks.
+    # contexts. First-use key generation and read-prev-hash + append must be
+    # atomic or signatures/chain links can diverge.
     import threading
 
     monkeypatch.setattr(cli_mod, "RECEIPTS", cli_mod.STATE / "receipts.jsonl", raising=False)
     cli_mod.ensure_state_dir()
-    cli_mod._receipt_signing_key()  # pre-generate the key so writers don't race on it
 
     writers, per_writer = 8, 15
     barrier = threading.Barrier(writers)
@@ -135,6 +135,7 @@ def test_write_receipt_chain_survives_concurrent_writers(cli_mod, bound, monkeyp
     assert len(rows) == writers * per_writer  # no torn/dropped lines
     ok, errors = cli_mod.verify_receipt_rows(rows)  # unbroken chain, in file order
     assert ok, errors
+    assert {row["signer_pub"] for row in rows} == {cli_mod.RECEIPT_PUB.read_text().strip()}
 
 
 def test_verify_receipt_rows_rejects_tampering(cli_mod, bound, monkeypatch):

@@ -249,7 +249,7 @@ Admins can also block the bypass flag entirely in managed settings (`disableBypa
  "args":{"file_path":"/etc/passwd"},"reason":"Constraint not satisfied"}
 ```
 
-Connected to Cloud, the authorizer also emits signed receipts to your tenant, the central record for compliance and fleet audit.
+Local `audit --verify` checks receipt signatures, hash-chain links, warrant chains, and deterministic constraint replay. Approval signatures are recorded when used, but independent approver/threshold verification belongs to Cloud audit because it depends on the Cloud approval policy. Connected to Cloud, the authorizer also emits signed receipts to your tenant, the central record for compliance and fleet audit.
 
 **Rolling out to a team.** Keep `tenuo.yaml` in version control, push the hook/MCP wiring through Claude Code **managed settings** (not per-developer `settings.local.json`), and use Cloud for org-root warrants, central audit, and revocation. Generate the pinned artifacts with `tenuo-claude managed-template` (see [examples/managed](examples/managed/) for the rollout checklist, Unix-socket smoke test, and hardened `--socket-group` option). Start in `mode: dry-run`, review the `WOULD-DENY` rows, then switch to `enforce`. [Talk to us](https://tenuo.ai/early-access.html) about managed-settings rollout. Report issues: [SECURITY.md](SECURITY.md).
 

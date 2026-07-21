@@ -1,0 +1,33 @@
+name: filesystem-dev
+version: 1
+title: Filesystem Dev
+reviewed: "2026-07-10"
+reviewed_by: tenuo-packs
+description: >
+  Starter governance for local Claude Code development: repository-scoped file
+  reads/writes/search, a small POSIX shell allowlist, and domain-scoped WebFetch.
+pinned:
+  name: claude-code-native-tools
+  version: "2026.07"
+  tool_list_hash: native
+params:
+  - name: sandbox
+    prompt: Which directory may the agent edit?
+    example: ./workspace
+    default: ./workspace
+    required: true
+  - name: web_domain
+    prompt: Which web domain may WebFetch call?
+    example: api.github.com or *.githubusercontent.com
+    default: api.github.com
+    required: true
+summary:
+  tools: 10
+  allowed: 7
+  gated: 0
+  denied: 3
+assumptions:
+  - Bash is limited to simple read/dev commands; package installs and command chaining are denied.
+  - Path-scoped tools resolve symlinks before authorization.
+  - Add project-specific domains deliberately; WebFetch keeps SSRF hygiene enabled.
+

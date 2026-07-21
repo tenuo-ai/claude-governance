@@ -16,12 +16,16 @@ authorizer.
 **Local evaluation (no Cloud):**
 
 ```bash
+tenuo-claude install-authorizer
+export TENUO_AUTHORIZER_BACKEND=native
 tenuo-claude bootstrap
 ```
 
 **Cloud (new project):**
 
 ```bash
+tenuo-claude install-authorizer
+export TENUO_AUTHORIZER_BACKEND=native
 tenuo-claude bootstrap --cloud
 # or: tenuo-claude onboard --cloud
 ```
@@ -80,6 +84,13 @@ Authorizer** auto-claims a different key and breaks warrant alignment.
 
 `ak_…` entries in the dashboard are **key IDs**, not secrets. Use the Quick Connect
 token (`tenuo_ct_…`) or the Manual tab `tc_…` bearer key in `.state/cloud.env`.
+
+### `Invalid TENUO_CONNECT_TOKEN: base64 decode error`
+
+The Quick Connect token was copied incompletely or with extra characters. Use the
+single `tenuo_ct_…` token value only; don't include `export`, surrounding prose,
+spaces, or a trailing quote. If your terminal wrapped the line visually, copy it
+again from Cloud as one continuous token.
 
 ---
 

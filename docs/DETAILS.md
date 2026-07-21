@@ -76,7 +76,7 @@ When `subagents:` is declared, you get two layers:
 
 Roles must match a real `subagent_type` (`.claude/agents/<name>.md` frontmatter `name:`, or a built-in); `verify` and `status` check this. Omit `subagents:` for flat coverage: spawns are then audited, not gated, and the subagent runs under the full session warrant.
 
-Changing `subagents:` is a policy change: re-run `tenuo-admin setup` (Cloud) or `init` (local). Note one sharp edge: the bundled `Workflow` harness tool tags its inner calls with an `agent_type` that isn't a declared role, so under `subagents:` those inner calls are denied. Remove `Workflow` from the `allow:` list or omit `subagents:` if you need it. Requires `tenuo` ≥ 0.2.0 and authorizer `0.2.0-authz.3` (pinned in `cli.py`).
+Changing `subagents:` is a policy change: re-run `tenuo-admin setup` (Cloud) or `init` (local). Note one sharp edge: the bundled `Workflow` harness tool tags its inner calls with an `agent_type` that isn't a declared role, so under `subagents:` those inner calls are denied. Remove `Workflow` from the `allow:` list or omit `subagents:` if you need it. Requires `tenuo` ≥ 0.2.3 and authorizer `0.2.3` (pinned in `cli.py`).
 
 ## Dry-run mode (`mode: dry-run`)
 
@@ -107,14 +107,19 @@ Session warrants have a ~1h TTL; `status` flags `EXPIRED` when one lapses. `tenu
 - **Allowed** tools (the `allow:` permit-list and bundled harness tools): permitted unconstrained, logged, not blocked.
 - **Default**: everything else denied (`default: deny`), or routed to a Cloud human-approval gate (`default: approve`).
 
-The hook appends a local JSON line per call to `.state/receipts.jsonl` (`tenuo-claude audit` pretty-prints it; this is a local convenience, not signed):
+The hook appends a signed local JSON line per call to `.state/receipts.jsonl`.
+`tenuo-claude audit` pretty-prints it; `tenuo-claude audit --verify` checks the
+receipt signature, hash-chain link, warrant chain, and recorded authorization
+evidence. For Cloud-approved calls, the local receipt stores the approval CBOR
+presented to the authorizer; independent approver identity and threshold replay
+requires Cloud audit because it depends on the linked Cloud approval policy:
 
 ```json
 {"phase": "pre", "decision": "deny", "claude_tool": "Bash", "governed": true,
  "args": {"command": "ls && rm -rf /"}, "reason": "Constraint not satisfied"}
 ```
 
-In dry-run mode, denials are recorded as `WOULD-DENY`. Subagent calls carry `agent_type` so the hook enforces the right child warrant (this depends on Claude Code populating `agent_type`). **Signed** receipts (the non-repudiable ones) are emitted by the authorizer and stream to Tenuo Cloud when connected (`signature` + `signing_payload` per event). Measure overhead with `tenuo-claude bench`.
+In dry-run mode, denials are recorded as `WOULD-DENY`. Subagent calls carry `agent_type` so the hook enforces the right child warrant (this depends on Claude Code populating `agent_type`). When connected to Cloud, the authorizer also streams receipts to your tenant audit plane. Measure overhead with `tenuo-claude bench`.
 
 ## Production wiring
 
@@ -154,13 +159,15 @@ This is **Cloud-only**: gates carry the approver's KMS public keys from the link
 
 Setting up approvals spans two places: you create the **approver** in the Tenuo Cloud console, then wire the **gate** with this CLI. The CLI only references an approver identity that already exists in Cloud; it does not create the identity or its notification channel.
 
-1. **Be on Cloud.** Run `tenuo-claude onboard --cloud` (or confirm `tenuo-claude check` is green). Approval has no local fallback; without Cloud a gated call is denied.
-2. **Create the approver in [Tenuo Cloud](https://cloud.tenuo.ai).** Make an identity with a KMS signing key and a notification channel (Slack, Telegram, or console), then copy its identity id. *(This step lives in the Cloud console.)*
-3. **Bind it:** `tenuo-admin setup --approver-id <id>` (or `--approver "<display name>"` for demos). Setup creates or reuses a Cloud approval policy, bakes `approval_gates` into the trigger warrant config (with `_policy_id` for offline verification), syncs the local gateway, and reloads a running authorizer so new MCP routes work immediately.
-4. **Gate something:** add an `approval:` block to a tool (example below) or set `default: approve`, then run `tenuo-claude refresh`.
+1. **Start from a Cloud-ready tenant.** Make sure Infrastructure onboarding has provisioned an active root key, and have both credentials ready: the Authorizer Only Quick Connect token and a tenant-admin API key. Approval has no local fallback; without Cloud a gated call is denied.
+2. **Create the approver in [Tenuo Cloud](https://cloud.tenuo.ai).** Use Dashboard → Channels → Identity Bindings (or the equivalent approval identity flow) to make an identity with a KMS signing key and a notification channel (Slack, Telegram, or console), then copy its identity id. *(This step lives in the Cloud console.)*
+3. **Gate something and point it at that approver.** For a fresh project, run `tenuo-claude bootstrap --cloud --advanced --approver-id <id>`. On an existing Cloud project, run `tenuo-claude init --advanced --approver-id <id>` (or `--approver "<display name>"` for demos), then add/adjust an `approval:` block on a tool or set `default: approve`. The generated WebFetch example includes `domains: ["docs.anthropic.com"]`; allowlisted domains auto-allow, other SSRF-safe hosts pause for sign-off, and metadata/SSRF URLs are still hard-denied.
+4. **Publish the gate:** run `tenuo-admin setup`. Setup creates or updates the holder agent and Cloud trigger from `tenuo.yaml`, reconciles the agent's `allowed_triggers`, creates or reuses a Cloud approval policy for the approver, bakes `approval_gates` into the trigger warrant config (with `_policy_id` for offline verification), syncs the local gateway, and reloads a running authorizer so new MCP routes work immediately.
 5. **Test end to end:** `tenuo-claude demo --advanced --live-approval`.
 
 Receipts show `PENDING [appr]` while parked, then `ALLOW`/`DENY`. In dry-run mode the gate is reported only, never blocks. **Live approval blocks the tool call** until the approver responds or it times out, so make sure the identity is reachable first, or Claude's hook timeout can expire and look like a deny.
+
+Cloud's Claude Code starter is a warrant template, not a complete trigger. `tenuo-admin setup` supplies the missing project-specific pieces: holder, sandbox paths, concrete native and MCP capabilities, trigger binding, and approval policy id.
 
 Two shipped examples:
 
@@ -170,6 +177,12 @@ Two shipped examples:
 | `delete_deployment` | MCP proxy | `target=production` | `target=staging` → allowed; unlisted tool → denied |
 
 ```yaml
+enforce:
+  WebFetch:
+    domains: ["docs.anthropic.com"]
+    approval:
+      threshold: 1
+
 mcp:
   enforce:
     delete_deployment:
@@ -185,7 +198,7 @@ Try it in the [reference demo](../demo/): `tenuo-claude demo --advanced --live-a
 
 By default `init` mints warrants from a **local issuer key**. With [Cloud](https://cloud.tenuo.ai), warrants are issued by your **tenant root** via a trigger, the pattern most orgs use in production: one audit stream, central revocation, admin/runtime key separation, and optional org-wide hook deployment through Claude Code managed settings (policy enforced outside Claude's permission UI).
 
-The admin registers the holder and creates the trigger; runtime only *fires* it. Runtime refuses to start if an admin key is reachable, and the first trigger fire locks to the discovered runtime service account.
+The admin registers the holder and creates or updates the trigger; runtime only *fires* it. During setup, the trigger is built from `tenuo.yaml` plus any overlays (`tenuo.cloud.yaml`, `tenuo.advanced.yaml`), then bound to the local holder agent. Cloud's Claude Code starter warrant template documents the recommended shape, but the trigger is project-specific. Runtime refuses to start if an admin key is reachable, and the first trigger fire locks to the discovered runtime service account.
 
 **Revocation:** Cloud revokes by warrant id and the authorizer pulls the signed revocation list within ~30s. Locally, `tenuo-claude revoke` writes a signed SRL and reloads.
 
@@ -193,6 +206,14 @@ Non-interactive Cloud setup (CI), in one shot:
 
 ```bash
 TENUO_CONNECT_TOKEN="tenuo_ct_…" TENUO_ADMIN_KEY="tc_…" tenuo-claude bootstrap --cloud --yes
+```
+
+For a native-authorizer path without Docker:
+
+```bash
+tenuo-claude install-authorizer
+TENUO_AUTHORIZER_BACKEND=native TENUO_CONNECT_TOKEN="tenuo_ct_…" \
+  TENUO_ADMIN_KEY="tc_…" tenuo-claude bootstrap --cloud --yes
 ```
 
 Pass credentials as flags or one-shot env, not a persistent `export TENUO_ADMIN_KEY`, and unset the admin key before `tenuo-claude up`. Manual step-by-step (equivalent to the wizard): `init --cloud` (writes a `cloud.env.example` to fill in) → put the tenant-admin key in `~/.tenuo/admin.env` → `tenuo-admin setup` → `check && up` → `verify`.

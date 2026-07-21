@@ -6,6 +6,10 @@ hint, and the receipt-sink failure signalling. See ROADMAP.md §8.
 """
 from __future__ import annotations
 
+import base64
+import json
+import time
+
 import pytest
 
 from tenuo_claude_code import cli
@@ -86,6 +90,138 @@ def test_write_receipt_returns_true_on_success(cli_mod, bound, monkeypatch):
     monkeypatch.setattr(cli_mod, "RECEIPTS", cli_mod.STATE / "receipts.jsonl", raising=False)
     assert cli_mod.write_receipt({"phase": "pre", "decision": "allow"}) is True
     assert cli_mod.receipt_sink_failure() is None
+
+
+def test_write_receipt_signs_and_hash_chains(cli_mod, bound, monkeypatch):
+    monkeypatch.setattr(cli_mod, "RECEIPTS", cli_mod.STATE / "receipts.jsonl", raising=False)
+    assert cli_mod.write_receipt({"phase": "pre", "decision": "allow"}) is True
+    assert cli_mod.write_receipt({"phase": "pre", "decision": "deny"}) is True
+
+    rows = [json.loads(line) for line in cli_mod.RECEIPTS.read_text().splitlines()]
+    ok, errors = cli_mod.verify_receipt_rows(rows)
+
+    assert ok, errors
+    assert rows[0]["payload"]["prev_hash"] is None
+    assert rows[1]["payload"]["prev_hash"] == rows[0]["receipt_hash"]
+    assert rows[0]["signer_pub"] == rows[1]["signer_pub"]
+    assert rows[0]["signer_pub"] == cli_mod.RECEIPT_PUB.read_text().strip()
+
+
+def test_write_receipt_chain_survives_concurrent_writers(cli_mod, bound, monkeypatch):
+    # Native-tool hooks and the MCP proxy write receipts from separate execution
+    # contexts. First-use key generation and read-prev-hash + append must be
+    # atomic or signatures/chain links can diverge.
+    import threading
+
+    monkeypatch.setattr(cli_mod, "RECEIPTS", cli_mod.STATE / "receipts.jsonl", raising=False)
+    cli_mod.ensure_state_dir()
+
+    writers, per_writer = 8, 15
+    barrier = threading.Barrier(writers)
+
+    def hammer(w):
+        barrier.wait()  # maximize overlap on the read-modify-write window
+        for i in range(per_writer):
+            assert cli_mod.write_receipt({"phase": "pre", "decision": "allow",
+                                          "writer": w, "seq": i}) is True
+
+    threads = [threading.Thread(target=hammer, args=(w,)) for w in range(writers)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    rows = [json.loads(line) for line in cli_mod.RECEIPTS.read_text().splitlines()]
+    assert len(rows) == writers * per_writer  # no torn/dropped lines
+    ok, errors = cli_mod.verify_receipt_rows(rows)  # unbroken chain, in file order
+    assert ok, errors
+    assert {row["signer_pub"] for row in rows} == {cli_mod.RECEIPT_PUB.read_text().strip()}
+
+
+def test_verify_receipt_rows_rejects_tampering(cli_mod, bound, monkeypatch):
+    monkeypatch.setattr(cli_mod, "RECEIPTS", cli_mod.STATE / "receipts.jsonl", raising=False)
+    assert cli_mod.write_receipt({"phase": "pre", "decision": "deny"}) is True
+
+    rows = [json.loads(line) for line in cli_mod.RECEIPTS.read_text().splitlines()]
+    rows[0]["payload"]["decision"] = "allow"
+    ok, errors = cli_mod.verify_receipt_rows(rows)
+
+    assert ok is False
+    assert any("signature invalid" in err or "receipt_hash mismatch" in err for err in errors)
+
+
+def test_verify_receipt_rows_rejects_untrusted_signer(cli_mod, bound, monkeypatch):
+    from tenuo import SigningKey
+
+    monkeypatch.setattr(cli_mod, "RECEIPTS", cli_mod.STATE / "receipts.jsonl", raising=False)
+    assert cli_mod.write_receipt({"phase": "pre", "decision": "allow"}) is True
+
+    rows = [json.loads(line) for line in cli_mod.RECEIPTS.read_text().splitlines()]
+    forged_key = SigningKey.generate()
+    payload = dict(rows[0]["payload"])
+    sig = forged_key.sign_raw(cli_mod._canonical_receipt_bytes(payload))
+    rows[0]["signer_pub"] = forged_key.public_key.to_bytes().hex()
+    rows[0]["signature"] = base64.b64encode(sig).decode()
+    rows[0]["receipt_hash"] = cli_mod.hashlib.sha256(
+        cli_mod._canonical_receipt_bytes(payload) + sig).hexdigest()
+
+    ok, errors = cli_mod.verify_receipt_rows(rows)
+
+    assert ok is False
+    assert any("trusted receipt key" in err for err in errors)
+
+
+def _authz_evidence(cli_mod, tenuo_tool: str, sign_args: dict, *, ts: int | None = None):
+    from tenuo import SigningKey, Warrant
+    from tenuo_core import encode_warrant_stack
+
+    issuer = SigningKey.generate()
+    holder = SigningKey.generate()
+    warrant = Warrant.mint_builder().tools(["read_file"]).holder(holder.public_key).mint(issuer)
+    stack = encode_warrant_stack([warrant])
+    ts = int(time.time()) if ts is None else ts
+    pop = warrant.sign(holder, tenuo_tool, sign_args, ts)
+    cli_mod.ISSUER_PUB.write_text(issuer.public_key.to_bytes().hex())
+    return cli_mod._authorization_receipt_context(
+        tenuo_tool, f"/verify/{tenuo_tool}", sign_args, stack,
+        base64.b64encode(bytes(pop)).decode(), ts)
+
+
+def test_verify_receipt_rows_replays_warrant_evidence(cli_mod, bound, monkeypatch):
+    monkeypatch.setattr(cli_mod, "RECEIPTS", cli_mod.STATE / "receipts.jsonl", raising=False)
+    cli_mod.ensure_state_dir()
+    authz = _authz_evidence(cli_mod, "read_file", {})
+
+    assert cli_mod.write_receipt({"phase": "pre", "decision": "allow", "authz": authz}) is True
+    rows = [json.loads(line) for line in cli_mod.RECEIPTS.read_text().splitlines()]
+    ok, errors = cli_mod.verify_receipt_rows(rows)
+
+    assert ok, errors
+
+
+def test_verify_receipt_rows_accepts_stale_pop_for_constraint_replay(cli_mod, bound, monkeypatch):
+    monkeypatch.setattr(cli_mod, "RECEIPTS", cli_mod.STATE / "receipts.jsonl", raising=False)
+    cli_mod.ensure_state_dir()
+    authz = _authz_evidence(cli_mod, "read_file", {}, ts=int(time.time()) - 3600)
+
+    assert cli_mod.write_receipt({"phase": "pre", "decision": "allow", "authz": authz}) is True
+    rows = [json.loads(line) for line in cli_mod.RECEIPTS.read_text().splitlines()]
+    ok, errors = cli_mod.verify_receipt_rows(rows)
+
+    assert ok, errors
+
+
+def test_verify_receipt_rows_rejects_replay_mismatch(cli_mod, bound, monkeypatch):
+    monkeypatch.setattr(cli_mod, "RECEIPTS", cli_mod.STATE / "receipts.jsonl", raising=False)
+    cli_mod.ensure_state_dir()
+    authz = _authz_evidence(cli_mod, "delete_everything", {})
+
+    assert cli_mod.write_receipt({"phase": "pre", "decision": "allow", "authz": authz}) is True
+    rows = [json.loads(line) for line in cli_mod.RECEIPTS.read_text().splitlines()]
+    ok, errors = cli_mod.verify_receipt_rows(rows)
+
+    assert ok is False
+    assert any("recorded allow but warrant replay denied" in err for err in errors)
 
 
 def test_write_receipt_failure_marks_sink(cli_mod, bound, monkeypatch):

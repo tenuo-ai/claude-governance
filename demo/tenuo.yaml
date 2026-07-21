@@ -100,7 +100,7 @@ default: deny
 # WebFetch approval and subagents can be combined when subagent roles omit tools
 # the parent session allows (e.g. a read-only subagent without WebFetch).
 subagents:
-  researcher:                 # read-only research drone: no Bash, no egress
+  researcher:                 # read-only evidence analyst: no Bash, no egress
     tools: [Read, Grep, Glob]
 
 # MCP proxy: wrap a downstream MCP server and enforce these of its tools.

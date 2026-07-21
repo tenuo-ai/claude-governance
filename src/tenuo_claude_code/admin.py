@@ -245,14 +245,26 @@ def build_warrant_config(cfg: dict, approval_policy_id: str | None = None) -> di
             continue
         parsed = tc.parse_mcp_enforce_spec(raw)
         cons = parsed["constraints"]
+        approval = parsed.get("approval")
+        exempt_args = parsed.get("exempt_args") or {}
         if cons:
-            # Concrete constraints win over a gate (matches mint_local_warrant).
+            # Explicit constraints are the capability ceiling; approval adds a
+            # human gate on top without broadening the allowed argument space.
             per_action[mtool] = {a: to_wire_constraint(spec, sandbox) for a, spec in cons.items()}
-        elif parsed.get("approval") and gate_approval:
-            gated = list((parsed.get("exempt_args") or {}).keys()) or [tc.mcp_default_arg(mtool)]
+            if approval and gate_approval:
+                gate_args: dict = {}
+                for ek, es in exempt_args.items():
+                    gate_args[ek] = {"exempt": to_wire_constraint(es, sandbox)}
+                approval_gates[mtool] = {"args": gate_args or None}
+            continue
+
+        if approval and gate_approval:
+            # Approval-only tools need a wildcard grant so the authorizer can
+            # reach the gate; the approval signature still binds exact args.
+            gated = list(exempt_args.keys()) or [tc.mcp_default_arg(mtool)]
             per_action[mtool] = {a: {"_type": "wildcard"} for a in gated}
             gate_args: dict = {}
-            for ek, es in (parsed.get("exempt_args") or {}).items():
+            for ek, es in exempt_args.items():
                 gate_args[ek] = {"exempt": to_wire_constraint(es, sandbox)}
             approval_gates[mtool] = {"args": gate_args or {a: {} for a in gated}}
     # ALLOW capabilities (unconstrained): the hook routes allow-listed tools to
@@ -628,13 +640,15 @@ def cmd_setup(_args) -> None:
     # to the discovered service account below.
     if trigger_exists:
         status, body = tc.cloud_api("PATCH", url, admin, f"/v1/triggers/{tid}",
-                                    {"warrant_config": wc, "status": "active"})
+                                    {"warrant_config": wc, "status": "active",
+                                     "initiators": {"skip_initiator_allowlist": True}})
         if status not in (200, 201):
             raise SystemExit(f"Update trigger failed ({status}): {body}")
         print(f"  trigger  : {tid} (updated)")
     else:
         create_body = {"id": tid, "name": f"{authz_name} — session warrant",
-                       "warrant_config": wc, "initiators": {"allow_api_key": True}}
+                       "warrant_config": wc,
+                       "initiators": {"skip_initiator_allowlist": True}}
         status, body = tc.cloud_api("POST", url, admin, "/v1/triggers", create_body)
         if status not in (200, 201):
             raise SystemExit(f"Create trigger failed ({status}): {body}")
@@ -673,11 +687,11 @@ def cmd_setup(_args) -> None:
                                     {"initiators": {"allowed_service_accounts": [sa_name]}})
         if status in (200, 201):
             tc.save_cloud_state({"service_account": sa_name})
-            print(f"  locked   : initiators -> service account '{sa_name}' (allow_api_key off)")
+            print(f"  locked   : initiators -> service account '{sa_name}'")
         else:
-            print(f"  warning  : could not lock initiators ({status}); left allow_api_key on")
+            print(f"  warning  : could not lock initiators ({status}); temporary initiator bypass remains")
     else:
-        print("  warning  : could not read initiator identity from warrant; left allow_api_key on")
+        print("  warning  : could not read initiator identity from warrant; temporary initiator bypass remains")
 
     tc.save_cloud_state({"holder_pub_hex": holder_hex, "root": root})
     # Persist the managed bit in CLOUD STATE (not local policy) so enterprise

@@ -1,0 +1,17 @@
+# pack: ${pack_name} ${pack_version}
+# pinned: ${pinned_name} ${pinned_version} (tool-list ${tool_list_hash})
+# reviewed: ${reviewed} by ${reviewed_by}
+# params: tool=${tool}, url_arg=${url_arg}, method_arg=${method_arg}, url_pattern=${url_pattern}, methods=${methods}
+name: http-api-agent
+mode: dry-run
+default: deny
+
+mcp:
+  enforce:
+    ${tool}:
+      args:
+        ${url_arg}: "urlpattern:${url_pattern}"
+        ${method_arg}: "oneof:${methods}"
+
+# Mutation/admin calls are denied by default unless your MCP exposes separate
+# structured tools you can constrain or gate explicitly.

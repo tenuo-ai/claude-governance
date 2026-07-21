@@ -59,6 +59,9 @@ def bound(monkeypatch, tmp_path):
         "HOLDER_KEY": state / "holder_key.b64",
         "ISSUER_KEY": state / "issuer_key.b64",
         "ISSUER_PUB": state / "issuer_pub.hex",
+        "RECEIPT_KEY": state / "receipt_key.b64",
+        "RECEIPT_PUB": state / "receipt_pub.hex",
+        "RECEIPTS": state / "receipts.jsonl",
         "WARRANT": state / "warrant.b64",
         "CLOUD_ENV": state / "cloud.env",
     }

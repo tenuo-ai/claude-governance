@@ -37,8 +37,8 @@ cloud:
 
 enforce:
   WebFetch:
-    # Required with approval: allowlisted domains auto-allow; other SSRF-safe
-    # hosts pause for sign-off. SSRF/metadata URLs are still hard-denied.
+    # Evaluation order: allowlisted domains auto-allow; other SSRF-safe hosts
+    # pause for sign-off; SSRF/metadata URLs are always hard-denied.
     domains: ["docs.anthropic.com"]
     approval:
       threshold: 1

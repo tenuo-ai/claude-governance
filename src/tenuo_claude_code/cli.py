@@ -1736,12 +1736,8 @@ def authorize_call(cfg: dict, tool: str, tin: dict, agent_type, roles: dict,
     # Cloud (live) or reports PAUSE (verify / demo / audit mode).
     evidence = {}
     if not skip_approval_gate:
-        result = authorize_with_approval(
+        allowed, reason, evidence = authorize_with_approval(
             cfg, tool, tenuo_tool, route, sign_args, body, warrant_b64, live=live)
-        if len(result) == 3:
-            allowed, reason, evidence = result
-        else:
-            allowed, reason = result
     else:
         if return_context:
             allowed, reason, _, evidence = _authorize_attempt(
@@ -1891,7 +1887,6 @@ def _verify_authz_evidence(payload: dict, idx: int) -> list[str]:
 
     try:
         from tenuo import Authorizer, PublicKey
-        from tenuo_core import decode_warrant_stack_base64
 
         stack_b64 = authz["warrant_stack_b64"]
         stack_bytes = _decode_b64url_or_standard(stack_b64)
@@ -1912,22 +1907,23 @@ def _verify_authz_evidence(payload: dict, idx: int) -> list[str]:
         if not roots:
             return [*errors, f"receipt {idx}: no trusted root key available for warrant verification"]
 
-        verified = False
-        last_chain_error = None
-        for root in roots:
+        verified_root = None
+        chain_errors: list[str] = []
+        for pos, root in enumerate(roots):
             try:
                 verifier = Authorizer()
                 verifier.add_trusted_root(PublicKey.from_bytes(bytes.fromhex(root)))
                 verifier.verify_chain(chain)
-                verified = True
+                verified_root = root
                 break
             except Exception as exc:
-                last_chain_error = exc
-        if not verified:
-            return [*errors, f"receipt {idx}: warrant chain invalid ({last_chain_error})"]
+                chain_errors.append(f"root[{pos}] {root[:16]}...: {exc}")
+        if verified_root is None:
+            detail = "; ".join(chain_errors) or "no roots checked"
+            return [*errors, f"receipt {idx}: warrant chain invalid ({detail})"]
 
         verifier = Authorizer()
-        verifier.add_trusted_root(PublicKey.from_bytes(bytes.fromhex(root)))
+        verifier.add_trusted_root(PublicKey.from_bytes(bytes.fromhex(verified_root)))
         tool = authz["tenuo_tool"]
         args = authz["sign_args"]
         constraint_error = leaf.check_constraints(tool, args)
@@ -1995,8 +1991,10 @@ def _receipt_append_lock():
     claiming it — forking the hash chain and producing spurious `audit --verify`
     failures — and large rows (an embedded warrant stack can exceed PIPE_BUF) can
     tear. An exclusive advisory lock on a sidecar file makes the whole
-    read-modify-append atomic. On platforms without ``fcntl`` this degrades to a
-    no-op (single-writer only), which is the pre-existing behavior.
+    read-modify-append atomic. On platforms without ``fcntl`` (notably Windows)
+    this degrades to a no-op and assumes a single local receipt writer; use Cloud
+    audit export or avoid concurrent local hooks if strict local hash-chain
+    continuity matters there.
     """
     if fcntl is None:
         yield

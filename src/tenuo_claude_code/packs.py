@@ -36,6 +36,119 @@ class Pack:
         return f"v{self.version}"
 
 
+def _pack_schema_error(name: str, message: str) -> None:
+    raise SystemExit(f"Invalid policy pack '{name}': {message}")
+
+
+def _require_mapping(data: dict, field: str, pack_name: str) -> dict:
+    if field not in data:
+        _pack_schema_error(pack_name, f"missing required field '{field}'")
+    value = data[field]
+    if not isinstance(value, dict):
+        _pack_schema_error(pack_name, f"field '{field}' must be a mapping")
+    return value
+
+
+def _optional_mapping(data: dict, field: str, pack_name: str) -> dict:
+    value = data.get(field, {})
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        _pack_schema_error(pack_name, f"field '{field}' must be a mapping")
+    return value
+
+
+def _require_str(data: dict, field: str, pack_name: str) -> str:
+    if field not in data:
+        _pack_schema_error(pack_name, f"missing required field '{field}'")
+    value = data[field]
+    if not isinstance(value, str) or not value.strip():
+        _pack_schema_error(pack_name, f"field '{field}' must be a non-empty string")
+    return value.strip()
+
+
+def _optional_str(data: dict, field: str, pack_name: str, default: str = "") -> str:
+    value = data.get(field, default)
+    if value is None:
+        return default
+    if not isinstance(value, str):
+        _pack_schema_error(pack_name, f"field '{field}' must be a string")
+    return value
+
+
+def _require_int(data: dict, field: str, pack_name: str) -> int:
+    if field not in data:
+        _pack_schema_error(pack_name, f"missing required field '{field}'")
+    value = data[field]
+    if isinstance(value, bool) or not isinstance(value, int):
+        _pack_schema_error(pack_name, f"field '{field}' must be an integer")
+    return value
+
+
+def _optional_str_list(data: dict, field: str, pack_name: str) -> list[str]:
+    value = data.get(field, [])
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        _pack_schema_error(pack_name, f"field '{field}' must be a list")
+    out: list[str] = []
+    for idx, item in enumerate(value):
+        if not isinstance(item, str):
+            _pack_schema_error(pack_name, f"field '{field}[{idx}]' must be a string")
+        out.append(item)
+    return out
+
+
+def _optional_params(data: dict, pack_name: str) -> list[dict]:
+    value = data.get("params", [])
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        _pack_schema_error(pack_name, "field 'params' must be a list")
+    out: list[dict] = []
+    for idx, raw in enumerate(value):
+        if not isinstance(raw, dict):
+            _pack_schema_error(pack_name, f"field 'params[{idx}]' must be a mapping")
+        param = dict(raw)
+        _require_str(param, "name", pack_name)
+        for field in ("prompt", "example", "default"):
+            if field in param and param[field] is not None and not isinstance(param[field], str):
+                _pack_schema_error(
+                    pack_name, f"field 'params[{idx}].{field}' must be a string")
+        if "required" in param and not isinstance(param["required"], bool):
+            _pack_schema_error(pack_name, f"field 'params[{idx}].required' must be a boolean")
+        out.append(param)
+    return out
+
+
+def _validate_pack_data(name: str, raw) -> dict:
+    if raw is None:
+        _pack_schema_error(name, "pack.yaml is empty")
+    if not isinstance(raw, dict):
+        _pack_schema_error(name, "pack.yaml must contain a mapping")
+
+    pack_name = _require_str(raw, "name", name)
+    if pack_name != name:
+        _pack_schema_error(name, f"field 'name' must match directory name '{name}'")
+    pinned = _require_mapping(raw, "pinned", name)
+    return {
+        "name": pack_name,
+        "version": _require_int(raw, "version", name),
+        "title": _optional_str(raw, "title", name, pack_name) or pack_name,
+        "reviewed": _require_str(raw, "reviewed", name),
+        "reviewed_by": _require_str(raw, "reviewed_by", name),
+        "pinned": {
+            "name": _require_str(pinned, "name", name),
+            "version": _require_str(pinned, "version", name),
+            "tool_list_hash": _require_str(pinned, "tool_list_hash", name),
+        },
+        "description": _optional_str(raw, "description", name),
+        "params": _optional_params(raw, name),
+        "summary": _optional_mapping(raw, "summary", name),
+        "assumptions": _optional_str_list(raw, "assumptions", name),
+    }
+
+
 def _packs_root() -> resources.abc.Traversable:
     return resources.files(PACKAGE).joinpath("packs")
 
@@ -49,18 +162,21 @@ def load_pack(name: str) -> Pack:
     meta = pdir.joinpath("pack.yaml")
     if not meta.is_file():
         raise SystemExit(f"Unknown policy pack '{name}'. Run `tenuo-claude pack list`.")
-    data = yaml.safe_load(meta.read_text(encoding="utf-8")) or {}
+    data = _validate_pack_data(name, yaml.safe_load(meta.read_text(encoding="utf-8")))
+    template = pdir.joinpath("tenuo.yaml.tmpl")
+    if not template.is_file():
+        raise SystemExit(f"Invalid policy pack '{name}': missing required file 'tenuo.yaml.tmpl'")
     return Pack(
-        name=str(data["name"]),
-        version=int(data["version"]),
-        title=str(data.get("title") or data["name"]),
-        reviewed=str(data["reviewed"]),
-        reviewed_by=str(data["reviewed_by"]),
-        pinned=dict(data.get("pinned") or {}),
-        description=str(data.get("description") or ""),
-        params=list(data.get("params") or []),
-        summary=dict(data.get("summary") or {}),
-        assumptions=[str(v) for v in (data.get("assumptions") or [])],
+        name=data["name"],
+        version=data["version"],
+        title=data["title"],
+        reviewed=data["reviewed"],
+        reviewed_by=data["reviewed_by"],
+        pinned=data["pinned"],
+        description=data["description"],
+        params=data["params"],
+        summary=data["summary"],
+        assumptions=data["assumptions"],
         path=pdir,
     )
 
@@ -134,4 +250,3 @@ def write_pack_policy(project_root: Path, pack: Pack, params: dict[str, str], *,
         raise SystemExit(f"{dest.name} already exists. Re-run with --force to overwrite.")
     dest.write_text(render_pack(pack, params), encoding="utf-8")
     return dest
-

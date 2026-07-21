@@ -245,18 +245,26 @@ def build_warrant_config(cfg: dict, approval_policy_id: str | None = None) -> di
             continue
         parsed = tc.parse_mcp_enforce_spec(raw)
         cons = parsed["constraints"]
+        approval = parsed.get("approval")
+        exempt_args = parsed.get("exempt_args") or {}
         if cons:
+            # Explicit constraints are the capability ceiling; approval adds a
+            # human gate on top without broadening the allowed argument space.
             per_action[mtool] = {a: to_wire_constraint(spec, sandbox) for a, spec in cons.items()}
-            if parsed.get("approval") and gate_approval:
+            if approval and gate_approval:
                 gate_args: dict = {}
-                for ek, es in (parsed.get("exempt_args") or {}).items():
+                for ek, es in exempt_args.items():
                     gate_args[ek] = {"exempt": to_wire_constraint(es, sandbox)}
                 approval_gates[mtool] = {"args": gate_args or None}
-        elif parsed.get("approval") and gate_approval:
-            gated = list((parsed.get("exempt_args") or {}).keys()) or [tc.mcp_default_arg(mtool)]
+            continue
+
+        if approval and gate_approval:
+            # Approval-only tools need a wildcard grant so the authorizer can
+            # reach the gate; the approval signature still binds exact args.
+            gated = list(exempt_args.keys()) or [tc.mcp_default_arg(mtool)]
             per_action[mtool] = {a: {"_type": "wildcard"} for a in gated}
             gate_args: dict = {}
-            for ek, es in (parsed.get("exempt_args") or {}).items():
+            for ek, es in exempt_args.items():
                 gate_args[ek] = {"exempt": to_wire_constraint(es, sandbox)}
             approval_gates[mtool] = {"args": gate_args or {a: {} for a in gated}}
     # ALLOW capabilities (unconstrained): the hook routes allow-listed tools to

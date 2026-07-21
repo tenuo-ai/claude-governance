@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 
+import pytest
 import yaml
 
 from tenuo_claude_code import admin, packs
@@ -41,6 +42,43 @@ def test_expected_bundled_packs_are_present():
         "github-mcp",
         "http-api-safe",
     } == names
+
+
+def test_load_pack_rejects_missing_required_metadata(monkeypatch, tmp_path):
+    (tmp_path / "pack.yaml").write_text(
+        """
+name: broken
+version: 1
+reviewed: "2026-07-10"
+reviewed_by: tenuo-packs
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "tenuo.yaml.tmpl").write_text("name: demo\n", encoding="utf-8")
+    monkeypatch.setattr(packs, "_pack_dir", lambda name: tmp_path)
+
+    with pytest.raises(SystemExit, match="missing required field 'pinned'"):
+        packs.load_pack("broken")
+
+
+def test_load_pack_requires_template(monkeypatch, tmp_path):
+    (tmp_path / "pack.yaml").write_text(
+        """
+name: missing-template
+version: 1
+reviewed: "2026-07-10"
+reviewed_by: tenuo-packs
+pinned:
+  name: tool-surface
+  version: "1"
+  tool_list_hash: abc123
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(packs, "_pack_dir", lambda name: tmp_path)
+
+    with pytest.raises(SystemExit, match="missing required file 'tenuo.yaml.tmpl'"):
+        packs.load_pack("missing-template")
 
 
 def test_all_bundled_packs_render_and_load(monkeypatch, tmp_path, cli_mod, bound):

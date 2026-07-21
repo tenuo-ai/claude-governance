@@ -168,11 +168,18 @@ jobs:
           uv sync --frozen
           uv run --with pytest pytest
 
+      - name: Install Rust (in WSL)
+        shell: wsl-bash {0}
+        run: |
+          set -euxo pipefail
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup-init.sh
+          sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain stable
+
       - name: bootstrap + verify against the live authorizer (in WSL)
         shell: wsl-bash {0}
         run: |
           set -euxo pipefail
-          export PATH="$HOME/.local/bin:$HOME/.tenuo/bin:$PATH"
+          export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.tenuo/bin:$PATH"
           cd "$HOME/repo"
           uv run tenuo-claude install-authorizer
           proj="$HOME/governed"

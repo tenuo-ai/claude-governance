@@ -49,7 +49,7 @@ try:
 except ImportError:  # pragma: no cover - non-POSIX platforms
     fcntl = None
 
-from tenuo_claude_code import authorizer_runtime as art
+from tenuo_claude_code import __version__, authorizer_runtime as art
 from tenuo_claude_code.paths import (
     ADMIN_COMMAND,
     ADMIN_COMMAND_LEGACY,
@@ -3580,8 +3580,10 @@ def cmd_onboard(args) -> None:
         cloud = choice.startswith("c")
         local = not cloud
 
-    created = scaffold_example_policy(DEMO_DIR, no_scaffold=getattr(args, "no_scaffold", False))
-
+    token = None
+    cloud_url = None
+    approver = None
+    approver_id = None
     admin_key = None
     if cloud:
         token = getattr(args, "connect_token", None) or os.environ.get("TENUO_CONNECT_TOKEN")
@@ -3591,11 +3593,7 @@ def cmd_onboard(args) -> None:
             token = _prompt("Paste Quick Connect token (tenuo_ct_…)")
         if not token:
             raise SystemExit("Cloud onboarding needs TENUO_CONNECT_TOKEN (Quick Connect → Authorizer Only).")
-        write_cloud_env(token)
-
-        url = _parse_connect_token(token.strip())["url"]
-        write_cloud_profile(url=url)
-        print(f"Wrote {CLOUD_PROFILE.name}")
+        cloud_url = _parse_connect_token(token.strip())["url"]
 
         if getattr(args, "advanced", False) or getattr(args, "demo", False):
             approver = getattr(args, "approver", None)
@@ -3604,14 +3602,25 @@ def cmd_onboard(args) -> None:
                 approver = _prompt("Approver display name (must exist in Cloud)")
             if not approver and not approver_id:
                 raise SystemExit("--advanced requires --approver-id or --approver.")
-            write_advanced_profile(approver=approver, approver_id=approver_id)
-            print(f"Wrote {ADVANCED_PROFILE.name} (advanced — re-run `tenuo-admin setup`)")
 
         admin_key = getattr(args, "admin_key", None) or os.environ.get("TENUO_ADMIN_KEY")
         if not admin_key and ADMIN_ENV.exists():
             admin_key = read_env_file(ADMIN_ENV).get("TENUO_ADMIN_KEY")
         if not admin_key and not getattr(args, "yes", False):
             admin_key = _prompt("Paste tenant-admin key for one-time setup (blank = skip)", "")
+
+    created = scaffold_example_policy(DEMO_DIR, no_scaffold=getattr(args, "no_scaffold", False))
+
+    if cloud:
+        write_cloud_env(token)
+
+        write_cloud_profile(url=cloud_url)
+        print(f"Wrote {CLOUD_PROFILE.name}")
+
+        if getattr(args, "advanced", False) or getattr(args, "demo", False):
+            write_advanced_profile(approver=approver, approver_id=approver_id)
+            print(f"Wrote {ADVANCED_PROFILE.name} (advanced — re-run `tenuo-admin setup`)")
+
         if admin_key:
             write_admin_env(admin_key)
             print(f"Wrote {ADMIN_ENV}")
@@ -4308,6 +4317,8 @@ def check_claude_hook_exit_contract() -> bool:
             if not ran:
                 print(f"  XX hook-exit  exit {exit_code}: hook never ran "
                       f"(project settings not loaded? trust prompt?)")
+                print("      → Open/trust the project in Claude Code first, or use "
+                      "`tenuo-claude verify --deep --no-live` for policy-only checks.")
                 ok = False
                 continue
             if exit_code == 1:
@@ -5151,6 +5162,8 @@ COMMANDS = {
 def main() -> None:
     parser = argparse.ArgumentParser(prog=CLI_COMMAND, description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--version", action="version",
+                        version=f"tenuo-claude-code {__version__}")
     sub = parser.add_subparsers(dest="cmd")
     for name in ["down", "status", "check", "revoke",
                  "_hook", "_managed-hook", "_post", "_mcp-proxy", "_managed-mcp-proxy"]:

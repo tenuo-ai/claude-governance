@@ -5,10 +5,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
+import sys
 
 import pytest
 
 from tenuo_claude_code import cli
+from tenuo_claude_code import __version__
 
 
 def test_check_wiring_ok_without_launcher(monkeypatch, tmp_path):
@@ -19,6 +22,31 @@ def test_check_wiring_ok_without_launcher(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "DEMO_DIR", proj, raising=False)
     ok = cli._check_wiring({"mcp": {}}, True)
     assert ok is True
+
+
+def test_cli_version_works_without_project(tmp_path):
+    proc = subprocess.run(
+        [sys.executable, "-m", "tenuo_claude_code.cli", "--version"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode == 0
+    assert f"tenuo-claude-code {__version__}" in proc.stdout
+
+
+@pytest.mark.parametrize("args", [["--help"], ["setup", "--help"]])
+def test_admin_help_works_without_project(tmp_path, args):
+    proc = subprocess.run(
+        [sys.executable, "-m", "tenuo_claude_code.admin", *args],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode == 0
+    assert "usage: tenuo-admin" in proc.stdout
 
 
 def _write_pre_hook(proj, command: str) -> None:
@@ -176,3 +204,30 @@ def test_cloud_onboard_writes_profile_before_preflight(monkeypatch, tmp_path):
     ))
 
     assert seen["mode"] == "cloud"
+
+
+def test_cloud_bootstrap_missing_token_does_not_scaffold(monkeypatch, tmp_path):
+    state = tmp_path / ".state"
+    monkeypatch.delenv("TENUO_CONNECT_TOKEN", raising=False)
+    monkeypatch.delenv("TENUO_ADMIN_KEY", raising=False)
+    monkeypatch.setattr(cli, "DEMO_DIR", tmp_path, raising=False)
+    monkeypatch.setattr(cli, "STATE", state, raising=False)
+    monkeypatch.setattr(cli, "CONFIG_FILE", tmp_path / "tenuo.yaml", raising=False)
+    monkeypatch.setattr(cli, "CLOUD_ENV", state / "cloud.env", raising=False)
+    monkeypatch.setattr(cli, "ADMIN_ENV", tmp_path / "home" / ".tenuo" / "admin.env", raising=False)
+
+    with pytest.raises(SystemExit, match="TENUO_CONNECT_TOKEN"):
+        cli.cmd_bootstrap(argparse.Namespace(
+            cloud=True,
+            yes=True,
+            no_scaffold=False,
+            advanced=False,
+            demo=False,
+            connect_token=None,
+            admin_key=None,
+            approver=None,
+            approver_id=None,
+        ))
+
+    assert not (tmp_path / "tenuo.yaml").exists()
+    assert not (tmp_path / "workspace").exists()

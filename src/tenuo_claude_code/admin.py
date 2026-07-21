@@ -733,7 +733,6 @@ COMMANDS = {"setup": cmd_setup, "show": cmd_show}
 
 
 def main() -> None:
-    bind_project_paths(tc)
     parser = argparse.ArgumentParser(prog=ADMIN_COMMAND, description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd")
@@ -748,6 +747,7 @@ def main() -> None:
     if not args.cmd:
         parser.print_help()
         return
+    bind_project_paths(tc)
     COMMANDS[args.cmd](args)
 
 

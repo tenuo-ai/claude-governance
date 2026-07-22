@@ -1301,6 +1301,7 @@ def _authorization_receipt_context(tenuo_tool: str, route: str, sign_args: dict,
     }
     if approvals_b64:
         ctx["approvals_b64"] = approvals_b64
+        ctx["approval_required"] = True
     return ctx
 
 
@@ -1529,6 +1530,11 @@ def authorize_with_approval(cfg: dict, claude_tool: str, tenuo_tool: str, route:
         return False, ("approval required, but the Cloud approver isn't configured — "
                        "run `tenuo-admin setup` (approval gates require Tenuo Cloud)"), evidence
     threshold = int(rb.get("required_approvals") or 1)
+    evidence["approval_required"] = True
+    evidence["approval_threshold"] = threshold
+    approvers = rb.get("required_approvers")
+    if approvers:
+        evidence["required_approvers"] = approvers
     if not live:
         return False, f"{APPROVAL_PENDING_REASON}: {threshold} approval(s) required", evidence
 
@@ -1540,6 +1546,10 @@ def authorize_with_approval(cfg: dict, claude_tool: str, tenuo_tool: str, route:
     allowed, reason, _, approved_evidence = _authorize_attempt(
         tenuo_tool, route, sign_args, body, warrant_b64,
         approvals_b64=approvals_header)
+    approved_evidence["approval_required"] = True
+    approved_evidence["approval_threshold"] = threshold
+    if approvers:
+        approved_evidence["required_approvers"] = approvers
     if allowed:
         return True, "approved", approved_evidence
     return False, f"re-authorize after approval failed: {reason}", approved_evidence
@@ -1876,11 +1886,10 @@ def _receipt_trust_roots() -> list[str]:
 def _verify_authz_evidence(payload: dict, idx: int) -> list[str]:
     """Replay the governed decision embedded in one receipt payload.
 
-    Local replay validates the warrant chain and deterministic constraints from
-    receipt evidence. When a Cloud approval was used, the approval CBOR is stored
-    as presented to the authorizer, but local `audit --verify` does not currently
-    reconstruct the Cloud approval policy or threshold; Cloud audit is the
-    independent source for approver/threshold verification.
+    Local replay validates the warrant chain, deterministic constraints, and
+    presence of a recorded approval when the receipt evidence says approval was
+    required. It does not reconstruct the Cloud approval policy or threshold;
+    Cloud audit is the independent source for approver/threshold verification.
     """
     authz = payload.get("authz")
     if not isinstance(authz, dict) or not authz:
@@ -1945,6 +1954,8 @@ def _verify_authz_evidence(payload: dict, idx: int) -> list[str]:
         recorded = payload.get("decision")
         if recorded == "allow" and not in_bounds:
             errors.append(f"receipt {idx}: recorded allow but warrant replay denied ({constraint_error})")
+        if recorded == "allow" and authz.get("approval_required") and not authz.get("approvals_b64"):
+            errors.append(f"receipt {idx}: recorded allow but approval evidence missing")
     except Exception as exc:
         errors.append(f"receipt {idx}: authz evidence invalid ({exc})")
     return errors
@@ -1999,26 +2010,32 @@ def _path_label(path: Path) -> str:
     return str(path)
 
 
-def receipt_verify_summary_lines(rows: list[dict]) -> list[str]:
+def receipt_verify_summary_lines(rows: list[dict], ok: bool = True) -> list[str]:
     """Human-readable explanation of what local receipt verification checked."""
     governed = any(isinstance(_unwrap_receipt(r).get("authz"), dict)
                    and _unwrap_receipt(r).get("authz") for r in rows)
+    approval_gated = any(isinstance(_unwrap_receipt(r).get("authz"), dict)
+                         and _unwrap_receipt(r).get("authz", {}).get("approval_required")
+                         for r in rows)
     local_issuer = ISSUER_PUB.exists() or STATE_JSON.exists()
     cloud_state = globals().get("CLOUD_STATE")
     cloud_root = bool(cloud_state and Path(cloud_state).exists())
+    mark = "ok" if ok else "!!"
 
     lines = [
         "",
-        "Verified:",
-        f"  ok receipt signatures     Ed25519 over canonical payload; signer={_path_label(RECEIPT_PUB)}",
-        "  ok hash chain             prev_hash links every receipt",
+        "Verification checks:",
+        f"  {mark} receipt signatures     Ed25519 over canonical payload; signer={_path_label(RECEIPT_PUB)}",
+        f"  {mark} hash chain             prev_hash links every receipt",
     ]
     if governed:
         lines.extend([
-            "  ok warrant binding        warrant id + warrant stack hash in governed receipts",
-            "  ok warrant chain          checked against trusted warrant root(s)",
-            "  ok decision replay        recorded allow/deny matches warrant constraints",
+            f"  {mark} warrant binding        warrant id + warrant stack hash in governed receipts",
+            f"  {mark} warrant chain          checked against trusted warrant root(s)",
+            f"  {mark} decision replay        recorded allow/deny matches warrant constraints",
         ])
+        if approval_gated:
+            lines.append(f"  {mark} approval presence     approval-gated allows include approval evidence")
     else:
         lines.append("  .. warrant replay         no governed receipt evidence in this log")
 
@@ -4248,13 +4265,13 @@ def cmd_audit(args) -> None:
         ok, errors = verify_receipt_rows(raw_rows)
         if ok:
             print(f"Receipt verification OK ({len(raw_rows)} receipts)")
-            for line in receipt_verify_summary_lines(raw_rows):
+            for line in receipt_verify_summary_lines(raw_rows, ok=True):
                 print(line)
         else:
             print("Receipt verification FAILED")
             for err in errors:
                 print(f"  {err}")
-            for line in receipt_verify_summary_lines(raw_rows):
+            for line in receipt_verify_summary_lines(raw_rows, ok=False):
                 print(line)
     rows = [_unwrap_receipt(r) for r in raw_rows]
     if getattr(args, "tail", None):
@@ -4264,10 +4281,13 @@ def cmd_audit(args) -> None:
         vals = row.get("args") or {}
         if not isinstance(vals, dict):
             return ""
+        parts = []
         for key in ("file_path", "path", "url", "command", "target", "subagent_type"):
             val = vals.get(key)
             if val is not None:
-                return f"  {key}={val}"
+                parts.append(f"{key}={val}")
+        if parts:
+            return "  " + " ".join(parts)
         if vals:
             return f"  args={json.dumps(vals, sort_keys=True)}"
         return ""

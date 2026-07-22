@@ -121,6 +121,48 @@ def test_receipt_verify_summary_names_checks_and_local_trust(cli_mod, bound, mon
     assert "tamper-evident" in summary
 
 
+def test_receipt_verify_failure_summary_does_not_claim_success(cli_mod, bound, monkeypatch):
+    monkeypatch.setattr(cli_mod, "RECEIPTS", cli_mod.STATE / "receipts.jsonl", raising=False)
+    assert cli_mod.write_receipt({"phase": "pre", "decision": "allow"}) is True
+    rows = [json.loads(line) for line in cli_mod.RECEIPTS.read_text().splitlines()]
+    rows[0]["payload"]["decision"] = "deny"
+
+    ok, _ = cli_mod.verify_receipt_rows(rows)
+    summary = "\n".join(cli_mod.receipt_verify_summary_lines(rows, ok=ok))
+
+    assert ok is False
+    assert "Verification checks" in summary
+    assert "!! receipt signatures" in summary
+    assert "Trust roots" in summary
+
+
+def test_audit_row_shows_multiple_key_args(cli_mod, bound, monkeypatch, capsys):
+    monkeypatch.setattr(cli_mod, "RECEIPTS", cli_mod.STATE / "receipts.jsonl", raising=False)
+    cli_mod.ensure_state_dir()
+    cli_mod.RECEIPTS.write_text(json.dumps({
+        "payload": {
+            "phase": "pre",
+            "decision": "deny",
+            "claude_tool": "MCP",
+            "tenuo_tool": "deploy",
+            "reason": "constraint failed",
+            "args": {
+                "target": "prod",
+                "path": "/repo/app",
+                "url": "https://example.invalid",
+                "branch": "main",
+            },
+        }
+    }) + "\n")
+
+    cli_mod.cmd_audit(type("Args", (), {"verify": False, "tail": None})())
+    out = capsys.readouterr().out
+
+    assert "path=/repo/app" in out
+    assert "url=https://example.invalid" in out
+    assert "target=prod" in out
+
+
 def test_write_receipt_chain_survives_concurrent_writers(cli_mod, bound, monkeypatch):
     # Native-tool hooks and the MCP proxy write receipts from separate execution
     # contexts. First-use key generation and read-prev-hash + append must be
@@ -236,6 +278,20 @@ def test_verify_receipt_rows_rejects_replay_mismatch(cli_mod, bound, monkeypatch
 
     assert ok is False
     assert any("recorded allow but warrant replay denied" in err for err in errors)
+
+
+def test_verify_receipt_rows_rejects_missing_approval_evidence(cli_mod, bound, monkeypatch):
+    monkeypatch.setattr(cli_mod, "RECEIPTS", cli_mod.STATE / "receipts.jsonl", raising=False)
+    cli_mod.ensure_state_dir()
+    authz = _authz_evidence(cli_mod, "read_file", {})
+    authz["approval_required"] = True
+
+    assert cli_mod.write_receipt({"phase": "pre", "decision": "allow", "authz": authz}) is True
+    rows = [json.loads(line) for line in cli_mod.RECEIPTS.read_text().splitlines()]
+    ok, errors = cli_mod.verify_receipt_rows(rows)
+
+    assert ok is False
+    assert any("approval evidence missing" in err for err in errors)
 
 
 def test_write_receipt_failure_marks_sink(cli_mod, bound, monkeypatch):

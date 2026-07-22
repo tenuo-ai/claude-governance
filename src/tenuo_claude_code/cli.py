@@ -1989,6 +1989,64 @@ def verify_receipt_rows(rows: list[dict]) -> tuple[bool, list[str]]:
     return not errors, errors
 
 
+def _path_label(path: Path) -> str:
+    try:
+        root = globals().get("DEMO_DIR")
+        if root:
+            return str(path.relative_to(root))
+    except Exception:
+        pass
+    return str(path)
+
+
+def receipt_verify_summary_lines(rows: list[dict]) -> list[str]:
+    """Human-readable explanation of what local receipt verification checked."""
+    signer = _trusted_receipt_signer()
+    roots = _receipt_trust_roots()
+    governed = any(isinstance(_unwrap_receipt(r).get("authz"), dict)
+                   and _unwrap_receipt(r).get("authz") for r in rows)
+    cloud_root = None
+    try:
+        val = load_cloud_state().get("root")
+        if isinstance(val, str) and val.strip():
+            cloud_root = val.strip()
+    except Exception:
+        cloud_root = None
+
+    lines = [
+        "",
+        "Verified:",
+        f"  ok receipt signatures     Ed25519 over canonical payload; signer={_path_label(RECEIPT_PUB)}"
+        + (f" ({signer[:16]}...)" if signer else " (missing)"),
+        "  ok hash chain             prev_hash links every receipt",
+    ]
+    if governed:
+        lines.extend([
+            "  ok warrant binding        warrant id + warrant stack hash in governed receipts",
+            "  ok warrant chain          checked against trusted warrant root(s)",
+            "  ok decision replay        recorded allow/deny matches warrant constraints",
+        ])
+    else:
+        lines.append("  .. warrant replay         no governed receipt evidence in this log")
+
+    lines.extend(["", "Trust roots:"])
+    lines.append(f"  receipt signer            {_path_label(RECEIPT_PUB)}")
+    if roots:
+        for root in roots:
+            source = "cloud tenant root" if cloud_root and root == cloud_root else "local issuer"
+            lines.append(f"  warrant root              {source} {root[:16]}...")
+    else:
+        lines.append("  warrant root              <none found>")
+
+    lines.extend(["", "Trust model:"])
+    if cloud_root:
+        lines.append("  Cloud root present: warrant authority chains to the tenant root.")
+    else:
+        lines.append("  Local mode: evidence is tamper-evident relative to local .state keys.")
+        lines.append("  For production evidence, anchor signer/root outside the agent machine or use Cloud.")
+    return lines
+
+
 @contextlib.contextmanager
 def _receipt_append_lock():
     """Serialize the read-prev-hash + append across every receipt writer.
@@ -2217,6 +2275,8 @@ def cmd_mcp_proxy(_args) -> None:
     roles = subagent_roles(cfg)
 
     def log(m):
+        if os.environ.get("TENUO_MCP_PROXY_QUIET", "").strip().lower() in ("1", "true", "yes"):
+            return
         print(f"[tenuo-mcp-proxy] {m}", file=sys.stderr, flush=True)
 
     async def run():
@@ -4197,13 +4257,30 @@ def cmd_audit(args) -> None:
         ok, errors = verify_receipt_rows(raw_rows)
         if ok:
             print(f"Receipt verification OK ({len(raw_rows)} receipts)")
+            for line in receipt_verify_summary_lines(raw_rows):
+                print(line)
         else:
             print("Receipt verification FAILED")
             for err in errors:
                 print(f"  {err}")
+            for line in receipt_verify_summary_lines(raw_rows):
+                print(line)
     rows = [_unwrap_receipt(r) for r in raw_rows]
     if getattr(args, "tail", None):
         rows = rows[-args.tail:]
+
+    def arg_summary(row: dict) -> str:
+        vals = row.get("args") or {}
+        if not isinstance(vals, dict):
+            return ""
+        for key in ("file_path", "path", "url", "command", "target", "subagent_type"):
+            val = vals.get(key)
+            if val is not None:
+                return f"  {key}={val}"
+        if vals:
+            return f"  args={json.dumps(vals, sort_keys=True)}"
+        return ""
+
     for r in rows:
         if r.get("phase") == "post":
             print(f"  · outcome  {r.get('claude_tool',''):14} {r.get('outcome_preview','')[:60]}")
@@ -4220,7 +4297,8 @@ def cmd_audit(args) -> None:
                    else "mcp" if r.get("source") == "mcp_proxy"
                    else "gov" if r.get("governed") else "aud")
             who = f" <{r['agent_type']}>" if r.get("agent_type") else ""
-            print(f"  {mark:10} [{src}] {r.get('claude_tool',''):14}{who} -> {r.get('tenuo_tool','')}  {r.get('reason','')}")
+            print(f"  {mark:10} [{src}] {r.get('claude_tool',''):14}{who} -> "
+                  f"{r.get('tenuo_tool','')}  {r.get('reason','')}{arg_summary(r)}")
 
 
 def cmd_revoke(_args) -> None:

@@ -107,6 +107,20 @@ def test_write_receipt_signs_and_hash_chains(cli_mod, bound, monkeypatch):
     assert rows[0]["signer_pub"] == cli_mod.RECEIPT_PUB.read_text().strip()
 
 
+def test_receipt_verify_summary_names_checks_and_local_trust(cli_mod, bound, monkeypatch):
+    monkeypatch.setattr(cli_mod, "RECEIPTS", cli_mod.STATE / "receipts.jsonl", raising=False)
+    assert cli_mod.write_receipt({"phase": "pre", "decision": "allow"}) is True
+    rows = [json.loads(line) for line in cli_mod.RECEIPTS.read_text().splitlines()]
+
+    summary = "\n".join(cli_mod.receipt_verify_summary_lines(rows))
+
+    assert "receipt signatures" in summary
+    assert "hash chain" in summary
+    assert "receipt_pub.hex" in summary
+    assert "Local mode" in summary
+    assert "tamper-evident" in summary
+
+
 def test_write_receipt_chain_survives_concurrent_writers(cli_mod, bound, monkeypatch):
     # Native-tool hooks and the MCP proxy write receipts from separate execution
     # contexts. First-use key generation and read-prev-hash + append must be

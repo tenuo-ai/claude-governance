@@ -136,6 +136,22 @@ def test_receipt_verify_failure_summary_does_not_claim_success(cli_mod, bound, m
     assert "Trust roots" in summary
 
 
+def test_audit_verify_exits_nonzero_on_integrity_failure(cli_mod, bound, monkeypatch, capsys):
+    monkeypatch.setattr(cli_mod, "RECEIPTS", cli_mod.STATE / "receipts.jsonl", raising=False)
+    assert cli_mod.write_receipt({"phase": "pre", "decision": "allow"}) is True
+    rows = [json.loads(line) for line in cli_mod.RECEIPTS.read_text().splitlines()]
+    rows[0]["payload"]["decision"] = "deny"
+    cli_mod.RECEIPTS.write_text(json.dumps(rows[0]) + "\n")
+
+    with pytest.raises(SystemExit) as exc:
+        cli_mod.cmd_audit(type("Args", (), {"verify": True, "tail": None})())
+
+    out = capsys.readouterr().out
+    assert exc.value.code == 1
+    assert "Receipt verification FAILED" in out
+    assert "signature invalid" in out or "receipt_hash mismatch" in out
+
+
 def test_audit_row_shows_multiple_key_args(cli_mod, bound, monkeypatch, capsys):
     monkeypatch.setattr(cli_mod, "RECEIPTS", cli_mod.STATE / "receipts.jsonl", raising=False)
     cli_mod.ensure_state_dir()

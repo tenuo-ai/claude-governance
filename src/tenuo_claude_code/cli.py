@@ -4273,6 +4273,7 @@ def cmd_audit(args) -> None:
                 print(f"  {err}")
             for line in receipt_verify_summary_lines(raw_rows, ok=False):
                 print(line)
+            raise SystemExit(1)
     rows = [_unwrap_receipt(r) for r in raw_rows]
     if getattr(args, "tail", None):
         rows = rows[-args.tail:]

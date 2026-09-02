@@ -3695,7 +3695,18 @@ def cmd_onboard(args) -> None:
         if not admin_key and not getattr(args, "yes", False):
             admin_key = _prompt("Paste tenant-admin key for one-time setup (blank = skip)", "")
 
-    created = scaffold_example_policy(DEMO_DIR, no_scaffold=getattr(args, "no_scaffold", False))
+    # Handle --pack flag
+    pack_name = getattr(args, "pack", None)
+    if pack_name:
+        # Render policy pack instead of scaffold example
+        try:
+            from tenuo_claude_code.packs import render_policy_pack
+            render_policy_pack(argparse.Namespace(pack=pack_name))
+            created = True
+        except Exception as e:
+            raise SystemExit(f"Policy pack '{pack_name}' failed: {e}")
+    else:
+        created = scaffold_example_policy(DEMO_DIR, no_scaffold=getattr(args, "no_scaffold", False))
     _ensure_state_in_gitignore()
 
     if cloud:
@@ -3763,9 +3774,18 @@ def cmd_onboard(args) -> None:
 
 def cmd_bootstrap(args) -> None:
     """check → init → up → verify (--local default)."""
+    # Handle --native flag by setting environment variable
+    if getattr(args, "native", False):
+        os.environ["TENUO_AUTHORIZER_BACKEND"] = "native"
+
+    # Handle --install flag
+    if getattr(args, "install", False):
+        cmd_install_authorizer(argparse.Namespace())
+
     local = getattr(args, "local", True) and not getattr(args, "cloud", False)
     ns = dict(local=True, cloud=False, yes=True,
               no_scaffold=getattr(args, "no_scaffold", False),
+              pack=getattr(args, "pack", None),
               skip_preflight=True)
     if local:
         cmd_onboard(argparse.Namespace(**ns))
@@ -3773,6 +3793,7 @@ def cmd_bootstrap(args) -> None:
         cmd_onboard(argparse.Namespace(
             local=False, cloud=True, yes=getattr(args, "yes", False),
             no_scaffold=getattr(args, "no_scaffold", False),
+            pack=getattr(args, "pack", None),
             advanced=getattr(args, "advanced", False) or getattr(args, "demo", False),
             connect_token=getattr(args, "connect_token", None),
             approver=getattr(args, "approver", None),
@@ -5396,6 +5417,10 @@ def main() -> None:
     pb.add_argument("--yes", "-y", action="store_true")
     pb.add_argument("--no-scaffold", action="store_true",
                     help="fail if tenuo.yaml is missing (default: write an example policy)")
+    pb.add_argument("--pack", help="policy pack to use (e.g., filesystem-dev, github-mcp)")
+    pb.add_argument("--native", action="store_true",
+                    help="use native authorizer backend (skip Docker if available)")
+    pb.add_argument("--install", action="store_true", help="auto-install native authorizer if needed")
     pb.add_argument("--connect-token")
     pb.add_argument("--admin-key")
     pb.add_argument("--approver")

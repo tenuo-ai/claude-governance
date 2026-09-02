@@ -3696,6 +3696,7 @@ def cmd_onboard(args) -> None:
             admin_key = _prompt("Paste tenant-admin key for one-time setup (blank = skip)", "")
 
     created = scaffold_example_policy(DEMO_DIR, no_scaffold=getattr(args, "no_scaffold", False))
+    _ensure_state_in_gitignore()
 
     if cloud:
         write_cloud_env(token)
@@ -4828,11 +4829,49 @@ def cmd_init(args) -> None:
         print(f"Advanced profile written: {ADVANCED_PROFILE.name} — re-run `tenuo-admin setup`")
     cfg = load_config()
     info = generate(cfg)
+    _ensure_state_in_gitignore()
     print("Initialized tenuo-claude.")
     print(f"  warrant  : {info['warrant_id']}")
     print(f"  sandbox  : {info['sandbox']}")
     print(f"  wired    : .claude/settings.json (PreToolUse/PostToolUse), .mcp.json, .state/gateway.yaml")
     print("Next: `tenuo-claude up` then use Claude Code in this directory.")
+
+
+def _ensure_state_in_gitignore() -> None:
+    """Add .state/ to .gitignore if not already present, and warn if tracked."""
+    gitignore_path = DEMO_DIR / ".gitignore"
+    state_dir = DEMO_DIR / ".state"
+
+    # Check if .state/ is already tracked in git
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", ".state/"],
+            cwd=DEMO_DIR,
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            print(
+                f"WARNING: .state/ is tracked in git and contains private keys and credentials.\n"
+                f"  Run: git rm -r --cached .state/\n"
+                f"  Then commit: git commit -m 'Stop tracking .state/ directory'",
+                file=sys.stderr
+            )
+    except Exception:
+        pass  # git not available or in non-git directory
+
+    # Add .state/ to .gitignore if not present
+    try:
+        gitignore_text = gitignore_path.read_text() if gitignore_path.exists() else ""
+        if ".state/" not in gitignore_text and ".state" not in gitignore_text:
+            # Append .state/ to .gitignore
+            with gitignore_path.open("a") as f:
+                if gitignore_text and not gitignore_text.endswith("\n"):
+                    f.write("\n")
+                f.write(".state/  # Tenuo: private keys, warrants, Cloud credentials\n")
+    except Exception as e:
+        print(f"warning: could not update .gitignore: {e}", file=sys.stderr)
 
 
 def cmd_refresh(args) -> None:

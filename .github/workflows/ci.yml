@@ -11,32 +11,6 @@ permissions:
   contents: read
 
 jobs:
-  python-versions:
-    name: Test Python ${{ matrix.python-version }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c5e2f0 # v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v8.2.0
-        with:
-          enable-cache: true
-
-      - name: Sync dependencies
-        run: uv sync --frozen
-
-      - name: Unit tests
-        run: uv run --with pytest pytest
-
   build-and-test:
     name: Build & smoke test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

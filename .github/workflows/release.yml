@@ -39,6 +39,6 @@ jobs:
           else
             echo "No PYPI_TOKEN — using trusted publishing (OIDC)."
             echo "PyPI must list a pending publisher for:"
-            echo "  owner=tenuo-ai  repo=claude-governance  workflow=release.yml"
+            echo "  owner=tenuo-ai  repo=tenuo-claude-code  workflow=release.yml"
             uv publish --trusted-publishing always --check-url https://pypi.org/simple/
           fi

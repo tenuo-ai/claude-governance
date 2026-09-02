@@ -105,7 +105,19 @@ def scaffold_example_policy(project_root: Path, *, no_scaffold: bool = False) ->
     dest.write_text(_EXAMPLE_POLICY_HEADER + yaml.dump(cfg, default_flow_style=False, sort_keys=False),
                     encoding="utf-8")
     sandbox = cfg.get("sandbox", "./workspace")
-    (project_root / sandbox).mkdir(parents=True, exist_ok=True)
+    sandbox_path = project_root / sandbox
+    sandbox_path.mkdir(parents=True, exist_ok=True)
+
+    # Create a sample file in the sandbox for testing
+    notes_file = sandbox_path / "notes.txt"
+    if not notes_file.exists():
+        notes_file.write_text(
+            "# Project Notes\n\n"
+            "This file is in the workspace directory and can be read by Claude Code.\n"
+            "Files outside this directory are denied by the default policy.\n",
+            encoding="utf-8"
+        )
+
     print(f"Wrote example policy: {dest.name} (name: {cfg['name']})")
     print("  Starter rules only — edit enforce, sandbox, and mode before production use.")
     print(f"  Sandbox directory: {sandbox}")

@@ -4589,7 +4589,7 @@ def cmd_demo(args) -> None:
         raise SystemExit(
             "No scripted tour in this project (tenuo_demo.py).\n"
             "  tenuo-claude verify     policy self-test against your tenuo.yaml\n"
-            "  Reference demo: https://github.com/tenuo-ai/claude-governance/tree/main/demo")
+            "  Reference demo: https://github.com/tenuo-ai/tenuo-claude-code/tree/main/demo")
     cmd = [sys.executable, str(demo_script)]
     if getattr(args, "advanced", False):
         cmd.append("--advanced")

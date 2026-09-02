@@ -2,7 +2,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/tenuo-claude-code)](https://pypi.org/project/tenuo-claude-code/)
 [![Python](https://img.shields.io/pypi/pyversions/tenuo-claude-code)](https://pypi.org/project/tenuo-claude-code/)
-[![CI](https://github.com/tenuo-ai/claude-governance/actions/workflows/ci.yml/badge.svg)](https://github.com/tenuo-ai/claude-governance/actions/workflows/ci.yml)
+[![CI](https://github.com/tenuo-ai/tenuo-claude-code/actions/workflows/ci.yml/badge.svg)](https://github.com/tenuo-ai/tenuo-claude-code/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
 **Task-scoped authorization for Claude Code.**
@@ -385,8 +385,8 @@ The warrant is a capability token: it lists what Claude can do and for how long.
 For development or running from a git checkout:
 
 ```bash
-git clone https://github.com/tenuo-ai/claude-governance.git
-cd claude-governance
+git clone https://github.com/tenuo-ai/tenuo-claude-code.git
+cd tenuo-claude-code
 uv venv && uv sync && source .venv/bin/activate    # Windows: .venv\Scripts\activate
 chmod +x bin/tenuo-claude
 uv run tenuo-claude install-authorizer             # only if not using Docker
@@ -406,7 +406,7 @@ tenuo-claude bench
 
 ## About
 
-**Repository:** [tenuo-ai/claude-governance](https://github.com/tenuo-ai/claude-governance)  
+**Repository:** [tenuo-ai/tenuo-claude-code](https://github.com/tenuo-ai/tenuo-claude-code)  
 **PyPI:** [tenuo-claude-code](https://pypi.org/project/tenuo-claude-code/)  
 **Tenuo core:** [tenuo-ai/tenuo](https://github.com/tenuo-ai/tenuo)  
 **License:** [Apache 2.0](LICENSE)

@@ -19,7 +19,7 @@ Full reference project with tour fixtures: [demo/](../../demo/).
 
 ```bash
 mkdir my-project && cd my-project
-curl -fsSL https://raw.githubusercontent.com/tenuo-ai/claude-governance/main/examples/policies/read-only-research.yaml -o tenuo.yaml
+curl -fsSL https://raw.githubusercontent.com/tenuo-ai/tenuo-claude-code/main/examples/policies/read-only-research.yaml -o tenuo.yaml
 # edit name, sandbox, domains, MCP downstream, etc.
 tenuo-claude init && tenuo-claude up && tenuo-claude verify
 ```

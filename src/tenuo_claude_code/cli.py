@@ -1171,9 +1171,18 @@ def refresh_subwarrants(cfg: dict) -> None:
     if not roles:
         return
     from tenuo import SigningKey, Warrant
+    from tenuo.exceptions import UntrustedRoot
     from tenuo_core import encode_warrant_stack
 
-    parent = Warrant.from_base64(WARRANT.read_text())
+    try:
+        parent = Warrant.from_base64(WARRANT.read_text())
+    except UntrustedRoot as e:
+        raise SystemExit(
+            f"Warrant trust verification failed: {e}\n"
+            "The session warrant is not signed by a trusted issuer.\n"
+            "This may indicate a Cloud trust policy change.\n"
+            "Fix: tenuo-claude check  (verify warrant validity)"
+        ) from e
     holder = SigningKey.from_bytes(base64.b64decode(HOLDER_KEY.read_text()))
     parent_caps = set((parent.capabilities or {}).keys())
     for role, rc in roles.items():
@@ -1301,6 +1310,7 @@ def _authorization_receipt_context(tenuo_tool: str, route: str, sign_args: dict,
     }
     if approvals_b64:
         ctx["approvals_b64"] = approvals_b64
+        ctx["approval_required"] = True
     return ctx
 
 
@@ -1323,9 +1333,13 @@ def _authorize_attempt(tenuo_tool: str, route: str, sign_args: dict, body,
         # to a chain (single -> length 1). The leaf (last) is what signs the PoP.
         try:
             leaf = decode_warrant_stack_base64(header_b64)[-1]
-        except Exception:
+        except Exception as e:
             from tenuo import Warrant
-            leaf = Warrant.from_base64(header_b64)
+            from tenuo.exceptions import UntrustedRoot
+            try:
+                leaf = Warrant.from_base64(header_b64)
+            except UntrustedRoot as ute:
+                return False, f"warrant trust failed: {ute}", {}, evidence
         pop_ts = int(time.time())
         pop = leaf.sign(holder, tenuo_tool, sign_args, pop_ts)
         pop_b64 = base64.b64encode(bytes(pop)).decode("ascii")
@@ -1529,6 +1543,11 @@ def authorize_with_approval(cfg: dict, claude_tool: str, tenuo_tool: str, route:
         return False, ("approval required, but the Cloud approver isn't configured — "
                        "run `tenuo-admin setup` (approval gates require Tenuo Cloud)"), evidence
     threshold = int(rb.get("required_approvals") or 1)
+    evidence["approval_required"] = True
+    evidence["approval_threshold"] = threshold
+    approvers = rb.get("required_approvers")
+    if approvers:
+        evidence["required_approvers"] = approvers
     if not live:
         return False, f"{APPROVAL_PENDING_REASON}: {threshold} approval(s) required", evidence
 
@@ -1540,6 +1559,10 @@ def authorize_with_approval(cfg: dict, claude_tool: str, tenuo_tool: str, route:
     allowed, reason, _, approved_evidence = _authorize_attempt(
         tenuo_tool, route, sign_args, body, warrant_b64,
         approvals_b64=approvals_header)
+    approved_evidence["approval_required"] = True
+    approved_evidence["approval_threshold"] = threshold
+    if approvers:
+        approved_evidence["required_approvers"] = approvers
     if allowed:
         return True, "approved", approved_evidence
     return False, f"re-authorize after approval failed: {reason}", approved_evidence
@@ -1876,11 +1899,10 @@ def _receipt_trust_roots() -> list[str]:
 def _verify_authz_evidence(payload: dict, idx: int) -> list[str]:
     """Replay the governed decision embedded in one receipt payload.
 
-    Local replay validates the warrant chain and deterministic constraints from
-    receipt evidence. When a Cloud approval was used, the approval CBOR is stored
-    as presented to the authorizer, but local `audit --verify` does not currently
-    reconstruct the Cloud approval policy or threshold; Cloud audit is the
-    independent source for approver/threshold verification.
+    Local replay validates the warrant chain, deterministic constraints, and
+    presence of a recorded approval when the receipt evidence says approval was
+    required. It does not reconstruct the Cloud approval policy or threshold;
+    Cloud audit is the independent source for approver/threshold verification.
     """
     authz = payload.get("authz")
     if not isinstance(authz, dict) or not authz:
@@ -1915,8 +1937,10 @@ def _verify_authz_evidence(payload: dict, idx: int) -> list[str]:
         if not roots:
             return [*errors, f"receipt {idx}: no trusted root key available for warrant verification"]
 
+        from tenuo.exceptions import UntrustedRoot
         verified_root = None
         chain_errors: list[str] = []
+        untrusted_root_error = None
         for pos, root in enumerate(roots):
             try:
                 verifier = Authorizer()
@@ -1924,6 +1948,9 @@ def _verify_authz_evidence(payload: dict, idx: int) -> list[str]:
                 verifier.verify_chain(chain)
                 verified_root = root
                 break
+            except UntrustedRoot as ute:
+                untrusted_root_error = str(ute)
+                chain_errors.append(f"root[{pos}] {root[:16]}...: root warrant untrusted")
             except Exception as exc:
                 chain_errors.append(f"root[{pos}] {root[:16]}...: {exc}")
         if verified_root is None:
@@ -1945,6 +1972,8 @@ def _verify_authz_evidence(payload: dict, idx: int) -> list[str]:
         recorded = payload.get("decision")
         if recorded == "allow" and not in_bounds:
             errors.append(f"receipt {idx}: recorded allow but warrant replay denied ({constraint_error})")
+        if recorded == "allow" and authz.get("approval_required") and not authz.get("approvals_b64"):
+            errors.append(f"receipt {idx}: recorded allow but approval evidence missing")
     except Exception as exc:
         errors.append(f"receipt {idx}: authz evidence invalid ({exc})")
     return errors
@@ -1987,6 +2016,63 @@ def verify_receipt_rows(rows: list[dict]) -> tuple[bool, list[str]]:
         errors.extend(_verify_authz_evidence(payload, idx))
         prev = receipt_hash
     return not errors, errors
+
+
+def _path_label(path: Path) -> str:
+    try:
+        root = globals().get("DEMO_DIR")
+        if root:
+            return str(path.relative_to(root))
+    except Exception:
+        pass
+    return str(path)
+
+
+def receipt_verify_summary_lines(rows: list[dict], ok: bool = True) -> list[str]:
+    """Human-readable explanation of what local receipt verification checked."""
+    governed = any(isinstance(_unwrap_receipt(r).get("authz"), dict)
+                   and _unwrap_receipt(r).get("authz") for r in rows)
+    approval_gated = any(isinstance(_unwrap_receipt(r).get("authz"), dict)
+                         and _unwrap_receipt(r).get("authz", {}).get("approval_required")
+                         for r in rows)
+    local_issuer = ISSUER_PUB.exists() or STATE_JSON.exists()
+    cloud_state = globals().get("CLOUD_STATE")
+    cloud_root = bool(cloud_state and Path(cloud_state).exists())
+    mark = "ok" if ok else "!!"
+
+    lines = [
+        "",
+        "Verification checks:",
+        f"  {mark} receipt signatures     Ed25519 over canonical payload; signer={_path_label(RECEIPT_PUB)}",
+        f"  {mark} hash chain             prev_hash links every receipt",
+    ]
+    if governed:
+        lines.extend([
+            f"  {mark} warrant binding        warrant id + warrant stack hash in governed receipts",
+            f"  {mark} warrant chain          checked against trusted warrant root(s)",
+            f"  {mark} decision replay        recorded allow/deny matches warrant constraints",
+        ])
+        if approval_gated:
+            lines.append(f"  {mark} approval presence     approval-gated allows include approval evidence")
+    else:
+        lines.append("  .. warrant replay         no governed receipt evidence in this log")
+
+    lines.extend(["", "Trust roots:"])
+    lines.append(f"  receipt signer            {_path_label(RECEIPT_PUB)}")
+    if local_issuer:
+        lines.append(f"  warrant root              local issuer {_path_label(ISSUER_PUB)}")
+    if cloud_root:
+        lines.append(f"  warrant root              cloud tenant root {_path_label(Path(cloud_state))}")
+    if not local_issuer and not cloud_root:
+        lines.append("  warrant root              <none found>")
+
+    lines.extend(["", "Trust model:"])
+    if cloud_root:
+        lines.append("  Cloud root present: warrant authority chains to the tenant root.")
+    else:
+        lines.append("  Local mode: evidence is tamper-evident relative to local .state keys.")
+        lines.append("  For production evidence, anchor signer/root outside the agent machine or use Cloud.")
+    return lines
 
 
 @contextlib.contextmanager
@@ -3609,7 +3695,19 @@ def cmd_onboard(args) -> None:
         if not admin_key and not getattr(args, "yes", False):
             admin_key = _prompt("Paste tenant-admin key for one-time setup (blank = skip)", "")
 
-    created = scaffold_example_policy(DEMO_DIR, no_scaffold=getattr(args, "no_scaffold", False))
+    # Handle --pack flag
+    pack_name = getattr(args, "pack", None)
+    if pack_name:
+        # Render policy pack instead of scaffold example
+        try:
+            from tenuo_claude_code.packs import render_policy_pack
+            render_policy_pack(argparse.Namespace(pack=pack_name))
+            created = True
+        except Exception as e:
+            raise SystemExit(f"Policy pack '{pack_name}' failed: {e}")
+    else:
+        created = scaffold_example_policy(DEMO_DIR, no_scaffold=getattr(args, "no_scaffold", False))
+    _ensure_state_in_gitignore()
 
     if cloud:
         write_cloud_env(token)
@@ -3676,9 +3774,18 @@ def cmd_onboard(args) -> None:
 
 def cmd_bootstrap(args) -> None:
     """check → init → up → verify (--local default)."""
+    # Handle --native flag by setting environment variable
+    if getattr(args, "native", False):
+        os.environ["TENUO_AUTHORIZER_BACKEND"] = "native"
+
+    # Handle --install flag
+    if getattr(args, "install", False):
+        cmd_install_authorizer(argparse.Namespace())
+
     local = getattr(args, "local", True) and not getattr(args, "cloud", False)
     ns = dict(local=True, cloud=False, yes=True,
               no_scaffold=getattr(args, "no_scaffold", False),
+              pack=getattr(args, "pack", None),
               skip_preflight=True)
     if local:
         cmd_onboard(argparse.Namespace(**ns))
@@ -3686,6 +3793,7 @@ def cmd_bootstrap(args) -> None:
         cmd_onboard(argparse.Namespace(
             local=False, cloud=True, yes=getattr(args, "yes", False),
             no_scaffold=getattr(args, "no_scaffold", False),
+            pack=getattr(args, "pack", None),
             advanced=getattr(args, "advanced", False) or getattr(args, "demo", False),
             connect_token=getattr(args, "connect_token", None),
             approver=getattr(args, "approver", None),
@@ -4197,13 +4305,34 @@ def cmd_audit(args) -> None:
         ok, errors = verify_receipt_rows(raw_rows)
         if ok:
             print(f"Receipt verification OK ({len(raw_rows)} receipts)")
+            for line in receipt_verify_summary_lines(raw_rows, ok=True):
+                print(line)
         else:
             print("Receipt verification FAILED")
             for err in errors:
                 print(f"  {err}")
+            for line in receipt_verify_summary_lines(raw_rows, ok=False):
+                print(line)
+            raise SystemExit(1)
     rows = [_unwrap_receipt(r) for r in raw_rows]
     if getattr(args, "tail", None):
         rows = rows[-args.tail:]
+
+    def arg_summary(row: dict) -> str:
+        vals = row.get("args") or {}
+        if not isinstance(vals, dict):
+            return ""
+        parts = []
+        for key in ("file_path", "path", "url", "command", "target", "subagent_type"):
+            val = vals.get(key)
+            if val is not None:
+                parts.append(f"{key}={val}")
+        if parts:
+            return "  " + " ".join(parts)
+        if vals:
+            return f"  args={json.dumps(vals, sort_keys=True)}"
+        return ""
+
     for r in rows:
         if r.get("phase") == "post":
             print(f"  · outcome  {r.get('claude_tool',''):14} {r.get('outcome_preview','')[:60]}")
@@ -4220,7 +4349,8 @@ def cmd_audit(args) -> None:
                    else "mcp" if r.get("source") == "mcp_proxy"
                    else "gov" if r.get("governed") else "aud")
             who = f" <{r['agent_type']}>" if r.get("agent_type") else ""
-            print(f"  {mark:10} [{src}] {r.get('claude_tool',''):14}{who} -> {r.get('tenuo_tool','')}  {r.get('reason','')}")
+            print(f"  {mark:10} [{src}] {r.get('claude_tool',''):14}{who} -> "
+                  f"{r.get('tenuo_tool','')}  {r.get('reason','')}{arg_summary(r)}")
 
 
 def cmd_revoke(_args) -> None:
@@ -4459,7 +4589,7 @@ def cmd_demo(args) -> None:
         raise SystemExit(
             "No scripted tour in this project (tenuo_demo.py).\n"
             "  tenuo-claude verify     policy self-test against your tenuo.yaml\n"
-            "  Reference demo: https://github.com/tenuo-ai/claude-governance/tree/main/demo")
+            "  Reference demo: https://github.com/tenuo-ai/tenuo-claude-code/tree/main/demo")
     cmd = [sys.executable, str(demo_script)]
     if getattr(args, "advanced", False):
         cmd.append("--advanced")
@@ -4720,11 +4850,49 @@ def cmd_init(args) -> None:
         print(f"Advanced profile written: {ADVANCED_PROFILE.name} — re-run `tenuo-admin setup`")
     cfg = load_config()
     info = generate(cfg)
+    _ensure_state_in_gitignore()
     print("Initialized tenuo-claude.")
     print(f"  warrant  : {info['warrant_id']}")
     print(f"  sandbox  : {info['sandbox']}")
     print(f"  wired    : .claude/settings.json (PreToolUse/PostToolUse), .mcp.json, .state/gateway.yaml")
     print("Next: `tenuo-claude up` then use Claude Code in this directory.")
+
+
+def _ensure_state_in_gitignore() -> None:
+    """Add .state/ to .gitignore if not already present, and warn if tracked."""
+    gitignore_path = DEMO_DIR / ".gitignore"
+    state_dir = DEMO_DIR / ".state"
+
+    # Check if .state/ is already tracked in git
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", ".state/"],
+            cwd=DEMO_DIR,
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            print(
+                f"WARNING: .state/ is tracked in git and contains private keys and credentials.\n"
+                f"  Run: git rm -r --cached .state/\n"
+                f"  Then commit: git commit -m 'Stop tracking .state/ directory'",
+                file=sys.stderr
+            )
+    except Exception:
+        pass  # git not available or in non-git directory
+
+    # Add .state/ to .gitignore if not present
+    try:
+        gitignore_text = gitignore_path.read_text() if gitignore_path.exists() else ""
+        if ".state/" not in gitignore_text and ".state" not in gitignore_text:
+            # Append .state/ to .gitignore
+            with gitignore_path.open("a") as f:
+                if gitignore_text and not gitignore_text.endswith("\n"):
+                    f.write("\n")
+                f.write(".state/  # Tenuo: private keys, warrants, Cloud credentials\n")
+    except Exception as e:
+        print(f"warning: could not update .gitignore: {e}", file=sys.stderr)
 
 
 def cmd_refresh(args) -> None:
@@ -5249,6 +5417,10 @@ def main() -> None:
     pb.add_argument("--yes", "-y", action="store_true")
     pb.add_argument("--no-scaffold", action="store_true",
                     help="fail if tenuo.yaml is missing (default: write an example policy)")
+    pb.add_argument("--pack", help="policy pack to use (e.g., filesystem-dev, github-mcp)")
+    pb.add_argument("--native", action="store_true",
+                    help="use native authorizer backend (skip Docker if available)")
+    pb.add_argument("--install", action="store_true", help="auto-install native authorizer if needed")
     pb.add_argument("--connect-token")
     pb.add_argument("--admin-key")
     pb.add_argument("--approver")

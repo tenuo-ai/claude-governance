@@ -4,7 +4,7 @@
 
 Please **do not** open a public GitHub issue for security bugs.
 
-Report privately via [GitHub Security Advisories](https://github.com/tenuo-ai/claude-governance/security/advisories/new).
+Report privately via [GitHub Security Advisories](https://github.com/tenuo-ai/tenuo-claude-code/security/advisories/new).
 Include steps to reproduce, affected versions, and impact if known.
 
 We aim to acknowledge reports within a few business days.

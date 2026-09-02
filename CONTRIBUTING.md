@@ -5,8 +5,8 @@ Apache-2.0. See [LICENSE](LICENSE). Bug reports and PRs welcome.
 ## Getting started
 
 ```bash
-git clone https://github.com/tenuo-ai/claude-governance.git
-cd claude-governance
+git clone https://github.com/tenuo-ai/tenuo-claude-code.git
+cd tenuo-claude-code
 uv venv && uv sync && chmod +x bin/tenuo-claude
 cd demo && uv run tenuo-claude verify   # reference project with sample tenuo.yaml
 ```

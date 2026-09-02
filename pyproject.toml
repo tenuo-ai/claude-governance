@@ -23,7 +23,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "tenuo==0.2.3",
+    "tenuo>=0.2.3,<0.3",
     "mcp>=1.0",
     "PyYAML>=6.0",
     "certifi>=2024.0",

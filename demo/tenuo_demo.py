@@ -179,6 +179,16 @@ def run_demo(*, advanced: bool, live_approval: bool) -> None:
     print("\nEach line above uses the same authorizer decision path as the Claude hook "
           "and MCP proxy. Real hook/proxy calls also write signed local receipts; "
           "run `tenuo-claude audit --verify` after a Claude Code run.")
+    print("\nReceipt verification:")
+    print("-" * 40)
+    print("  1. Each tool call is signed with Ed25519 (cryptographic proof)")
+    print("  2. Receipts are tamper-evident (hash-chain links failures)")
+    print("  3. Constraint replay verifies warrant compliance at call time")
+    print("  4. Cloud audit independently verifies approvals")
+    print("\nTo inspect your local decision log:")
+    print("  tenuo-claude audit                  # raw audit stream")
+    print("  tenuo-claude audit --verify         # verify signatures & chain")
+    print("  tenuo-claude audit --tail 5 --verify # last 5 entries")
 
 
 def main() -> None:

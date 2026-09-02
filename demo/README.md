@@ -88,6 +88,29 @@ claude -p "Use delete_deployment to tear down production." --dangerously-skip-pe
 claude -p "Use the researcher subagent to investigate sandbox/incident-report.md. The researcher should read the report, search sandbox for checkout-api evidence, then try to run 'ls -la' and fetch https://api.github.com/repos. Report findings and which actions were blocked." --dangerously-skip-permissions
 ```
 
+## Receipt verification & audit
+
+After running Claude Code or the demo, inspect the signed decision log:
+
+```bash
+# View raw audit stream
+tenuo-claude audit
+
+# Verify signatures, hash-chain integrity, and warrant compliance
+tenuo-claude audit --verify
+
+# Last N decisions
+tenuo-claude audit --tail 5 --verify
+```
+
+**What gets verified:**
+- **Ed25519 signatures**: Each decision is cryptographically signed; tampering is detected.
+- **Hash-chain links**: Decisions form a tamper-evident chain; any deletion/reordering fails.
+- **Constraint replay**: Warrant constraints (scope, allowlists, etc.) are verified against the call args at audit time.
+- **Warrant chain**: The full delegation chain from local issuer to decision is verified.
+
+This provides **non-repudiation**: the project team can prove which decisions were made and when, and a Cloud-connected project also sends signed receipts to your tenant for independent fleet audit.
+
 ## Human approval (optional, Cloud)
 
 The generated advanced overlay exercises approver sign-off on two paths:

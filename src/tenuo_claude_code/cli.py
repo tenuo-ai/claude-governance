@@ -1171,9 +1171,18 @@ def refresh_subwarrants(cfg: dict) -> None:
     if not roles:
         return
     from tenuo import SigningKey, Warrant
+    from tenuo.exceptions import UntrustedRoot
     from tenuo_core import encode_warrant_stack
 
-    parent = Warrant.from_base64(WARRANT.read_text())
+    try:
+        parent = Warrant.from_base64(WARRANT.read_text())
+    except UntrustedRoot as e:
+        raise SystemExit(
+            f"Warrant trust verification failed: {e}\n"
+            "The session warrant is not signed by a trusted issuer.\n"
+            "This may indicate a Cloud trust policy change.\n"
+            "Fix: tenuo-claude check  (verify warrant validity)"
+        ) from e
     holder = SigningKey.from_bytes(base64.b64decode(HOLDER_KEY.read_text()))
     parent_caps = set((parent.capabilities or {}).keys())
     for role, rc in roles.items():
@@ -1324,9 +1333,13 @@ def _authorize_attempt(tenuo_tool: str, route: str, sign_args: dict, body,
         # to a chain (single -> length 1). The leaf (last) is what signs the PoP.
         try:
             leaf = decode_warrant_stack_base64(header_b64)[-1]
-        except Exception:
+        except Exception as e:
             from tenuo import Warrant
-            leaf = Warrant.from_base64(header_b64)
+            from tenuo.exceptions import UntrustedRoot
+            try:
+                leaf = Warrant.from_base64(header_b64)
+            except UntrustedRoot as ute:
+                return False, f"warrant trust failed: {ute}", {}, evidence
         pop_ts = int(time.time())
         pop = leaf.sign(holder, tenuo_tool, sign_args, pop_ts)
         pop_b64 = base64.b64encode(bytes(pop)).decode("ascii")
@@ -1924,8 +1937,10 @@ def _verify_authz_evidence(payload: dict, idx: int) -> list[str]:
         if not roots:
             return [*errors, f"receipt {idx}: no trusted root key available for warrant verification"]
 
+        from tenuo.exceptions import UntrustedRoot
         verified_root = None
         chain_errors: list[str] = []
+        untrusted_root_error = None
         for pos, root in enumerate(roots):
             try:
                 verifier = Authorizer()
@@ -1933,6 +1948,9 @@ def _verify_authz_evidence(payload: dict, idx: int) -> list[str]:
                 verifier.verify_chain(chain)
                 verified_root = root
                 break
+            except UntrustedRoot as ute:
+                untrusted_root_error = str(ute)
+                chain_errors.append(f"root[{pos}] {root[:16]}...: root warrant untrusted")
             except Exception as exc:
                 chain_errors.append(f"root[{pos}] {root[:16]}...: {exc}")
         if verified_root is None:

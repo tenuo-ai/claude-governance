@@ -1,0 +1,13 @@
+cloud:
+  approver_identity: Niki Aimable
+enforce:
+  WebFetch:
+    approval:
+      threshold: 1
+mcp:
+  enforce:
+    delete_deployment:
+      approval:
+        threshold: 1
+        exempt:
+          target: "exact:staging"

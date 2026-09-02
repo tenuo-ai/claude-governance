@@ -5,71 +5,203 @@
 [![CI](https://github.com/tenuo-ai/claude-governance/actions/workflows/ci.yml/badge.svg)](https://github.com/tenuo-ai/claude-governance/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-Claude Code agents can read files, run shell commands, fetch URLs, call MCP tools,
-and spawn subagents. [Tenuo](https://github.com/tenuo-ai/tenuo) adds cryptographic
-access control at that action boundary: every model-invoked file read, shell
-command, web fetch, MCP call, and subagent action is authorized before it runs.
+**Task-scoped authorization for Claude Code.**
 
-You write the policy in `tenuo.yaml`; Tenuo compiles it into a signed, expiring
-credential called a warrant. A local authorizer checks each tool call against
-that warrant and logs the decision. The same boundary applies no matter why the
-model tried the call: prompt injection, hallucination, poisoned tool output, or
-an unsafe request.
+Give Claude Code access to your codebase and tools without giving it access to everything. Tenuo constrains what Claude can read, execute, fetch, and invoke before each action runs. You get signed evidence of what was allowed or denied—a tamper-proof audit trail.
 
-Start with the local quickstart below. Optional Cloud control-plane setup is in
-[Cloud mode](#cloud-mode).
+Tenuo works alongside Claude Code permissions. It adds a signed, expiring authority token that stays enforced even when permission prompts are bypassed, across MCP calls and subagents.
+
+## Why Tenuo?
+
+Claude Code permissions prompt the user; Tenuo checks the **model's action** at the authorizer boundary. The difference matters:
+
+| | Claude Code permissions | Tenuo warrant |
+|---|---|---|
+| **Trigger** | User prompt when Claude asks for access | Automatic check before every tool call |
+| **Scope** | Tool name only | Tool name + argument values |
+| **Bypass** | Prompt can be skipped | Cannot be disabled by the user |
+| **Evidence** | Optional hook logs | Signed, tamper-proof receipts |
+| **Revocation** | Edit rules (active sessions may keep access) | Instant fleet-wide revocation (Cloud) |
+| **Enforcement** | Claude Code settings UI | PreToolUse hook + MCP proxy + authorizer |
+| **Span** | Single session | Persists across MCP calls and subagents |
+
+Tenuo doesn't replace Claude Code permissions—it adds a cryptographic gate that works regardless of why the model tried the call: prompt injection, hallucination, poisoned tool output, or direct user request.
+
+## What It Looks Like
+
+After setup, this is what you see:
+
+```
+tenuo-claude audit --verify
+
+DENY   Read /etc/passwd                constraint not satisfied
+       path outside workspace (subpath:/home/user/project)
+
+ALLOW  Read /home/user/project/main.py  constraint satisfied
+DENY   Bash rm -rf /                    command not permitted
+       'rm' not in allowlist [ls,pwd,cat,grep]
+
+3 signed receipts verified:
+  Ed25519 signatures valid
+  Hash chain unbroken
+  Constraints replayed and satisfied
+```
+
+Each decision is:
+- **Signed** with Ed25519 (cryptographic proof)
+- **Hash-chained** (tampering is detected)
+- **Constraint-replayed** (warrant terms verified at audit time)
+- **Cloud-synced** (if configured, sent to tenant for fleet audit)
 
 ## Quickstart
 
-Requires Python 3.10+. The most predictable first run uses the native authorizer
-binary; Docker is optional. On Windows, run these commands from WSL.
+One command to try it:
 
 ```bash
-pip install tenuo-claude-code
-tenuo-claude install-authorizer
-mkdir my-project && cd my-project
-TENUO_AUTHORIZER_BACKEND=native tenuo-claude bootstrap --yes
+uv tool install tenuo-claude-code
+tenuo-claude bootstrap --native --pack filesystem-dev
+claude
 ```
 
-`bootstrap` writes a starter `tenuo.yaml`, starts the authorizer, and runs a self-test (`verify`). It runs non-interactively, ideal for a fresh folder. For a guided wizard with prompts, run `tenuo-claude onboard` instead; it's the same flow with a preflight `check`. The starter policy is deliberately strict:
+That's it. `bootstrap` with `--pack filesystem-dev` generates a safe starter policy (read/write your project, run safe commands), starts the authorizer, and runs a self-test. Open Claude Code, try something in-scope (it works) and out-of-scope (it's denied). Then:
+
+```bash
+tenuo-claude audit --verify
+```
+
+to see the signed decision log.
+
+### What the quickstart does
+
+1. **`--pack filesystem-dev`** generates a preconfigured policy:
+   - Read/write files in your project directory
+   - Run: ls, pwd, cat, grep (safe commands)
+   - Deny everything else by default
+   - Start in `mode: dry-run` (log, don't block)
+
+2. **`--native`** uses the native authorizer binary (no Docker needed)
+
+3. **`bootstrap`** mints a session warrant, wires the PreToolUse hook, starts the authorizer, and runs a test
+
+4. **`claude`** opens Claude Code. The authorizer is now active; every tool call is checked.
+
+After you see it working, edit `tenuo.yaml` to fit your project, switch to `mode: enforce`, and run:
+
+```bash
+tenuo-claude refresh
+```
+
+**Available policy packs:**
+- `filesystem-dev` — Read/write project files, safe commands (default)
+- `github-mcp` — GitHub MCP server, constrained API queries
+- `http-api-safe` — WebFetch with SSRF protection and domain allowlists
+
+Browse more: [examples/policies/](examples/policies/).
+
+**For Cloud mode** (org root, revocation, human approval):
+
+```bash
+tenuo-claude bootstrap --native --pack filesystem-dev --cloud
+```
+
+Then follow the Cloud setup prompts. [Details: Cloud mode](#cloud-mode).
+
+## How It Works
+
+You define what Claude can do in `tenuo.yaml`:
 
 ```yaml
 name: my-project
 sandbox: ./workspace
-mode: enforce
+
 enforce:
-  Read: "subpath:{sandbox}"          # Read only files under ./workspace
-  Bash: "shlex:ls,pwd,echo,date"     # Bash only these commands
-default: deny                        # every other tool call is denied
+  Read:  "subpath:{sandbox}"              # Read only project files
+  Bash:  "shlex:ls,pwd,cat,grep"          # Only these commands
+  WebFetch:
+    domains: ["api.github.com"]            # Only this domain
+    
+subagents:
+  analyst:
+    tools: [Read, Grep]                    # Analyst: read-only
+
+default: deny                               # Block everything else
+mode: dry-run                               # Log, don't block (switch to 'enforce' later)
 ```
 
-Now open Claude Code in `my-project/`:
+Tenuo compiles this into a signed, expiring **warrant** (a capability token). Every Claude action is checked against the warrant before it runs:
+
+- **File reads** — constrained by `subpath` (can't escape the directory)
+- **Shell commands** — constrained by `shlex` (only allowlisted verbs, no pipes/chaining)
+- **Web fetches** — constrained by domain, SSRF-safe
+- **MCP calls** — constrained by tool name and per-argument rules
+- **Subagent spawns** — gated to declared roles, each runs with narrower authority
+
+The same boundary applies no matter why the model tried the call.
+
+### Constraints
+
+- **`subpath:DIR`** — path must resolve inside DIR (symlink-safe)
+- **`shlex:verb,verb`** — command executable must be in list; pipes/chaining/subshells denied
+- **`domains:[host]`** — URL domain must match (with SSRF/encoded-IP hardening)
+- **`oneof:a,b`** · **`exact:v`** · **`pattern:glob`** · **`regex:re`** · **`range:min,max`** — argument must satisfy the constraint
+- See [Policy](#policy) for the full list and examples
+
+## Day-to-Day Commands
 
 ```bash
-claude
+tenuo-claude up              # Start the authorizer
+tenuo-claude refresh         # Recompile after editing tenuo.yaml
+tenuo-claude audit --verify  # Review and verify the decision log
+tenuo-claude down            # Stop the authorizer
 ```
 
-The agent is governed: `Read ./workspace/notes.txt` is allowed; `Read /etc/passwd`, `Bash(curl …)`, or any tool not listed is denied and logged. After Claude runs a few tools, run `tenuo-claude audit --verify` to see and cryptographically verify the local decision receipts. Edit `tenuo.yaml` to fit your project (see [Policy](#policy)), then `tenuo-claude refresh`.
+Full command reference: [Commands](#commands).
 
-For an example with MCP and subagents, see the [reference demo](demo/).
+## Cloud Mode
 
-| Next | Go to |
-|------|-------|
-| Write the policy | [Policy](#policy) |
-| Day-to-day commands | [Commands](#commands) |
-| Org root, receipts, approvals, revocation | [Cloud mode](#cloud-mode) |
-| Security model and limits | [Security](#security) |
-| Something broke | [Troubleshooting](docs/TROUBLESHOOTING.md) · deep dive [docs/DETAILS.md](docs/DETAILS.md) |
+For organizations: org-root warrants, instant fleet revocation, human approval gates, and a central audit trail.
+
+```bash
+tenuo-claude bootstrap --native --pack filesystem-dev --cloud
+```
+
+Setup takes ~2 minutes (Cloud tenant, runtime credentials, policy trigger). After that, Tenuo issues warrants signed by your org root, revokes them fleet-wide in ~30s, and sends signed receipts to your tenant for compliance audit.
+
+Human approval is optional: gate any tool to require sign-off (Slack, Telegram, console, etc.) from a named approver.
+
+See [Cloud mode](#cloud-mode) for details.
+
+## What's in Scope
+
+Tenuo governs **model-invoked tool calls** on the PreToolUse path:
+- **Read**, **Write**, **Glob**, **Edit** — file access
+- **Bash**, **Monitor**, **PowerShell** — command execution
+- **WebFetch** — HTTP requests
+- **MCP tools** — downstream server calls (via proxy)
+- **Agent** — subagent spawning
+
+It does **not** govern:
+- The `!` TUI shell (operator command, not model-invoked)
+- Approved operator actions outside the PreToolUse boundary
+
+## Fail-Closed Design
+
+- Missing or broken `tenuo.yaml` denies every governed call until restored
+- Private keys under `.state/` are owner-only (`0600`)
+- A broken receipt sink surfaces loudly (not silent data loss)
+- Cloud-disconnected nodes fall back to local policy (no open bypass)
+
+---
 
 ## Policy
 
-`tenuo.yaml` is the whole configuration: it drives the warrant, the authorizer, the hooks, and the MCP proxy. You list tools under `enforce:` and give each a constraint on its key argument.
+`tenuo.yaml` drives the whole system: warrant, authorizer, hooks, MCP proxy.
 
 ```yaml
 name: acme-backend
 sandbox: ./workspace        # a directory; {sandbox} expands to its absolute path
 ttl_seconds: 3600           # optional: session warrant lifetime (default 3600 = 1h)
-mode: enforce               # block out-of-scope calls. 'dry-run' = log only, don't block
+mode: enforce               # block out-of-scope calls; 'dry-run' = log only
 
 enforce:
   Read:  "subpath:{sandbox}"
@@ -77,8 +209,11 @@ enforce:
   Bash:  "shlex:ls,pwd,echo,cat,grep"
   WebFetch:
     domains: ["api.github.com", "*.githubusercontent.com"]
+  
+allow:                      # permitted, unconstrained (logged)
+  - TodoRead
 
-default: deny               # anything not listed above is denied
+default: deny               # anything unlisted is denied (recommended, fail-closed)
 
 subagents:                  # optional: each role runs under a narrower warrant
   analyst:
@@ -87,200 +222,200 @@ subagents:                  # optional: each role runs under a narrower warrant
 mcp:                        # optional: govern a downstream MCP server's tools
   downstream: ./your_mcp_server.py
   enforce:
-    read_file: "subpath:{sandbox}"          # bare string constrains the `path` arg
-    run_query:                              # constrain a differently-named arg
+    read_file: "subpath:{sandbox}"
+    run_query:
       arg: sql
       constraint: "regex:^SELECT "
-    http_call:                              # constrain several args at once
-      args:
-        url:    "urlpattern:https://api.example.com/*"
-        method: "oneof:GET,HEAD"
 ```
 
 ### Constraints
 
-| Constraint | Applies to | What it checks |
-|------------|------------|----------------|
-| `subpath:DIR` | path tools (Read, Write, Edit, Glob, Grep) | the path argument must resolve to a location **inside `DIR`**. Symlinks are resolved first, so a link planted in the directory can't point outside it. |
-| `shlex:a,b,c` | Bash, Monitor | the command's **executable** must be one of `a,b,c`, and the command must be a single simple command: pipes, `&&`/`;` chaining, subshells, and shell expansion are rejected. (This allowlists the *verb*, not file paths: `cat /etc/passwd` passes if `cat` is allowed. Use `Read`/`Write` to scope files; drop `Bash` for a hard lock.) |
-| `domains` / `cidrs` / `schemes` / `ports` | WebFetch | the URL's host must match an allowed domain (`*` matches one label) or CIDR range, **and** pass SSRF hygiene: https-only by default (override with `schemes`), optional `ports` allowlist, with loopback, cloud-metadata IPs, encoded-IP tricks, and spoofed hosts (`api.github.com.evil.com`) blocked. |
-| `oneof:a,b` · `notoneof:a,b` · `exact:v` · `pattern:glob` · `regex:re` · `range:min,max` · `urlpattern:url` · `cidr:n/m` | any tool argument | the value must be in the set / not in the set / equal / glob-match / regex-match / fall in the numeric range (either bound may be blank) / match the URL glob / fall inside the IP range (for any IP-based tool, not just WebFetch). |
+| Constraint | Applies to | Checks |
+|------------|------------|--------|
+| `subpath:DIR` | Read, Write, Edit, Glob, Grep | Path resolves inside DIR (symlink-safe) |
+| `shlex:a,b,c` | Bash, Monitor, PowerShell | Executable is one of `a,b,c`; pipes/chaining/subshells denied |
+| `domains:[list]` | WebFetch | URL domain matches allowlist; SSRF/encoded-IP hardening built-in |
+| `oneof:a,b` | any tool | Value is in set |
+| `notoneof:a,b` | any tool | Value not in set |
+| `exact:v` | any tool | Value equals exactly |
+| `pattern:glob` | any tool | Value glob-matches |
+| `regex:re` | any tool | Value regex-matches |
+| `range:min,max` | any tool | Value in numeric range |
+| `urlpattern:url` | any tool | Value matches URL glob |
+| `cidr:n/m` | any tool | Value in IP range |
 
-The keys above are the `tenuo.yaml` DSL's convenient subset. The underlying tenuo engine supports more (set operations, numeric ranges, negation, boolean composition, and CEL expressions) for programmatic policies; see [tenuo](https://github.com/tenuo-ai/tenuo).
+`{sandbox}` expands to the directory in `sandbox:`. You can point `subpath:` at any path. Tools unlisted aren't individually governed; they're caught by `default`.
 
-`{sandbox}` is a convenience variable for the directory in `sandbox:`; you can point `subpath:` at any path. Tools you don't list aren't governed individually; they're caught by `default`.
+For internal egress, `WebFetch` also accepts `cidrs:` (e.g., `cidrs: ["10.0.0.0/8"]`) to allow by IP range. It's off by default; add deliberately.
 
-For internal egress, `WebFetch` also accepts `cidrs:` to allow hosts by IP range (e.g. `cidrs: ["10.0.0.0/8"]` alongside `domains:`). It's off by default and reaches past public domains and SSRF private-network defaults, so add it deliberately.
+**Command tools.** `Bash`, `PowerShell`, and `Monitor` execute commands independently; govern each in `enforce:`. Use `shlex` for POSIX (Bash/Monitor) and `pattern`/`regex` for PowerShell (different dialect).
 
-**Command-execution tools.** `Bash`, `PowerShell`, and `Monitor` all execute commands and are each governed independently (their own constraint on the `command` argument). `Monitor` runs the same shell commands as `Bash` in the background; `PowerShell` is a different dialect, so prefer `oneof`/`pattern`/`regex` over `shlex` (which parses POSIX syntax) for it. If your team enables `PowerShell` or `Monitor` in Claude Code, list them under `enforce:` too. Left unlisted they fall to `default` (`deny`, or `approve` for a Cloud approval gate). Never put a shell on the `allow:` permit-list either: that grants it **unconstrained**. Always govern shells with an explicit `enforce:` constraint.
+**MCP arguments.** Under `mcp.enforce:`, a bare constraint targets `path`. Use `arg: NAME` for other arguments, and `args: {NAME: constraint, …}` for multiple constraints.
 
-**MCP tool arguments.** Under `mcp.enforce:`, a bare constraint string targets the `path` argument. To constrain a differently-named argument use `arg: NAME` + `constraint:`, and to constrain several at once use `args: {NAME: constraint, …}`. This works for any downstream MCP tool and any constraint kind, locally and on Cloud. Tools you don't list are still allowed/denied by `default` and can be human-approval gated (`approval:`); they just aren't argument-constrained.
+**Three lists, plus two switches.**
+- **`enforce:`** constrained (blocked if constraint fails)
+- **`allow:`** unconstrained (always allowed, logged)
+- **`default:`** catch-all for unlisted tools
+  - **`default: deny`** recommended (fail-closed)
+  - **`default: approve`** routes to human approval (Cloud only)
+- **`mode:`** global posture
+  - **`mode: enforce`** blocks denied calls
+  - **`mode: dry-run`** logs decisions, blocks nothing (use to shadow a policy before enforcing)
+- **`subagents:`** declares roles; each runs with attenuated authority
+- **`ttl_seconds:`** warrant lifetime in seconds (default 3600 = 1h); `up` re-mints
 
-**Three lists, plus two switches.** Put tools under `enforce:` (constrained), `allow:` (permitted but **unconstrained**: allowed and logged), and let everything else fall to `default:`. `mode:` is the global posture for **every** tool; `default:` is only the catch-all for tools in neither list.
+After any edit, run `tenuo-claude refresh`.
 
-- **`mode: enforce`** blocks denied calls. **`mode: dry-run`** computes and logs the same decisions but blocks nothing, even for tools listed under `enforce:`; use it to shadow a policy, then switch to `enforce`. (`mode: audit` is a deprecated alias for `dry-run`.)
-- **`default: deny`** denies any unlisted tool (recommended, fail-closed). **`default: approve`** routes unlisted tools to a human-approval gate instead (Tenuo Cloud only; locally it falls back to deny). There is no permissive catch-all: `default: allow` / `default: audit` are no longer supported (enforce must not fail open) and collapse to `deny`. To permit specific tools without a constraint, list them under `allow:`; to observe everything without blocking, use `mode: dry-run`.
-- In `mode: dry-run` nothing is enforced, so `default:` has no effect until you switch back to `enforce`.
-- **`subagents:`** declares roles; spawning is gated to those roles, and each runs under the session warrant **attenuated** to its `tools` (it can only ever do less than the session). [Details](docs/DETAILS.md#subagents).
-- **`ttl_seconds:`** sets the session warrant lifetime in seconds (positive integer; default `3600` = 1h). `up` re-mints before expiry. Enterprise rollouts pin it centrally through Claude Code managed settings / MDM (the policy file is what managed settings pins); local dev sets it directly. A shorter TTL shrinks the blast radius of a leaked warrant.
-
-Ready-made policies: [examples/policies/](examples/policies/). After any edit, run `tenuo-claude refresh`.
+**Ready-made policies:** [examples/policies/](examples/policies/).
 
 ## Commands
 
-Day to day, you mostly need `up` (start), `audit` (review), and `refresh` (after editing policy).
+Day to day: `up` (start), `audit` (review), `refresh` (after editing policy).
 
 | Command | What it does |
 |---------|--------------|
-| `onboard` | Interactive first-run wizard (`--local` / `--cloud`); same flow as `bootstrap` but prompts and runs a preflight `check`. Scaffolds an example policy if you don't have one. |
-| `bootstrap` | First-run quickstart (used above): non-interactive scaffold starter policy (if none) → `init` → `up` → `verify`. `--cloud` for Cloud; set `TENUO_AUTHORIZER_BACKEND=native` to force the installed native authorizer. |
-| `init` | Compile an **existing** `tenuo.yaml`: mint the warrant, wire the PreToolUse hook and MCP proxy. Pass `--scaffold` to write an example if none exists (it no longer does so automatically). |
-| `up` / `down` | Start / stop the authorizer (auto-selects Docker or native; `--native` to force). |
-| `refresh` | Recompile after editing `tenuo.yaml` (restarts the authorizer if running). In Cloud mode, warns if capability rules drifted from the last `tenuo-admin setup`. |
-| `verify [--deep]` | Self-test the live policy against the authorizer (no Claude session needed). `--deep` adds an SSRF / encoded-IP matrix and extra Bash deny cases, a reproducible artifact for security review; when the local Claude CLI can load project settings, it also runs a live PreToolUse exit-code harness. |
-| `audit [--tail N] [--verify]` | Show the decision log (`.state/receipts.jsonl`). `--verify` checks receipt signatures, hash-chain links, and embedded authorization evidence. |
-| `check` | Preflight: dependencies, wiring, audit-sink health, leaked admin keys, and (Cloud) control-plane bindings. |
-| `status` | Warrant, mode, audit-sink health, and Cloud summary. |
-| `install-authorizer` | Install the pinned native authorizer to `~/.tenuo/bin` from the Tenuo release assets; Cargo is only a fallback if no prebuilt asset exists. |
-| `bench [--json]` | Measure per-call overhead on your machine (PoP sign, authorizer round-trip, full hook path). |
+| `onboard` | Interactive first-run wizard (`--local` / `--cloud`); same as `bootstrap` but with prompts. |
+| `bootstrap` | Non-interactive setup: scaffold policy if none → `init` → `up` → `verify`. `--cloud` for Cloud mode; `--pack PACK` to use a policy pack. |
+| `init` | Compile existing `tenuo.yaml`: mint warrant, wire hook and MCP proxy. |
+| `up` / `down` | Start / stop the authorizer (auto-selects Docker or native; `--native` forces native). |
+| `refresh` | Recompile after editing `tenuo.yaml` (restarts authorizer if running). |
+| `verify [--deep]` | Self-test the policy against the authorizer (no Claude session needed). `--deep` adds SSRF/encoded-IP matrix and Bash deny cases. |
+| `audit [--tail N] [--verify]` | Show the decision log (`.state/receipts.jsonl`). `--verify` checks receipt signatures, hash-chain links, and embedded evidence. |
+| `check` | Preflight: dependencies, wiring, audit-sink health, leaked keys, Cloud bindings. |
+| `status` | Warrant, mode, audit-sink health, Cloud summary. |
+| `install-authorizer` | Install the pinned native authorizer to `~/.tenuo/bin`. |
+| `bench [--json]` | Measure per-call overhead on your machine. |
 | `revoke` | Revoke the current session warrant. |
 
-The warrant is short-lived (~1h TTL); `up` refreshes it. In normal local mode, the authorizer listens on `127.0.0.1:9090`; change it with `TENUO_AUTHORIZER_PORT` before `bootstrap`. In managed enterprise mode, the generated system service uses a root-owned Unix socket instead. Generated files (don't commit): `.state/` (keys, warrant, credentials), `.claude/settings.json` (hooks), `.mcp.json` (MCP wiring).
+The warrant is short-lived (~1h TTL); `up` refreshes it before expiry. Generated files (don't commit): `.state/` (keys, warrant, credentials), `.claude/settings.json` (hooks), `.mcp.json` (MCP proxy).
 
-Working from a git clone instead of PyPI? See [Build from source](#build-from-source).
+## Cloud Mode
 
-## How enforcement works
+For organizations: org root, fleet revocation, human approval, central audit.
 
-Tenuo enforces at Claude Code's action boundary. `init` compiles `tenuo.yaml` into a signed warrant and wires two interception points; both check the **same** warrant against the **same** local authorizer:
+### Setup (first time)
 
-- **Native tools** (Read, Bash, WebFetch, …) → a Claude Code **PreToolUse hook** intercepts the call, signs a proof-of-possession with the session key, and asks the authorizer.
-- **MCP tools** → Claude is pointed at a **proxy** that stands in for the downstream MCP server; the proxy authorizes, then forwards only if allowed.
+1. **Create a Tenuo tenant** at [cloud.tenuo.ai](https://cloud.tenuo.ai). Complete the **Infrastructure** onboarding (provisions KMS-backed signing keys).
 
-![Architecture](https://raw.githubusercontent.com/tenuo-ai/claude-governance/main/docs/images/tenuo_claude_code_architecture.png)
+2. **Get credentials:**
+   - **Runtime key** (`tenuo_ct_…`) from Agents → Quick Connect → **Authorizer Only** → `.state/cloud.env`
+   - **Tenant-admin key** (`tc_…`) from Settings → API Keys → Create (admin role) → `~/.tenuo/admin.env`
 
-The diagram shows the default local/Docker path. Managed enterprise deployments use the same hook/proxy shape, but the system-pinned authorizer is reached over a root-owned Unix socket (native on macOS, Docker-backed on Linux).
+3. **Bootstrap with Cloud:**
+   ```bash
+   tenuo-claude bootstrap --native --pack filesystem-dev --cloud
+   ```
+   Behind the scenes: `tenuo-admin setup` registers this project, creates a Cloud trigger from `tenuo.yaml`, and mints a root-signed warrant.
 
-The authorizer (a small local service, ~1–3 ms/call) verifies the warrant's signature, proof-of-possession, and expiry, then checks the call's arguments against the warrant's constraints → allow, deny, or (Cloud) approval-required. Full detail in [docs/DETAILS.md](docs/DETAILS.md).
+4. **(Optional) Add human approval:**
+   - Create an approver identity in Cloud (Dashboard → Channels → Identity Bindings)
+   - Give it a notification channel (Slack, Telegram, console, etc.)
+   - Gate any tool with `approval:` in `tenuo.yaml`
 
-## Cloud mode
-
-Local mode is enough to evaluate Tenuo on one project. Connect [cloud.tenuo.ai](https://cloud.tenuo.ai) for organization-scale governance:
-
-- **Tenant-root warrants**: sessions chain to your org root, not a key on the laptop.
-- **Signed receipts**: one verifiable allow/deny/approval audit stream (Ed25519 over CBOR).
-- **Fleet revocation**: revoke a warrant id; authorizers pick it up within ~30s.
-- **Human approval gates**: specific calls pause for a person instead of allow/deny ([below](#human-approval-cloud)).
-- **Managed rollout**: push hook/MCP wiring through Claude Code managed settings instead of per-project local settings.
-
-![Cloud audit stream: a verifiable list of allow, deny, and approved receipts](https://raw.githubusercontent.com/tenuo-ai/claude-governance/main/docs/images/cloud-audit-stream.png)
-
-### Setup
-
-Two keys, kept apart; the runtime never sees the admin key:
-
-| Key | From | Goes in | Used by |
-|-----|------|---------|---------|
-| **Runtime** (`tenuo_ct_…`) | cloud.tenuo.ai → Agents → Quick Connect → **Authorizer Only** | `.state/cloud.env` | `tenuo-claude up`, hooks |
-| **Tenant-admin** (`tc_…`) | Settings → API Keys → Create (admin role) | `~/.tenuo/admin.env` | `tenuo-admin setup` (once) |
-
-```bash
-mkdir my-project && cd my-project
-# First Cloud setup needs BOTH keys from the table above: the runtime Quick Connect
-# token (fires the warrant) AND the tenant-admin key in ~/.tenuo/admin.env (the
-# `tenuo-admin setup` step that publishes the trigger).
-tenuo-claude install-authorizer
-TENUO_AUTHORIZER_BACKEND=native tenuo-claude bootstrap --cloud --yes \
-  --connect-token "$TENUO_CONNECT_TOKEN" \
-  --admin-key "$TENUO_ADMIN_KEY"
-```
-
-> First-time Cloud setup requires **both** credentials: the runtime token and the tenant-admin key. Every session after that needs only the runtime token.
-
-Cloud includes a **Claude Code Governance Starter** warrant template for the recommended shape. You do not create a trigger from it by hand: `tenuo-admin setup` compiles this project's `tenuo.yaml`, MCP rules, holder, and approval policy into the Cloud trigger.
-
-Every session after that:
+### Day to day (Cloud)
 
 ```bash
 tenuo-claude check && tenuo-claude up
 ```
 
-If `check` reports a **cloud bindings** failure, run `tenuo-admin setup` and retry.
+If `check` reports a **Cloud bindings** failure, run `tenuo-admin setup` and retry.
 
-> `tenuo-claude up` refuses to start if a tenant-admin key is in the environment; keep it only in `~/.tenuo/admin.env`. And once a project is on Cloud, don't re-run plain `bootstrap`: it reverts the project to local mode and moves your Cloud files aside. Use `check && up`.
-
-CI / non-interactive and manual step-by-step setup: [docs/DETAILS.md § Tenuo Cloud](docs/DETAILS.md#tenuo-cloud-extended). After changing `enforce`/`mcp`/`subagents`/approvals on Cloud, re-run `tenuo-admin setup`; for `mode`-only changes, `refresh` suffices.
-
-### Human approval (Cloud)
-
-A gated capability returns a third outcome, `approval-required`, instead of allow/deny. The hook opens a Cloud approval request, waits for an approver on their notification channel (Slack, Telegram, console, …), then re-authorizes with their **signed, identity-bound** approval, so the receipt records *who* approved. Add an `approval:` block to **any enforced native tool** (e.g. `Bash`), **any `mcp.enforce` tool**, or `WebFetch`; an optional `exempt:` lets safe argument values skip the gate. `default: approve` gates every unlisted tool.
-
-**Human approval requires Tenuo Cloud, anywhere (native hook, MCP proxy, or catch-all).** The gate lives in the Cloud-issued warrant, so without Cloud an approval-gated tool falls back to **deny** (fail-closed); `tenuo-claude check` warns when a gate is configured but Cloud isn't. First time setting this up? Follow the step-by-step [approval setup runbook](docs/DETAILS.md#approval-setup-runbook) (the approver identity and its notification channel are created in the Tenuo Cloud console). Policy shape and mechanics: [docs/DETAILS.md § Human approval](docs/DETAILS.md#human-approval-cloud).
-
-For a first approval smoke test, add `--advanced --approver-id <Cloud identity id>` (or `--approver "<display name>"` for demos) to `bootstrap --cloud`. The generated advanced overlay gates off-allowlist `WebFetch` calls for approval while allowing `docs.anthropic.com`; SSRF/metadata URLs remain hard-denied.
-
-For MCP, approval and constraints use the concrete capability names in `mcp.enforce` (for example `mcp__server__tool` on the Claude hook path). Unlisted MCP tools follow `default`.
-
-![Receipt drill-down: a human approval with the approver identity and request hash](https://raw.githubusercontent.com/tenuo-ai/claude-governance/main/docs/images/cloud-receipt-approval-detail.png)
-
-## Security
-
-Tenuo runs **alongside** Claude Code permissions; it doesn't replace managed settings. The difference is where and how policy is enforced:
-
-| | Claude Code permissions | Tenuo warrant |
-|---|---|---|
-| Form | Allow/ask/deny rules in settings | Signed, expiring capability token; Cloud chains to your org root |
-| Enforcement point | Claude's permission UI | PreToolUse hook + MCP proxy, checked by the authorizer |
-| `--dangerously-skip-permissions` | Skips the prompts | Does not disable installed Tenuo hook/proxy checks |
-| Expiry | Until edited | Session TTL (1h default, set via `ttl_seconds:`); `up` refreshes |
-| Revocation | Edit rules (live sessions may keep allowances) | Revoke warrant id → ~30s fleet sync (Cloud) |
-| Evidence | Optional hook logs | Local JSONL; signed receipt stream in Cloud |
-| Org deployment | Per-user settings, locally editable | Managed-settings hooks + shared policy |
-
-Admins can also block the bypass flag entirely in managed settings (`disableBypassPermissionsMode`).
-
-**What's in scope.** Tenuo governs **model-invoked tool calls** (Read, Bash, WebFetch, MCP tools, subagent spawns) on the PreToolUse path, including the agent's own Bash. The TUI `!` shell (a command the *operator* types) is not a tool call and is out of scope; the model can't invoke it. ([details](docs/DETAILS.md#agent-tools-vs-operator-shell))
-
-**Fail-closed.** A missing or broken `tenuo.yaml` denies every governed call until it's restored. Keys under `.state/` must be owner-only (`0600`).
-
-**Receipts.** Every governed call carries a proof-of-possession signature the authorizer verifies. Locally, the hook appends a signed JSON line to `.state/receipts.jsonl` (read with `tenuo-claude audit --verify`; in `mode: dry-run`, denials show as `WOULD-DENY`):
-
-```json
-{"phase":"pre","decision":"deny","claude_tool":"Read","governed":true,
- "args":{"file_path":"/etc/passwd"},"reason":"Constraint not satisfied"}
+After editing `tenuo.yaml`:
+```bash
+tenuo-claude refresh
 ```
 
-Local `audit --verify` checks receipt signatures, hash-chain links, warrant chains, and deterministic constraint replay. Approval signatures are recorded when used, but independent approver/threshold verification belongs to Cloud audit because it depends on the Cloud approval policy. Connected to Cloud, the authorizer also emits signed receipts to your tenant, the central record for compliance and fleet audit.
+The Cloud-issued warrant stays active until revoked (or TTL expires). To revoke fleet-wide:
+```bash
+tenuo-claude revoke
+```
 
-**Rolling out to a team.** Keep `tenuo.yaml` in version control, push the hook/MCP wiring through Claude Code **managed settings** (not per-developer `settings.local.json`), and use Cloud for org-root warrants, central audit, and revocation. Generate the pinned artifacts with `tenuo-claude managed-template` (see [examples/managed](examples/managed/) for the rollout checklist, Unix-socket smoke test, and hardened `--socket-group` option). Start in `mode: dry-run`, review the `WOULD-DENY` rows, then switch to `enforce`. [Talk to us](https://tenuo.ai/early-access.html) about managed-settings rollout. Report issues: [SECURITY.md](SECURITY.md).
+~30 seconds later, all active sessions enforcing that warrant exit and must re-authorize.
 
-**Turning it off.** `tenuo-claude disable` removes Tenuo's hook wiring (so Claude Code / Cursor stop calling the authorizer) and stops it, leaving your policy and warrant in place; re-enable with `tenuo-claude up`. `tenuo-claude uninstall` goes further and also deletes `.state/` (warrant, keys, gateway, receipts, Cloud credentials); `tenuo.yaml` is never touched. Use `--keep-state` to unwire without deleting state, or `--yes` to skip the prompt.
+**Important:** Once Cloud is configured, don't re-run plain `bootstrap` (it reverts to local mode). Use `check && up` on future sessions.
 
-## Build from source
+### Human Approval (Cloud)
 
-For development, running the demo from a checkout, or using `./bin/tenuo-claude`:
+Add `approval:` to any enforced tool:
+
+```yaml
+enforce:
+  WebFetch:
+    domains: ["api.github.com"]
+    approval: true              # all URLs gated
+    
+  delete_deployment:            # MCP tool
+    arg: target
+    constraint: "oneof:staging,prod"
+    approval:
+      exempt: ["staging"]       # staging bypasses approval
+```
+
+When Claude tries a gated action:
+1. The hook opens a Cloud approval request
+2. The approver gets a Slack/Telegram/console notification
+3. They review and approve/deny
+4. The decision is recorded in the signed receipt (audit trail shows **who** approved)
+
+**Setup:** See [docs/DETAILS.md § Approval setup runbook](docs/DETAILS.md#approval-setup-runbook).
+
+For Cloud, receipts are sent to your tenant (central audit). Locally, receipts are always written to `.state/receipts.jsonl`.
+
+## Security Model
+
+Tenuo runs alongside Claude Code permissions; it doesn't replace them. The difference:
+
+- **Claude Code permissions:** Prompt the user; can be bypassed with `--dangerously-skip-permissions`
+- **Tenuo warrant:** Signed, expiring authority enforced by an authorizer before each call; cannot be disabled by the user or model
+
+The warrant is a capability token: it lists what Claude can do and for how long. Each action is checked against the warrant before it runs. The same boundary applies regardless of why the model tried the call: prompt injection, hallucination, poisoned tool output, or direct user request.
+
+**Receipts:** Every decision is signed with Ed25519 and hash-chained for tamper-evidence. Local `audit --verify` checks signatures, hash-chain links, warrant chains, and deterministic constraint replay. Cloud receipts are independently verified by the tenant.
+
+**Fail-closed:** Missing or broken `tenuo.yaml` denies every governed call. Keys under `.state/` are owner-only. A broken receipt sink surfaces loudly (not silent data loss).
+
+**Rolling out to a team:** Keep `tenuo.yaml` in version control. Push hook/MCP wiring through Claude Code managed settings. Use Cloud for org-root warrants, central audit, and revocation. See [docs/DETAILS.md § Managed deployment](docs/DETAILS.md#managed-deployment) for the rollout checklist and hardened socket setup.
+
+**Turning it off:** `tenuo-claude disable` unwires the hook (Claude stops calling the authorizer) and stops the authorizer, leaving policy and warrant in place. `tenuo-claude uninstall` also deletes `.state/` (warrant, keys, credentials). `tenuo.yaml` is never touched.
+
+---
+
+## Build from Source
+
+For development or running from a git checkout:
 
 ```bash
 git clone https://github.com/tenuo-ai/claude-governance.git
 cd claude-governance
-uv venv && uv sync && source .venv/bin/activate     # Windows: .venv\Scripts\activate
+uv venv && uv sync && source .venv/bin/activate    # Windows: .venv\Scripts\activate
 chmod +x bin/tenuo-claude
-uv run tenuo-claude install-authorizer              # only if you don't use Docker
+uv run tenuo-claude install-authorizer             # only if not using Docker
 ```
 
-Run via `./bin/tenuo-claude --help`, `uv run tenuo-claude --help`, or `pip install -e .`. Re-run `tenuo-claude init` (or `refresh`) after moving the repo or reinstalling. The hooks pin the launcher path at wiring time. Contributors: [CONTRIBUTING.md](CONTRIBUTING.md).
+Run via `./bin/tenuo-claude --help`, `uv run tenuo-claude --help`, or `pip install -e .`. Re-run `tenuo-claude init` (or `refresh`) after moving the repo or reinstalling.
+
+Contributors: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Performance
 
-Authorization is ~1–3 ms per call; the command hook adds ~100–200 ms (mostly process startup). Measure on your machine with `tenuo-claude bench` after `up`.
+Authorization is ~1–3 ms per call; the PreToolUse hook adds ~100–200 ms (mostly process startup). Measure on your machine:
 
-## This repo
+```bash
+tenuo-claude bench
+```
 
-GitHub: [`tenuo-ai/claude-governance`](https://github.com/tenuo-ai/claude-governance) · PyPI: [`tenuo-claude-code`](https://pypi.org/project/tenuo-claude-code/)
+## About
 
-| Path | Contents |
-|------|----------|
-| `src/tenuo_claude_code/` | Package source |
-| `templates/` | Starter `tenuo.yaml` and credential examples |
-| `examples/policies/` | Ready-made policy templates |
-| `demo/` | Reference project and scripted tour |
-| `docs/` | [Implementation details](docs/DETAILS.md) · [Troubleshooting](docs/TROUBLESHOOTING.md) |
+**Repository:** [tenuo-ai/claude-governance](https://github.com/tenuo-ai/claude-governance)  
+**PyPI:** [tenuo-claude-code](https://pypi.org/project/tenuo-claude-code/)  
+**Tenuo core:** [tenuo-ai/tenuo](https://github.com/tenuo-ai/tenuo)  
+**License:** [Apache 2.0](LICENSE)
+
+| | Path |
+|---|---|
+| **Package source** | `src/tenuo_claude_code/` |
+| **Policy packs** | `examples/policies/` |
+| **Reference demo** | `demo/` |
+| **Implementation details** | `docs/DETAILS.md` |
+| **Troubleshooting** | `docs/TROUBLESHOOTING.md` |
+| **Security** | `SECURITY.md` |

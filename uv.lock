@@ -916,22 +916,22 @@ wheels = [
 
 [[package]]
 name = "tenuo"
-version = "0.2.3"
+version = "0.2.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/24/12/3f9ee72812da250802aab2ee85ceb75196e308c30e8eda92de8aac01f76c/tenuo-0.2.3.tar.gz", hash = "sha256:a3b584859733a54fc7432f783845cec479cb0141c11de28bc3c7af2de1dbe4dd", size = 2079065, upload-time = "2026-07-02T20:52:17.982Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/7b/a9/3e0d8df580bcf9ea8851f7c8bcc78c710df2e7f8d550b5023a703b849ee3/tenuo-0.2.4.tar.gz", hash = "sha256:044c342ea0468a18077deb10900647df97cf4bcb41f1166e33165daf3fe83773", size = 2255861, upload-time = "2026-09-02T03:48:05.822Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c7/27/c38fbe7f60b51024c04b77b5f46a180ed7a1253e749b1aeb70883dc61002/tenuo-0.2.3-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:543c1e9e741a383bcbfe59e5644445d8e870c0b6db52dac729e5c0aaa80d905c", size = 5325555, upload-time = "2026-07-02T20:52:12.219Z" },
-    { url = "https://files.pythonhosted.org/packages/7e/a8/3d4488c3be1e437e5cdd1392c0eb80500ff7c000180cffbeea6901374cb2/tenuo-0.2.3-cp39-abi3-manylinux_2_38_x86_64.whl", hash = "sha256:2302abb360e503069d24686792ed18f9cf41dafd6dc0b1a4a2bd19d804ed8c13", size = 5842955, upload-time = "2026-07-02T20:52:14.255Z" },
-    { url = "https://files.pythonhosted.org/packages/21/2a/a4a959a341eb0af8c790db4ca8b21c4b8d60c105b298cdb3460c440e8faf/tenuo-0.2.3-cp39-abi3-win_amd64.whl", hash = "sha256:0154caaa41e009ce1c2f52ef2bc8e46ac38b74bd89253de3ab753984cd10056d", size = 5533697, upload-time = "2026-07-02T20:52:16.17Z" },
+    { url = "https://files.pythonhosted.org/packages/c7/b1/a3beb2baaf399b403224bbd556da454adaaeb93266c4c200eeb4196b6143/tenuo-0.2.4-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:aaabd95363bbd75086bc299c54c6c3150ab5033950c105fdb17839f3a8e7c351", size = 5390771, upload-time = "2026-09-02T03:47:59.942Z" },
+    { url = "https://files.pythonhosted.org/packages/ae/67/a904bf6bc396edb0c0c0067db0016dfbb2539df2e42dc0ac8c380f727c74/tenuo-0.2.4-cp39-abi3-manylinux_2_38_x86_64.whl", hash = "sha256:51db04e0f2e5a3e06182b1f792ca99427f850949b11b18ad4ddfcd7384ef5d37", size = 5890634, upload-time = "2026-09-02T03:48:01.846Z" },
+    { url = "https://files.pythonhosted.org/packages/98/70/9ed42e19b70befd92b39c8035112222fec54dc885e7e8469061a1d08dcbb/tenuo-0.2.4-cp39-abi3-win_amd64.whl", hash = "sha256:4eb928af625630fb1a6a245b4b7a1343fc9f7e21e767766c29063a0a4f6c9283", size = 5616822, upload-time = "2026-09-02T03:48:04.338Z" },
 ]
 
 [[package]]
 name = "tenuo-claude-code"
-version = "0.6.1"
+version = "0.6.2"
 source = { editable = "." }
 dependencies = [
     { name = "certifi" },
@@ -947,7 +947,7 @@ requires-dist = [
     { name = "cryptography", specifier = ">=42.0" },
     { name = "mcp", specifier = ">=1.0" },
     { name = "pyyaml", specifier = ">=6.0" },
-    { name = "tenuo", specifier = "==0.2.3" },
+    { name = "tenuo", specifier = ">=0.2.3,<0.3" },
 ]
 
 [[package]]
